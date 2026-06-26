@@ -129,6 +129,43 @@ class DocumentOut(BaseModel):
     image_paths: Optional[List[str]] = None
 
 
+class DocumentFieldInPageOut(BaseModel):
+    """Champ tel qu'affiché dans la vue full d'un document."""
+
+    id: int
+    field_key: Optional[str] = None
+    ocr_value: Optional[str] = None
+    resolved_value: Optional[str] = None
+    status: str
+
+
+class DocumentSectionOut(BaseModel):
+    """Section dans une page (vue full document)."""
+
+    id: str
+    fields: List[DocumentFieldInPageOut] = Field(default_factory=list)
+
+
+class DocumentPageOut(BaseModel):
+    """Page d'un document (vue full)."""
+
+    page_number: int
+    sections: List[DocumentSectionOut] = Field(default_factory=list)
+
+
+class DocumentOcrResultOut(BaseModel):
+    """Référence légère vers un OcrResult dans la vue full document."""
+
+    id: int
+
+
+class DocumentJobOut(BaseModel):
+    """Référence légère vers un Job dans la vue full document."""
+
+    id: int
+    state: str
+
+
 class DocumentFullOut(BaseModel):
     """Reponse detaillee (GET /documents/{id}?view=full)."""
 
@@ -137,11 +174,29 @@ class DocumentFullOut(BaseModel):
     status: str
     metadata: Optional[Dict[str, Any]] = None
     file: Optional[FileRefOut] = None
-    pages: List[Dict[str, Any]] = Field(default_factory=list)
-    ocr_results: List[Dict[str, Any]] = Field(default_factory=list)
-    jobs: List[Dict[str, Any]] = Field(default_factory=list)
+    pages: List[DocumentPageOut] = Field(default_factory=list)
+    ocr_results: List[DocumentOcrResultOut] = Field(default_factory=list)
+    jobs: List[DocumentJobOut] = Field(default_factory=list)
     page_count: Optional[int] = None
     image_paths: Optional[List[str]] = None
+
+
+# ---------------------------------------------------------------------------
+# DocumentField by-section
+# ---------------------------------------------------------------------------
+
+class FieldBySectionItemOut(BaseModel):
+    """Champ minimal dans la réponse par section."""
+
+    id: int
+    field_key: Optional[str] = None
+
+
+class DocumentFieldsBySectionOut(BaseModel):
+    """Reponse GET /documents/{id}/fields/by-section."""
+
+    document_id: int
+    sections: Dict[str, List[FieldBySectionItemOut]]
 
 
 # ---------------------------------------------------------------------------

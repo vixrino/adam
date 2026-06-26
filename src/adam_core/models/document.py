@@ -92,5 +92,15 @@ class Document(Base):
         lazy="noload",
     )
 
+    @property
+    def page_count(self) -> Optional[int]:
+        """Nombre de pages du fichier associé.
+
+        Retourne None si la relation file n'a pas été chargée (lazy='noload').
+        Utiliser selectinload(Document.file) pour peupler cette valeur.
+        """
+        f = self.__dict__.get("file")
+        return f.page_count if f is not None else None
+
     def __repr__(self) -> str:
         return f"<Document id={self.id} file_name={self.file_name!r} status={self.status!r}>"

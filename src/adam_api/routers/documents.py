@@ -9,13 +9,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from adam_api.dependencies.db import get_db
-from adam_core.enums.status import DocumentFieldStatus, DocumentStatus
 from adam_core.models import Document, DocumentField
 from adam_core.schemas.responses import (
+    DocumentFieldInPageOut,
     DocumentFieldOut,
     DocumentFieldPatchOut,
+    DocumentFieldsBySectionOut,
     DocumentFullOut,
+    DocumentJobOut,
+    DocumentOcrResultOut,
     DocumentOut,
+    DocumentPageOut,
+    DocumentSectionOut,
+    FieldBySectionItemOut,
     FileRefOut,
 )
 from adam_core.utils.exceptions import raise_conflict, raise_not_found
@@ -48,7 +54,8 @@ async def list_documents(
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
 ) -> List[Document]:
-    query = select(Document).limit(limit)
+    # CA-2 : selectinload(file) pour peupler page_count via Document.page_count
+    query = select(Document).options(selectinload(Document.file)).limit(limit)
     if dataset_id is not None:
         query = query.where(Document.dataset_id == dataset_id)
     if status is not None:
@@ -76,22 +83,35 @@ async def get_document(
         doc = result.scalar_one_or_none()
         if not doc:
             raise_not_found(Document)
-        pages: Dict[int, Dict[str, Any]] = {}
+
+        # Construire les pages avec des schémas typés
+        pages_dict: Dict[int, Dict[str, Any]] = {}
         for df in doc.document_fields:
             fs = df.field_spec
             page_num = fs.page if fs else 0
-            pages.setdefault(page_num, {"page_number": page_num, "sections": {}})
+            if page_num not in pages_dict:
+                pages_dict[page_num] = {"page_number": page_num, "sections": {}}
             sec_id = fs.section_id if fs else "unknown"
-            pages[page_num]["sections"].setdefault(sec_id, {"id": sec_id, "fields": []})
-            pages[page_num]["sections"][sec_id]["fields"].append(
-                {
-                    "id": df.id,
-                    "field_key": fs.field_key if fs else None,
-                    "ocr_value": df.ocr_value,
-                    "resolved_value": df.resolved_value,
-                    "status": df.status,
-                }
+            if sec_id not in pages_dict[page_num]["sections"]:
+                pages_dict[page_num]["sections"][sec_id] = {"id": sec_id, "fields": []}
+            pages_dict[page_num]["sections"][sec_id]["fields"].append(
+                DocumentFieldInPageOut(
+                    id=df.id,
+                    field_key=fs.field_key if fs else None,
+                    ocr_value=df.ocr_value,
+                    resolved_value=df.resolved_value,
+                    status=df.status,
+                )
             )
+
+        pages_list: List[DocumentPageOut] = []
+        for page_num, page_data in sorted(pages_dict.items()):
+            sections = [
+                DocumentSectionOut(id=sec_id, fields=sec_data["fields"])
+                for sec_id, sec_data in page_data["sections"].items()
+            ]
+            pages_list.append(DocumentPageOut(page_number=page_num, sections=sections))
+
         file_ref = FileRefOut(id=doc.file.id, path=doc.file.file_path) if doc.file else None
         return DocumentFullOut(
             id=doc.id,
@@ -99,11 +119,19 @@ async def get_document(
             status=doc.status,
             metadata=doc.metadata_,
             file=file_ref,
-            pages=list(pages.values()),
-            ocr_results=[{"id": o.id} for o in doc.ocr_results],
-            jobs=[{"id": j.id, "state": j.state} for j in doc.jobs],
+            pages=pages_list,
+            ocr_results=[DocumentOcrResultOut(id=o.id) for o in doc.ocr_results],
+            jobs=[DocumentJobOut(id=j.id, state=j.state) for j in doc.jobs],
+            page_count=doc.file.page_count if doc.file else None,
         )
-    doc = await db.get(Document, document_id)
+
+    # Vue simple — CA-2 : charger le fichier pour page_count
+    result = await db.execute(
+        select(Document)
+        .where(Document.id == document_id)
+        .options(selectinload(Document.file))
+    )
+    doc = result.scalar_one_or_none()
     if not doc:
         raise_not_found(Document)
     return DocumentFullOut(
@@ -111,6 +139,7 @@ async def get_document(
         file_name=doc.file_name,
         status=doc.status,
         metadata=doc.metadata_,
+        page_count=doc.file.page_count if doc.file else None,
     )
 
 
@@ -126,22 +155,25 @@ async def get_document_fields(
     return rows
 
 
-@router.get("/{document_id}/fields/by-section", response_model=Dict[str, Any])
+@router.get("/{document_id}/fields/by-section", response_model=DocumentFieldsBySectionOut)
 async def get_document_fields_by_section(
     document_id: int, db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
+) -> DocumentFieldsBySectionOut:
     result = await db.execute(
         select(DocumentField)
         .where(DocumentField.document_id == document_id)
         .options(selectinload(DocumentField.field_spec))
     )
-    sections: Dict[str, list] = {}
+    sections: Dict[str, List[FieldBySectionItemOut]] = {}
     for df in result.scalars().all():
         sec = df.field_spec.section_id if df.field_spec else "unknown"
         sections.setdefault(sec, []).append(
-            {"id": df.id, "field_key": df.field_spec.field_key if df.field_spec else None}
+            FieldBySectionItemOut(
+                id=df.id,
+                field_key=df.field_spec.field_key if df.field_spec else None,
+            )
         )
-    return {"document_id": document_id, "sections": sections}
+    return DocumentFieldsBySectionOut(document_id=document_id, sections=sections)
 
 
 @router.post("", response_model=DocumentOut, status_code=201)
@@ -154,6 +186,8 @@ async def create_document(body: DocumentIn, db: AsyncSession = Depends(get_db)) 
     )
     db.add(doc)
     await db.flush()
+    # CA-2 : recharger avec le fichier pour peupler page_count
+    await db.refresh(doc, ["file"])
     return doc
 
 
@@ -161,7 +195,12 @@ async def create_document(body: DocumentIn, db: AsyncSession = Depends(get_db)) 
 async def patch_document(
     document_id: int, body: DocumentPatch, db: AsyncSession = Depends(get_db)
 ) -> Document:
-    doc = await db.get(Document, document_id)
+    result = await db.execute(
+        select(Document)
+        .where(Document.id == document_id)
+        .options(selectinload(Document.file))
+    )
+    doc = result.scalar_one_or_none()
     if not doc:
         raise_not_found(Document)
     if body.expected_current_status and doc.status != body.expected_current_status:
