@@ -1,17 +1,18 @@
 """Jobs - tache de labellisation par operateur."""
 
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from adam_api.dependencies.db import get_db
 from adam_api.services.consensus import try_resolve
 from adam_core.enums.states import JobState
-from adam_core.enums.status import DocumentFieldStatus, DocumentStatus, JobStep
-from adam_core.models import Document, DocumentField, FieldProposal, Job
+from adam_core.enums.status import DocumentStatus, JobStep
+from adam_core.models import Document, FieldProposal, Job
+from adam_core.schemas.responses import FieldProposalOut, JobCreatedOut, JobOut, JobSubmitOut
 from adam_core.utils.exceptions import raise_not_found, raise_unprocessable
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
@@ -30,13 +31,13 @@ class FieldProposalIn(BaseModel):
     reason: Optional[str] = None
 
 
-@router.get("", response_model=List[Dict[str, Any]])
+@router.get("", response_model=List[JobOut])
 async def list_jobs(
     dataset_id: Optional[int] = None,
     document_id: Optional[int] = None,
     state: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-) -> List[Dict[str, Any]]:
+) -> List[Job]:
     query = select(Job)
     if dataset_id is not None:
         query = query.where(Job.dataset_id == dataset_id)
@@ -44,30 +45,29 @@ async def list_jobs(
         query = query.where(Job.document_id == document_id)
     if state is not None:
         query = query.where(Job.state == state)
-    rows = (await db.execute(query)).scalars().all()
-    return [{"id": r.id, "state": r.state, "document_id": r.document_id} for r in rows]
+    return list((await db.execute(query)).scalars().all())
 
 
-@router.get("/{job_id}", response_model=Dict[str, Any])
-async def get_job(job_id: int, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+@router.get("/{job_id}", response_model=JobOut)
+async def get_job(job_id: int, db: AsyncSession = Depends(get_db)) -> Job:
     row = await db.get(Job, job_id)
     if not row:
         raise_not_found(Job)
-    return {"id": row.id, "state": row.state, "step": row.step}
+    return row
 
 
-@router.post("", response_model=Dict[str, Any], status_code=201)
-async def create_job(body: JobIn, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+@router.post("", response_model=JobCreatedOut, status_code=201)
+async def create_job(body: JobIn, db: AsyncSession = Depends(get_db)) -> JobCreatedOut:
     row = Job(**body.model_dump())
     db.add(row)
     await db.flush()
-    return {"id": row.id, "state": row.state}
+    return JobCreatedOut(id=row.id, state=row.state)
 
 
-@router.post("/{job_id}/proposals", response_model=Dict[str, Any])
+@router.post("/{job_id}/proposals", response_model=FieldProposalOut)
 async def propose_field_value(
     job_id: int, body: FieldProposalIn, db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
+) -> FieldProposalOut:
     job = await db.get(Job, job_id)
     if not job:
         raise_not_found(Job)
@@ -83,15 +83,15 @@ async def propose_field_value(
     )
     db.add(proposal)
     await db.flush()
-    return {"id": proposal.id, "value": proposal.value}
+    return FieldProposalOut(id=proposal.id, value=proposal.value)
 
 
-@router.post("/{job_id}/submit", response_model=Dict[str, Any])
+@router.post("/{job_id}/submit", response_model=JobSubmitOut)
 async def submit_job(
     job_id: int,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-) -> Dict[str, Any]:
+) -> JobSubmitOut:
     job = await db.get(Job, job_id)
     if not job:
         raise_not_found(Job)
@@ -101,4 +101,4 @@ async def submit_job(
         doc.status = DocumentStatus.PENDING_CONSENSUS.value
     await db.flush()
     background_tasks.add_task(try_resolve, job.document_id, job.dataset_id)
-    return {"id": job.id, "state": job.state}
+    return JobSubmitOut(id=job.id, state=job.state)

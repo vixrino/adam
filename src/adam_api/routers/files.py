@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from adam_api.dependencies.db import get_db
 from adam_core.models import Document, File
+from adam_core.schemas.responses import DocumentOut, FileOut
 from adam_core.utils.exceptions import raise_already_exists, raise_not_found
 
 router = APIRouter(prefix="/files", tags=["Files"])
@@ -28,28 +29,28 @@ class FilePatch(BaseModel):
     page_count: Optional[int] = Field(default=None, ge=1)
 
 
-@router.get("", response_model=List[Dict[str, Any]])
-async def list_files(db: AsyncSession = Depends(get_db)) -> List[Dict[str, Any]]:
-    rows = (await db.execute(select(File))).scalars().all()
-    return [{"id": r.id, "file_path": r.file_path, "sha256_checksum": r.sha256_checksum} for r in rows]
+@router.get("", response_model=List[FileOut])
+async def list_files(db: AsyncSession = Depends(get_db)) -> List[File]:
+    return list((await db.execute(select(File))).scalars().all())
 
 
-@router.get("/{file_id}", response_model=Dict[str, Any])
-async def get_file(file_id: int, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+@router.get("/{file_id}", response_model=FileOut)
+async def get_file(file_id: int, db: AsyncSession = Depends(get_db)) -> File:
     row = await db.get(File, file_id)
     if not row:
         raise_not_found(File)
-    return {"id": row.id, "file_path": row.file_path, "page_count": row.page_count}
+    return row
 
 
-@router.get("/{file_id}/documents", response_model=List[Dict[str, Any]])
-async def get_file_documents(file_id: int, db: AsyncSession = Depends(get_db)) -> List[Dict[str, Any]]:
-    rows = (await db.execute(select(Document).where(Document.file_id == file_id))).scalars().all()
-    return [{"id": r.id, "file_name": r.file_name} for r in rows]
+@router.get("/{file_id}/documents", response_model=List[DocumentOut])
+async def get_file_documents(file_id: int, db: AsyncSession = Depends(get_db)) -> List[Document]:
+    return list(
+        (await db.execute(select(Document).where(Document.file_id == file_id))).scalars().all()
+    )
 
 
-@router.post("", response_model=Dict[str, Any], status_code=201)
-async def create_file(body: FileIn, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+@router.post("", response_model=FileOut, status_code=201)
+async def create_file(body: FileIn, db: AsyncSession = Depends(get_db)) -> File:
     existing = (
         await db.execute(select(File).where(File.sha256_checksum == body.sha256_checksum))
     ).scalar_one_or_none()
@@ -58,15 +59,15 @@ async def create_file(body: FileIn, db: AsyncSession = Depends(get_db)) -> Dict[
     row = File(**body.model_dump())
     db.add(row)
     await db.flush()
-    return {"id": row.id, "file_path": row.file_path}
+    return row
 
 
-@router.patch("/{file_id}", response_model=Dict[str, Any])
-async def patch_file(file_id: int, body: FilePatch, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+@router.patch("/{file_id}", response_model=FileOut)
+async def patch_file(file_id: int, body: FilePatch, db: AsyncSession = Depends(get_db)) -> File:
     row = await db.get(File, file_id)
     if not row:
         raise_not_found(File)
     for key, val in body.model_dump(exclude_unset=True).items():
         setattr(row, key, val)
     await db.flush()
-    return {"id": row.id, "file_path": row.file_path}
+    return row

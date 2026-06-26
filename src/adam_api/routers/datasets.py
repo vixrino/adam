@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, File as UploadField, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.functions import count
 
 from adam_api.core.config import settings
@@ -16,6 +15,7 @@ from adam_api.services.ingestion import ingest_pdf, looks_like_pdf
 from adam_core.enums.ocr import OcrProvider
 from adam_core.enums.status import DatasetStatus, DocumentStatus
 from adam_core.models import Dataset, Document
+from adam_core.schemas.responses import DatasetOut, DatasetStatsOut, IngestionOut, FileIngestionItemOut
 from adam_core.utils.exceptions import raise_not_found, raise_unprocessable
 from adam_core.utils.logging import get_logger
 
@@ -45,31 +45,30 @@ class DatasetPatch(BaseModel):
     configs: Optional[Dict[str, Any]] = None
 
 
-@router.get("", response_model=List[Dict[str, Any]])
+@router.get("", response_model=List[DatasetOut])
 async def list_datasets(
     project_id: Optional[int] = None,
     status: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-) -> List[Dict[str, Any]]:
+) -> List[Dataset]:
     query = select(Dataset)
     if project_id is not None:
         query = query.where(Dataset.project_id == project_id)
     if status is not None:
         query = query.where(Dataset.status == status)
-    rows = (await db.execute(query)).scalars().all()
-    return [{"id": r.id, "name": r.name, "status": r.status, "project_id": r.project_id} for r in rows]
+    return list((await db.execute(query)).scalars().all())
 
 
-@router.get("/{dataset_id}", response_model=Dict[str, Any])
-async def get_dataset(dataset_id: int, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+@router.get("/{dataset_id}", response_model=DatasetOut)
+async def get_dataset(dataset_id: int, db: AsyncSession = Depends(get_db)) -> Dataset:
     row = await db.get(Dataset, dataset_id)
     if not row:
         raise_not_found(Dataset)
-    return {"id": row.id, "name": row.name, "status": row.status, "schema_id": row.schema_id}
+    return row
 
 
-@router.get("/{dataset_id}/stats", response_model=Dict[str, Any])
-async def get_dataset_stats(dataset_id: int, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+@router.get("/{dataset_id}/stats", response_model=DatasetStatsOut)
+async def get_dataset_stats(dataset_id: int, db: AsyncSession = Depends(get_db)) -> DatasetStatsOut:
     row = await db.get(Dataset, dataset_id)
     if not row:
         raise_not_found(Dataset)
@@ -83,34 +82,34 @@ async def get_dataset_stats(dataset_id: int, db: AsyncSession = Depends(get_db))
             .where(Document.status == DocumentStatus.VALIDATED.value)
         )
     ).scalar_one()
-    return {"dataset_id": dataset_id, "documents_total": total, "documents_validated": validated}
+    return DatasetStatsOut(dataset_id=dataset_id, documents_total=total, documents_validated=validated)
 
 
-@router.post("", response_model=Dict[str, Any], status_code=201)
-async def create_dataset(body: DatasetIn, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+@router.post("", response_model=DatasetOut, status_code=201)
+async def create_dataset(body: DatasetIn, db: AsyncSession = Depends(get_db)) -> Dataset:
     row = Dataset(**body.model_dump())
     db.add(row)
     await db.flush()
-    return {"id": row.id, "name": row.name, "status": row.status}
+    return row
 
 
-@router.patch("/{dataset_id}", response_model=Dict[str, Any])
+@router.patch("/{dataset_id}", response_model=DatasetOut)
 async def patch_dataset(
     dataset_id: int, body: DatasetPatch, db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
+) -> Dataset:
     row = await db.get(Dataset, dataset_id)
     if not row:
         raise_not_found(Dataset)
     for key, val in body.model_dump(exclude_unset=True).items():
         setattr(row, key, val)
     await db.flush()
-    return {"id": row.id, "name": row.name, "status": row.status}
+    return row
 
 
-@router.patch("/{dataset_id}/status", response_model=Dict[str, Any])
+@router.patch("/{dataset_id}/status", response_model=DatasetOut)
 async def patch_dataset_status(
     dataset_id: int, status: str, db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
+) -> Dataset:
     if status not in {s.value for s in DatasetStatus}:
         raise_unprocessable(f"Statut invalide: {status}")
     row = await db.get(Dataset, dataset_id)
@@ -118,15 +117,15 @@ async def patch_dataset_status(
         raise_not_found(Dataset)
     row.status = status
     await db.flush()
-    return {"id": row.id, "status": row.status}
+    return row
 
 
-@router.post("/{dataset_id}/documents", response_model=Dict[str, Any])
+@router.post("/{dataset_id}/documents", response_model=IngestionOut)
 async def ingest_documents(
     dataset_id: int,
     files: List[UploadFile] = UploadField(..., description="Un ou plusieurs fichiers PDF"),
     db: AsyncSession = Depends(get_db),
-) -> Dict[str, Any]:
+) -> IngestionOut:
     """Ingestion multipart de PDF bruts vers le PVC (statut RECEIVED).
 
     Repond 200 dans tous les cas (y compris doublons), avec un detail par
@@ -137,23 +136,22 @@ async def ingest_documents(
         raise_not_found(Dataset)
 
     pvc_root = Path(settings.pvc_mount_path)
-    results: List[Dict[str, Any]] = []
+    items: List[FileIngestionItemOut] = []
     for upload in files:
         file_name = upload.filename or "sans_nom.pdf"
         content = await upload.read()
         if not looks_like_pdf(content, content_type=upload.content_type, file_name=file_name):
             logger.warning("Fichier ignore (non PDF) [dataset_id=%s file_name=%s]", dataset_id, file_name)
-            results.append({"file_name": file_name, "status": "rejected", "reason": "non-PDF"})
+            items.append(FileIngestionItemOut(file_name=file_name, status="rejected", reason="non-PDF"))
             continue
-        results.append(
-            await ingest_pdf(db, dataset, file_name=file_name, content=content, pvc_root=pvc_root)
-        )
+        raw = await ingest_pdf(db, dataset, file_name=file_name, content=content, pvc_root=pvc_root)
+        items.append(FileIngestionItemOut(**raw))
 
-    return {
-        "dataset_id": dataset_id,
-        "received": len(results),
-        "created": sum(1 for r in results if r["status"] == "created"),
-        "already_exists": sum(1 for r in results if r["status"] == "already_exists"),
-        "rejected": sum(1 for r in results if r["status"] == "rejected"),
-        "results": results,
-    }
+    return IngestionOut(
+        dataset_id=dataset_id,
+        received=len(items),
+        created=sum(1 for r in items if r.status == "created"),
+        already_exists=sum(1 for r in items if r.status == "already_exists"),
+        rejected=sum(1 for r in items if r.status == "rejected"),
+        results=items,
+    )
