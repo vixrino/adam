@@ -1,5 +1,5 @@
 """Tests unitaires du router /jobs."""
-from tests.conftest import (
+from tests.unit.conftest import (
     fake_doc,
     fake_document_field,
     fake_field_proposal,

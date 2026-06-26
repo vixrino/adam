@@ -1,5 +1,5 @@
 """Tests unitaires du router /datasets."""
-from tests.conftest import fake_dataset, make_result
+from tests.unit.conftest import fake_dataset, make_result
 
 
 # ---------------------------------------------------------------------------

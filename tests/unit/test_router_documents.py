@@ -1,7 +1,7 @@
 """Tests unitaires du router /documents."""
 from unittest.mock import MagicMock
 
-from tests.conftest import (
+from tests.unit.conftest import (
     fake_doc,
     fake_document_field,
     fake_file,
