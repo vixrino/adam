@@ -153,7 +153,7 @@ async def seed_hardcoded(session: AsyncSession, project: Project) -> None:
     field_specs = []
     for i, (sec_id, sec_label, key, label, ftype, page) in enumerate(HARDCODED_FIELD_SPECS):
        fs = FieldSpec(
-           schema_id=schema.id, name=key, page=page,
+           schema_id=schema.id, page=page,
            section_id=sec_id, section_label=sec_label,
            field_key=key, display_label=label,
            value_type=ftype, required=False,
