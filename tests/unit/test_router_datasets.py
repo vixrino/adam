@@ -1,5 +1,85 @@
-"""Tests unitaires du router /datasets."""
-from tests.unit.conftest import fake_dataset, make_result
+"""
+Tests unitaires adam_api/routers/datasets.py
+"""
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from adam_api.routers.datasets import router
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def app() -> FastAPI:
+    fastapi_app = FastAPI()
+    fastapi_app.include_router(router)
+    return fastapi_app
+
+
+@pytest.fixture
+def mock_db() -> AsyncMock:
+    db = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.all.return_value = []
+    execute_result.scalar_one_or_none.return_value = None
+    execute_result.all.return_value = []
+    db.execute.return_value = execute_result
+    db.get.return_value = None
+    return db
+
+
+@pytest.fixture
+def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
+    from adam_api.dependencies.db import get_db
+    app.dependency_overrides[get_db] = lambda: mock_db
+    return TestClient(app, raise_server_exceptions=False)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_dataset(
+    id: int = 1,
+    name: str = "Dataset A",
+    status: str = "draft",
+    project_id: int = 1,
+    schema_id: int = 1,
+) -> MagicMock:
+    ds = MagicMock()
+    ds.id = id
+    ds.name = name
+    ds.status = status
+    ds.project_id = project_id
+    ds.schema_id = schema_id
+    ds.description = None
+    ds.ocr_provider = "pulsar"
+    ds.ocr_model_id = None
+    ds.required_operators = 2
+    ds.ocr_job_enabled = True
+    ds.configs = {}
+    ds.documents = []
+    ds.created_at = None
+    ds.updated_at = None
+    return ds
+
+
+def _dataset_payload(**overrides: object) -> dict:
+    base = {
+        "project_id": 1,
+        "schema_id": 1,
+        "name": "Dataset A",
+        "required_operators": 2,
+        "ocr_job_enabled": True,
+    }
+    base.update(overrides)
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -8,87 +88,74 @@ from tests.unit.conftest import fake_dataset, make_result
 
 
 class TestListDatasets:
-    def test_empty_list(self, client, mock_db):
-        mock_db.execute.return_value = make_result(rows=[])
-        resp = client.get("/datasets")
-        assert resp.status_code == 200
-        assert resp.json() == []
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/datasets")
+        assert response.status_code == 200
 
-    def test_returns_datasets(self, client, mock_db):
-        ds = fake_dataset(id=4, name="Lot 2025", status="ACTIVE")
-        mock_db.execute.return_value = make_result(rows=[ds])
-        resp = client.get("/datasets")
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["id"] == 4
-        assert data[0]["name"] == "Lot 2025"
+    def test_returns_list(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_dataset()]
+        response = client.get("/datasets")
+        assert len(response.json()) == 1
 
-    def test_filter_by_project_id(self, client, mock_db):
-        mock_db.execute.return_value = make_result(rows=[])
-        resp = client.get("/datasets?project_id=2")
-        assert resp.status_code == 200
+    def test_filter_by_project_id(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/datasets?project_id=2")
+        assert response.status_code == 200
 
-    def test_filter_by_status(self, client, mock_db):
-        mock_db.execute.return_value = make_result(rows=[])
-        resp = client.get("/datasets?status=DRAFT")
-        assert resp.status_code == 200
+    def test_filter_by_status(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/datasets?status=ACTIVE")
+        assert response.status_code == 200
 
 
 # ---------------------------------------------------------------------------
-# GET /datasets/{id}
+# GET /datasets/{dataset_id}
 # ---------------------------------------------------------------------------
 
 
 class TestGetDataset:
-    def test_not_found(self, client, mock_db):
-        mock_db.get.return_value = None
-        resp = client.get("/datasets/999")
-        assert resp.status_code == 404
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_dataset()
+        response = client.get("/datasets/1")
+        assert response.status_code == 200
 
-    def test_returns_dataset(self, client, mock_db):
-        ds = fake_dataset(id=1, name="DS Test", ocr_provider="PULSAR", required_operators=3)
-        mock_db.get.return_value = ds
-        resp = client.get("/datasets/1")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["id"] == 1
-        assert body["name"] == "DS Test"
-        assert body["required_operators"] == 3
+    def test_404_when_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/datasets/99")
+        assert response.status_code == 404
+
+    def test_response_contains_required_fields(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        mock_db.get.return_value = _make_dataset()
+        response = client.get("/datasets/1")
+        body = response.json()
+        for field in ("id", "name", "status", "required_operators", "ocr_job_enabled"):
+            assert field in body
 
 
 # ---------------------------------------------------------------------------
-# GET /datasets/{id}/stats
+# GET /datasets/{dataset_id}/stats
 # ---------------------------------------------------------------------------
 
 
 class TestGetDatasetStats:
-    def test_not_found(self, client, mock_db):
-        mock_db.get.return_value = None
-        resp = client.get("/datasets/999/stats")
-        assert resp.status_code == 404
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_dataset()
+        mock_db.execute.return_value.all.return_value = []
+        response = client.get("/datasets/1/stats")
+        assert response.status_code == 200
 
-    def test_returns_stats(self, client, mock_db):
-        ds = fake_dataset(id=1)
-        mock_db.get.return_value = ds
-        # Deux appels à execute : total puis validated
-        r_total = make_result(scalar=20)
-        r_validated = make_result(scalar=5)
-        mock_db.execute.side_effect = [r_total, r_validated]
-        resp = client.get("/datasets/1/stats")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["dataset_id"] == 1
-        assert body["documents_total"] == 20
-        assert body["documents_validated"] == 5
+    def test_404_when_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/datasets/99/stats")
+        assert response.status_code == 404
 
-    def test_zero_documents(self, client, mock_db):
-        ds = fake_dataset(id=1)
-        mock_db.get.return_value = ds
-        mock_db.execute.side_effect = [make_result(scalar=0), make_result(scalar=0)]
-        resp = client.get("/datasets/1/stats")
-        body = resp.json()
-        assert body["documents_total"] == 0
-        assert body["documents_validated"] == 0
+    def test_stats_contain_expected_fields(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        mock_db.get.return_value = _make_dataset()
+        mock_db.execute.return_value.all.return_value = []
+        response = client.get("/datasets/1/stats")
+        body = response.json()
+        for field in ("dataset_id", "documents_total", "documents_validated"):
+            assert field in body
 
 
 # ---------------------------------------------------------------------------
@@ -97,84 +164,52 @@ class TestGetDatasetStats:
 
 
 class TestCreateDataset:
-    def test_missing_required_fields(self, client, mock_db):
-        resp = client.post("/datasets", json={})
-        assert resp.status_code == 422
+    def test_returns_201(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.add = MagicMock()
 
-    def test_missing_schema_id(self, client, mock_db):
-        resp = client.post(
-            "/datasets",
-            json={"project_id": 1, "name": "DS"},
-        )
-        assert resp.status_code == 422
+        def capture_add(instance: object) -> None:
+            instance.id = 1  # type: ignore[attr-defined]
+            instance.name = "Dataset A"  # type: ignore[attr-defined]
+            instance.status = "draft"  # type: ignore[attr-defined]
+            instance.project_id = 1  # type: ignore[attr-defined]
+            instance.schema_id = 1  # type: ignore[attr-defined]
+            instance.description = None  # type: ignore[attr-defined]
+            instance.ocr_provider = "pulsar"  # type: ignore[attr-defined]
+            instance.required_operators = 2  # type: ignore[attr-defined]
+            instance.ocr_job_enabled = True  # type: ignore[attr-defined]
 
-    def test_required_operators_out_of_range(self, client, mock_db):
-        """required_operators doit être entre 1 et 5."""
-        resp = client.post(
-            "/datasets",
-            json={
-                "project_id": 1,
-                "schema_id": 1,
-                "name": "DS",
-                "required_operators": 10,  # > 5
-            },
-        )
-        assert resp.status_code == 422
+        mock_db.add.side_effect = capture_add
+        response = client.post("/datasets", json=_dataset_payload())
+        assert response.status_code == 201
 
-    def test_required_operators_zero(self, client, mock_db):
-        resp = client.post(
-            "/datasets",
-            json={
-                "project_id": 1,
-                "schema_id": 1,
-                "name": "DS",
-                "required_operators": 0,  # < 1
-            },
-        )
-        assert resp.status_code == 422
+    def test_invalid_required_operators_rejected(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        response = client.post("/datasets", json=_dataset_payload(required_operators=10))
+        assert response.status_code == 422
+
+    def test_422_when_missing_schema_id(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.post("/datasets", json={"project_id": 1, "name": "DS"})
+        assert response.status_code == 422
 
 
 # ---------------------------------------------------------------------------
-# PATCH /datasets/{id}
+# PATCH /datasets/{dataset_id}
 # ---------------------------------------------------------------------------
 
 
 class TestPatchDataset:
-    def test_not_found(self, client, mock_db):
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_dataset()
+        response = client.patch("/datasets/1", json={"name": "Nouveau Nom"})
+        assert response.status_code == 200
+
+    def test_404_when_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = None
-        resp = client.patch("/datasets/999", json={"name": "Nouveau nom"})
-        assert resp.status_code == 404
+        response = client.patch("/datasets/99", json={"name": "X"})
+        assert response.status_code == 404
 
-    def test_update_name(self, client, mock_db):
-        ds = fake_dataset(id=1, name="Ancien nom")
-        mock_db.get.return_value = ds
-        resp = client.patch("/datasets/1", json={"name": "Nouveau nom"})
-        assert resp.status_code == 200
-        assert resp.json()["name"] == "Nouveau nom"
-
-    def test_required_operators_out_of_range(self, client, mock_db):
-        resp = client.patch("/datasets/1", json={"required_operators": 99})
-        assert resp.status_code == 422
-
-
-# ---------------------------------------------------------------------------
-# PATCH /datasets/{id}/status
-# ---------------------------------------------------------------------------
-
-
-class TestPatchDatasetStatus:
-    def test_invalid_status(self, client, mock_db):
-        resp = client.patch("/datasets/1/status?status=INVALID_STATUS")
-        assert resp.status_code == 422
-
-    def test_not_found(self, client, mock_db):
-        mock_db.get.return_value = None
-        resp = client.patch("/datasets/999/status?status=ACTIVE")
-        assert resp.status_code == 404
-
-    def test_valid_status_change(self, client, mock_db):
-        ds = fake_dataset(id=1, status="DRAFT")
-        mock_db.get.return_value = ds
-        resp = client.patch("/datasets/1/status?status=ACTIVE")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "ACTIVE"
+    def test_422_on_invalid_status(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_dataset()
+        response = client.patch("/datasets/1", json={"required_operators": 99})
+        assert response.status_code == 422

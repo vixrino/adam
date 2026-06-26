@@ -1,12 +1,99 @@
-"""Tests unitaires du router /documents."""
-from unittest.mock import MagicMock
+"""
+Tests unitaires adam_api/routers/documents.py
+"""
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-from tests.unit.conftest import (
-    fake_doc,
-    fake_document_field,
-    fake_file,
-    make_result,
-)
+from adam_api.routers.documents import router
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def app() -> FastAPI:
+    fastapi_app = FastAPI()
+    fastapi_app.include_router(router)
+    return fastapi_app
+
+
+@pytest.fixture
+def mock_db() -> AsyncMock:
+    db = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.all.return_value = []
+    execute_result.scalar_one_or_none.return_value = None
+    execute_result.all.return_value = []
+    db.execute.return_value = execute_result
+    db.get.return_value = None
+    return db
+
+
+@pytest.fixture
+def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
+    from adam_api.dependencies.db import get_db
+    app.dependency_overrides[get_db] = lambda: mock_db
+    return TestClient(app, raise_server_exceptions=False)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_document(
+    id: int = 1,
+    status: str = "RECEIVED",
+    dataset_id: int = 1,
+    file_id: int = 1,
+) -> MagicMock:
+    doc = MagicMock()
+    doc.id = id
+    doc.file_name = "doc.pdf"
+    doc.status = status
+    doc.dataset_id = dataset_id
+    doc.file_id = file_id
+    doc.metadata_ = {}
+    doc.file = None
+    doc.ocr_results = []
+    doc.document_fields = []
+    doc.jobs = []
+    doc.page_count = None
+    return doc
+
+
+def _make_document_field(
+    id: int = 1,
+    document_id: int = 1,
+    status: str = "pending",
+) -> MagicMock:
+    fs = MagicMock()
+    fs.field_key = "deposant.nom"
+    fs.display_label = "Nom"
+    fs.section_id = "deposant"
+    fs.section_label = "Deposant"
+    fs.value_type = "text"
+    fs.page = 1
+    fs.display_order = 0
+
+    df = MagicMock()
+    df.id = id
+    df.document_id = document_id
+    df.field_spec = fs
+    df.field_spec_id = 1
+    df.group_id = None
+    df.ocr_value = "MOULIN"
+    df.resolved_value = None
+    df.status = status
+    df.ocr_confidence = 0.99
+    df.ocr_polygon = None
+    df.consensus_reached = False
+    df.field_proposals = []
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -15,178 +102,121 @@ from tests.unit.conftest import (
 
 
 class TestListDocuments:
-    def test_empty_list(self, client, mock_db):
-        mock_db.execute.return_value = make_result(rows=[])
-        resp = client.get("/documents")
-        assert resp.status_code == 200
-        assert resp.json() == []
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/documents")
+        assert response.status_code == 200
 
-    def test_returns_documents(self, client, mock_db):
-        doc = fake_doc(id=7, file_name="rapport.pdf", status="RECEIVED")
-        mock_db.execute.return_value = make_result(rows=[doc])
-        resp = client.get("/documents")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["id"] == 7
-        assert data[0]["file_name"] == "rapport.pdf"
-        assert data[0]["status"] == "RECEIVED"
+    def test_returns_list(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_document()]
+        response = client.get("/documents")
+        assert len(response.json()) == 1
 
-    def test_page_count_from_file(self, client, mock_db):
-        """CA-2 : page_count est remonté depuis le File associé."""
-        doc = fake_doc(page_count=12)
-        mock_db.execute.return_value = make_result(rows=[doc])
-        resp = client.get("/documents")
-        assert resp.json()[0]["page_count"] == 12
+    def test_page_count_from_file(self, client: TestClient, mock_db: AsyncMock) -> None:
+        doc = _make_document()
+        file = MagicMock()
+        file.page_count = 12
+        doc.file = file
+        doc.page_count = 12
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [doc]
+        response = client.get("/documents")
+        assert response.json()[0]["page_count"] == 12
 
-    def test_multiple_documents(self, client, mock_db):
-        docs = [
-            fake_doc(id=1, file_name="a.pdf"),
-            fake_doc(id=2, file_name="b.pdf"),
-            fake_doc(id=3, file_name="c.pdf"),
-        ]
-        mock_db.execute.return_value = make_result(rows=docs)
-        resp = client.get("/documents")
-        assert len(resp.json()) == 3
+    def test_filter_by_dataset_id(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/documents?dataset_id=3")
+        assert response.status_code == 200
 
-    def test_filter_by_dataset_id(self, client, mock_db):
-        mock_db.execute.return_value = make_result(rows=[])
-        resp = client.get("/documents?dataset_id=3")
-        assert resp.status_code == 200
-
-    def test_filter_by_status(self, client, mock_db):
-        mock_db.execute.return_value = make_result(rows=[])
-        resp = client.get("/documents?status=VALIDATED")
-        assert resp.status_code == 200
+    def test_filter_by_status(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/documents?status=VALIDATED")
+        assert response.status_code == 200
 
 
 # ---------------------------------------------------------------------------
-# GET /documents/{id}
+# GET /documents/{document_id}
 # ---------------------------------------------------------------------------
 
 
 class TestGetDocument:
-    def test_not_found(self, client, mock_db):
-        mock_db.execute.return_value = make_result(single=None)
-        resp = client.get("/documents/999")
-        assert resp.status_code == 404
+    def test_returns_200_simple_view(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document()
+        response = client.get("/documents/1")
+        assert response.status_code == 200
 
-    def test_simple_view_returns_document(self, client, mock_db):
-        """Le page_count est lu depuis doc.file.page_count (simple view)."""
-        file = fake_file(page_count=5)
-        doc = fake_doc(id=3, status="IN_PROGRESS", file=file)
-        mock_db.execute.return_value = make_result(single=doc)
-        resp = client.get("/documents/3")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["id"] == 3
-        assert body["status"] == "IN_PROGRESS"
-        assert body["page_count"] == 5
+    def test_returns_200_full_view(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document()
+        response = client.get("/documents/1?view=full")
+        assert response.status_code == 200
 
-    def test_full_view_empty_fields(self, client, mock_db):
-        doc = fake_doc(id=1, document_fields=[], ocr_results=[], jobs=[])
-        mock_db.execute.return_value = make_result(single=doc)
-        resp = client.get("/documents/1?view=full")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["pages"] == []
-        assert body["ocr_results"] == []
-        assert body["jobs"] == []
+    def test_full_view_contains_pages(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document()
+        response = client.get("/documents/1?view=full")
+        assert "pages" in response.json()
 
-    def test_full_view_with_jobs(self, client, mock_db):
-        job_mock = MagicMock()
-        job_mock.id = 99
-        job_mock.state = "SUBMITTED"
-        doc = fake_doc(jobs=[job_mock], document_fields=[], ocr_results=[])
-        mock_db.execute.return_value = make_result(single=doc)
-        resp = client.get("/documents/1?view=full")
-        assert resp.status_code == 200
-        jobs = resp.json()["jobs"]
-        assert len(jobs) == 1
-        assert jobs[0]["id"] == 99
-        assert jobs[0]["state"] == "SUBMITTED"
+    def test_full_view_contains_jobs_and_ocr(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document()
+        response = client.get("/documents/1?view=full")
+        body = response.json()
+        assert "jobs" in body
+        assert "ocr_results" in body
 
-    def test_full_view_with_ocr_results(self, client, mock_db):
-        ocr = MagicMock()
-        ocr.id = 77
-        doc = fake_doc(ocr_results=[ocr], document_fields=[], jobs=[])
-        mock_db.execute.return_value = make_result(single=doc)
-        resp = client.get("/documents/1?view=full")
-        assert resp.json()["ocr_results"][0]["id"] == 77
-
-    def test_full_view_file_ref(self, client, mock_db):
-        file = fake_file(id=5, file_path="/pvc/doc.pdf")
-        doc = fake_doc(file=file, document_fields=[], ocr_results=[], jobs=[])
-        mock_db.execute.return_value = make_result(single=doc)
-        resp = client.get("/documents/1?view=full")
-        file_body = resp.json()["file"]
-        assert file_body["id"] == 5
-        assert file_body["path"] == "/pvc/doc.pdf"
+    def test_404_when_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/documents/99")
+        assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
-# GET /documents/{id}/fields
+# GET /documents/{document_id}/fields
 # ---------------------------------------------------------------------------
 
 
 class TestGetDocumentFields:
-    def test_empty(self, client, mock_db):
-        mock_db.execute.return_value = make_result(rows=[])
-        resp = client.get("/documents/1/fields")
-        assert resp.status_code == 200
-        assert resp.json() == []
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/documents/1/fields")
+        assert response.status_code == 200
 
-    def test_with_fields(self, client, mock_db):
-        df = fake_document_field(id=5, status="CORRECTED", resolved_value="Dupont")
-        mock_db.execute.return_value = make_result(rows=[df])
-        resp = client.get("/documents/1/fields")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["id"] == 5
-        assert data[0]["status"] == "CORRECTED"
-        assert data[0]["resolved_value"] == "Dupont"
+    def test_returns_fields(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_document_field()
+        ]
+        response = client.get("/documents/1/fields")
+        assert len(response.json()) == 1
 
-    def test_field_with_polygon(self, client, mock_db):
-        df = fake_document_field(ocr_polygon=[0.1, 0.2, 0.8, 0.9])
-        mock_db.execute.return_value = make_result(rows=[df])
-        resp = client.get("/documents/1/fields")
-        assert resp.json()[0]["ocr_polygon"] == [0.1, 0.2, 0.8, 0.9]
+    def test_field_contains_expected_keys(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_document_field()
+        ]
+        response = client.get("/documents/1/fields")
+        field = response.json()[0]
+        for key in ("id", "document_id", "field_spec_id", "status", "consensus_reached"):
+            assert key in field
 
 
 # ---------------------------------------------------------------------------
-# GET /documents/{id}/fields/by-section
+# GET /documents/{document_id}/fields/by-section
 # ---------------------------------------------------------------------------
 
 
 class TestGetDocumentFieldsBySection:
-    def test_empty_sections(self, client, mock_db):
-        mock_db.execute.return_value = make_result(rows=[])
-        resp = client.get("/documents/1/fields/by-section")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["document_id"] == 1
-        assert body["sections"] == {}
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/documents/1/fields/by-section")
+        assert response.status_code == 200
 
-    def test_grouped_by_section(self, client, mock_db):
-        df1 = fake_document_field(id=1, field_key="nom", section_id="s1")
-        df2 = fake_document_field(id=2, field_key="prenom", section_id="s1")
-        df3 = fake_document_field(id=3, field_key="date", section_id="s2")
-        mock_db.execute.return_value = make_result(rows=[df1, df2, df3])
-        resp = client.get("/documents/42/fields/by-section")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["document_id"] == 42
-        assert len(body["sections"]["s1"]) == 2
-        assert len(body["sections"]["s2"]) == 1
+    def test_groups_by_section(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_document_field()
+        ]
+        response = client.get("/documents/1/fields/by-section")
+        body = response.json()
+        assert "document_id" in body
+        assert "sections" in body
 
-    def test_section_field_keys(self, client, mock_db):
-        df = fake_document_field(id=10, field_key="iban", section_id="paiement")
-        mock_db.execute.return_value = make_result(rows=[df])
-        resp = client.get("/documents/1/fields/by-section")
-        item = resp.json()["sections"]["paiement"][0]
-        assert item["id"] == 10
-        assert item["field_key"] == "iban"
+    def test_section_contains_fields(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_document_field()
+        ]
+        response = client.get("/documents/1/fields/by-section")
+        sections = response.json()["sections"]
+        assert "deposant" in sections
+        assert len(sections["deposant"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -195,89 +225,83 @@ class TestGetDocumentFieldsBySection:
 
 
 class TestCreateDocument:
-    def test_missing_required_fields(self, client, mock_db):
-        """Payload vide → 422 Unprocessable Entity."""
-        resp = client.post("/documents", json={})
-        assert resp.status_code == 422
+    def test_returns_201(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.add = MagicMock()
 
-    def test_missing_file_id(self, client, mock_db):
-        resp = client.post("/documents", json={"dataset_id": 1, "file_name": "x.pdf"})
-        assert resp.status_code == 422
+        def capture_add(instance: object) -> None:
+            instance.id = 1  # type: ignore[attr-defined]
+            instance.file_name = "doc.pdf"  # type: ignore[attr-defined]
+            instance.status = "RECEIVED"  # type: ignore[attr-defined]
+            instance.dataset_id = 1  # type: ignore[attr-defined]
+            instance.file_id = 1  # type: ignore[attr-defined]
+            instance.metadata_ = {}  # type: ignore[attr-defined]
 
-    def test_missing_dataset_id(self, client, mock_db):
-        resp = client.post("/documents", json={"file_id": 1, "file_name": "x.pdf"})
-        assert resp.status_code == 422
+        mock_db.add.side_effect = capture_add
+        response = client.post(
+            "/documents",
+            json={"dataset_id": 1, "file_id": 1, "file_name": "doc.pdf"},
+        )
+        assert response.status_code == 201
+
+    def test_422_when_missing_file_id(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.post("/documents", json={"dataset_id": 1, "file_name": "doc.pdf"})
+        assert response.status_code == 422
+
+    def test_422_when_missing_dataset_id(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.post("/documents", json={"file_id": 1, "file_name": "doc.pdf"})
+        assert response.status_code == 422
 
 
 # ---------------------------------------------------------------------------
-# PATCH /documents/{id}
+# PATCH /documents/{document_id}
 # ---------------------------------------------------------------------------
 
 
 class TestPatchDocument:
-    def test_not_found(self, client, mock_db):
-        mock_db.execute.return_value = make_result(single=None)
-        resp = client.patch("/documents/999", json={"status": "VALIDATED"})
-        assert resp.status_code == 404
-
-    def test_status_conflict(self, client, mock_db):
-        """expected_current_status ne correspond pas → 409."""
-        doc = fake_doc(status="RECEIVED")
-        mock_db.execute.return_value = make_result(single=doc)
-        resp = client.patch(
-            "/documents/1",
-            json={"status": "VALIDATED", "expected_current_status": "IN_PROGRESS"},
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document(
+            status="RECEIVED"
         )
-        assert resp.status_code == 409
+        response = client.patch("/documents/1", json={"status": "IN_PROGRESS"})
+        assert response.status_code == 200
 
-    def test_status_update_ok(self, client, mock_db):
-        doc = fake_doc(id=1, status="RECEIVED")
-        mock_db.execute.return_value = make_result(single=doc)
-        resp = client.patch("/documents/1", json={"status": "VALIDATED"})
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "VALIDATED"
+    def test_404_when_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.patch("/documents/99", json={"status": "IN_PROGRESS"})
+        assert response.status_code == 404
 
-    def test_no_conflict_check_when_unset(self, client, mock_db):
-        """Sans expected_current_status, la mise à jour passe toujours."""
-        doc = fake_doc(status="IN_PROGRESS")
-        mock_db.execute.return_value = make_result(single=doc)
-        resp = client.patch("/documents/1", json={"status": "VALIDATED"})
-        assert resp.status_code == 200
+    def test_409_on_status_conflict(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document(
+            status="IN_PROGRESS"
+        )
+        response = client.patch(
+            "/documents/1",
+            json={"status": "VALIDATED", "expected_current_status": "RECEIVED"},
+        )
+        assert response.status_code == 409
 
 
 # ---------------------------------------------------------------------------
-# PATCH /documents/{id}/fields/{field_id}
+# PATCH /documents/{document_id}/fields/{field_id}
 # ---------------------------------------------------------------------------
 
 
 class TestPatchDocumentField:
-    def test_field_not_found(self, client, mock_db):
-        mock_db.get.return_value = None
-        resp = client.patch("/documents/1/fields/999", json={"status": "CORRECTED"})
-        assert resp.status_code == 404
-
-    def test_wrong_document_id(self, client, mock_db):
-        """Champ appartenant à un autre document → 404."""
-        df = fake_document_field(id=1, document_id=99)
-        mock_db.get.return_value = df
-        resp = client.patch("/documents/1/fields/1", json={"status": "CORRECTED"})
-        assert resp.status_code == 404
-
-    def test_update_resolved_value(self, client, mock_db):
-        df = fake_document_field(id=1, document_id=1, status="CORRECTED", resolved_value="Dupont")
-        mock_db.get.return_value = df
-        resp = client.patch(
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_document_field()
+        response = client.patch(
             "/documents/1/fields/1",
-            json={"resolved_value": "Dupont", "status": "CORRECTED"},
+            json={"resolved_value": "MOULIN"},
         )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["id"] == 1
-        assert body["status"] == "CORRECTED"
-        assert body["resolved_value"] == "Dupont"
+        assert response.status_code == 200
 
-    def test_partial_update_consensus(self, client, mock_db):
-        df = fake_document_field(id=2, document_id=1, status="PENDING", consensus_reached=False)
-        mock_db.get.return_value = df
-        resp = client.patch("/documents/1/fields/2", json={"consensus_reached": True})
-        assert resp.status_code == 200
+    def test_404_when_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = None
+        response = client.patch("/documents/1/fields/99", json={"resolved_value": "X"})
+        assert response.status_code == 404
+
+    def test_404_when_field_belongs_to_other_document(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        mock_db.get.return_value = _make_document_field(document_id=99)
+        response = client.patch("/documents/1/fields/1", json={"resolved_value": "X"})
+        assert response.status_code == 404

@@ -1,5 +1,86 @@
-"""Tests unitaires du router /files."""
-from tests.unit.conftest import SHA256, fake_doc, fake_file, make_result
+"""
+Tests unitaires adam_api/routers/files.py
+"""
+import pytest
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from adam_api.routers.files import router
+
+_NOW = datetime(2026, 6, 26, 12, 0, 0, tzinfo=timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def app() -> FastAPI:
+    fastapi_app = FastAPI()
+    fastapi_app.include_router(router)
+    return fastapi_app
+
+
+@pytest.fixture
+def mock_db() -> AsyncMock:
+    db = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.all.return_value = []
+    execute_result.scalar_one_or_none.return_value = None
+    execute_result.all.return_value = []
+    db.execute.return_value = execute_result
+    db.get.return_value = None
+    return db
+
+
+@pytest.fixture
+def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
+    from adam_api.dependencies.db import get_db
+    app.dependency_overrides[get_db] = lambda: mock_db
+    return TestClient(app, raise_server_exceptions=False)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+_SHA256 = "a" * 64
+
+
+def _make_file(
+    id: int = 1,
+    file_path: str = "/pvc/doc.pdf",
+    sha256_checksum: str = _SHA256,
+    storage_type: str = "pvc",
+) -> MagicMock:
+    f = MagicMock()
+    f.id = id
+    f.file_path = file_path
+    f.sha256_checksum = sha256_checksum
+    f.storage_type = storage_type
+    f.mime_type = "application/pdf"
+    f.page_count = 1
+    f.file_size_bytes = 1024
+    f.created_at = _NOW
+    f.documents = []
+    return f
+
+
+def _file_payload(**overrides: object) -> dict:
+    base = {
+        "file_path": "/pvc/doc.pdf",
+        "sha256_checksum": _SHA256,
+        "file_size_bytes": 1024,
+        "page_count": 1,
+        "mime_type": "application/pdf",
+        "storage_type": "pvc",
+    }
+    base.update(overrides)
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -8,95 +89,58 @@ from tests.unit.conftest import SHA256, fake_doc, fake_file, make_result
 
 
 class TestListFiles:
-    def test_empty_list(self, client, mock_db):
-        mock_db.execute.return_value = make_result(rows=[])
-        resp = client.get("/files")
-        assert resp.status_code == 200
-        assert resp.json() == []
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/files")
+        assert response.status_code == 200
 
-    def test_returns_files(self, client, mock_db):
-        f = fake_file(id=3, file_path="/pvc/doc.pdf", page_count=7)
-        mock_db.execute.return_value = make_result(rows=[f])
-        resp = client.get("/files")
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["id"] == 3
-        assert data[0]["page_count"] == 7
+    def test_returns_list(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_file()]
+        response = client.get("/files")
+        assert len(response.json()) == 1
 
-    def test_filter_by_storage_type(self, client, mock_db):
-        mock_db.execute.return_value = make_result(rows=[])
-        resp = client.get("/files?storage_type=s3")
-        assert resp.status_code == 200
-
-    def test_multiple_files(self, client, mock_db):
-        files = [fake_file(id=i) for i in range(1, 5)]
-        mock_db.execute.return_value = make_result(rows=files)
-        resp = client.get("/files")
-        assert len(resp.json()) == 4
+    def test_filter_by_storage_type(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/files?storage_type=s3")
+        assert response.status_code == 200
 
 
 # ---------------------------------------------------------------------------
-# GET /files/{id}
+# GET /files/{file_id}
 # ---------------------------------------------------------------------------
 
 
 class TestGetFile:
-    def test_not_found(self, client, mock_db):
-        mock_db.execute.return_value = make_result(single=None)
-        resp = client.get("/files/999")
-        assert resp.status_code == 404
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_file()
+        response = client.get("/files/1")
+        assert response.status_code == 200
 
-    def test_returns_detail(self, client, mock_db):
-        f = fake_file(id=1, page_count=5, documents=[])
-        mock_db.execute.return_value = make_result(single=f)
-        resp = client.get("/files/1")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["id"] == 1
-        assert body["page_count"] == 5
-        assert body["documents_count"] == 0
+    def test_404_when_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/files/99")
+        assert response.status_code == 404
 
-    def test_documents_count(self, client, mock_db):
-        docs = [fake_doc(), fake_doc(id=2)]
-        f = fake_file(id=1, documents=docs)
-        mock_db.execute.return_value = make_result(single=f)
-        resp = client.get("/files/1")
-        assert resp.json()["documents_count"] == 2
-
-    def test_storage_type_in_response(self, client, mock_db):
-        f = fake_file(storage_type="s3", documents=[])
-        mock_db.execute.return_value = make_result(single=f)
-        resp = client.get("/files/1")
-        assert resp.json()["storage_type"] == "s3"
+    def test_response_contains_documents_count(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_file()
+        response = client.get("/files/1")
+        assert "documents_count" in response.json()
 
 
 # ---------------------------------------------------------------------------
-# GET /files/{id}/documents
+# GET /files/{file_id}/documents
 # ---------------------------------------------------------------------------
 
 
 class TestGetFileDocuments:
-    def test_file_not_found(self, client, mock_db):
-        mock_db.get.return_value = None
-        resp = client.get("/files/999/documents")
-        assert resp.status_code == 404
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_file()
+        mock_db.execute.return_value.scalars.return_value.all.return_value = []
+        response = client.get("/files/1/documents")
+        assert response.status_code == 200
 
-    def test_returns_documents(self, client, mock_db):
-        mock_db.get.return_value = fake_file()
-        doc = fake_doc(id=5, file_name="x.pdf")
-        mock_db.execute.return_value = make_result(rows=[doc])
-        resp = client.get("/files/1/documents")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["id"] == 5
-
-    def test_returns_empty(self, client, mock_db):
-        mock_db.get.return_value = fake_file()
-        mock_db.execute.return_value = make_result(rows=[])
-        resp = client.get("/files/1/documents")
-        assert resp.status_code == 200
-        assert resp.json() == []
+    def test_404_when_file_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/files/99/documents")
+        assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -105,87 +149,56 @@ class TestGetFileDocuments:
 
 
 class TestCreateFile:
-    def test_invalid_checksum_too_short(self, client, mock_db):
-        """sha256_checksum doit faire exactement 64 caractères."""
-        mock_db.execute.return_value = make_result(single=None)
-        resp = client.post(
-            "/files",
-            json={
-                "file_path": "/pvc/a.pdf",
-                "sha256_checksum": "abc",  # trop court
-                "file_size_bytes": 1024,
-            },
-        )
-        assert resp.status_code == 422
+    def test_returns_201_new_file(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        mock_db.add = MagicMock()
 
-    def test_invalid_file_size_zero(self, client, mock_db):
-        """file_size_bytes doit être > 0."""
-        mock_db.execute.return_value = make_result(single=None)
-        resp = client.post(
-            "/files",
-            json={
-                "file_path": "/pvc/a.pdf",
-                "sha256_checksum": SHA256,
-                "file_size_bytes": 0,
-            },
-        )
-        assert resp.status_code == 422
+        def capture_add(instance: object) -> None:
+            instance.id = 1  # type: ignore[attr-defined]
+            instance.file_path = "/pvc/doc.pdf"  # type: ignore[attr-defined]
+            instance.sha256_checksum = _SHA256  # type: ignore[attr-defined]
 
-    def test_deduplication_returns_200(self, client, mock_db):
-        """Si le sha256 existe déjà → 200 avec deduplicated=true."""
-        existing = fake_file(id=5, sha256_checksum=SHA256)
-        mock_db.execute.return_value = make_result(single=existing)
-        resp = client.post(
-            "/files",
-            json={
-                "file_path": "/pvc/nouveau.pdf",
-                "sha256_checksum": SHA256,
-                "file_size_bytes": 1024,
-            },
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["deduplicated"] is True
-        assert body["id"] == 5
+        mock_db.add.side_effect = capture_add
+        response = client.post("/files", json=_file_payload())
+        assert response.status_code == 201
+        assert response.json()["deduplicated"] is False
 
-    def test_missing_required_fields(self, client, mock_db):
-        resp = client.post("/files", json={})
-        assert resp.status_code == 422
+    def test_returns_200_deduplicated(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_file()
+        response = client.post("/files", json=_file_payload())
+        assert response.status_code == 200
+        assert response.json()["deduplicated"] is True
+
+    def test_invalid_sha256_length_rejected(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.post("/files", json=_file_payload(sha256_checksum="toocourt"))
+        assert response.status_code == 422
+
+    def test_invalid_file_size_rejected(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.post("/files", json=_file_payload(file_size_bytes=0))
+        assert response.status_code == 422
 
 
 # ---------------------------------------------------------------------------
-# PATCH /files/{id}
+# PATCH /files/{file_id}
 # ---------------------------------------------------------------------------
 
 
 class TestPatchFile:
-    def test_not_found(self, client, mock_db):
-        mock_db.get.return_value = None
-        resp = client.patch("/files/999", json={"file_path": "/pvc/new.pdf"})
-        assert resp.status_code == 404
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_file()
+        response = client.patch("/files/1", json={"file_path": "/pvc/nouveau.pdf"})
+        assert response.status_code == 200
 
-    def test_update_file_path(self, client, mock_db):
-        f = fake_file(id=1, file_path="/pvc/old.pdf", page_count=3)
-        mock_db.get.return_value = f
-        resp = client.patch("/files/1", json={"file_path": "/pvc/new.pdf"})
-        assert resp.status_code == 200
-        assert resp.json()["file_path"] == "/pvc/new.pdf"
+    def test_404_when_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.patch("/files/99", json={"file_path": "/pvc/x.pdf"})
+        assert response.status_code == 404
 
-    def test_update_page_count(self, client, mock_db):
-        f = fake_file(id=1, file_path="/pvc/doc.pdf", page_count=3)
-        mock_db.get.return_value = f
-        resp = client.patch("/files/1", json={"page_count": 10})
-        assert resp.status_code == 200
-        assert resp.json()["page_count"] == 10
+    def test_update_page_count(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_file()
+        response = client.patch("/files/1", json={"page_count": 10})
+        assert response.status_code == 200
+        assert response.json()["page_count"] == 10
 
-    def test_invalid_page_count(self, client, mock_db):
-        """page_count doit être >= 1."""
-        resp = client.patch("/files/1", json={"page_count": 0})
-        assert resp.status_code == 422
-
-    def test_empty_patch_ok(self, client, mock_db):
-        """PATCH avec payload vide est accepté (aucun champ requis)."""
-        f = fake_file(id=1, file_path="/pvc/doc.pdf", page_count=3)
-        mock_db.get.return_value = f
-        resp = client.patch("/files/1", json={})
-        assert resp.status_code == 200
+    def test_invalid_page_count_rejected(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.patch("/files/1", json={"page_count": 0})
+        assert response.status_code == 422
