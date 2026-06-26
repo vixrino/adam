@@ -13,7 +13,11 @@ from adam_core.schemas.responses import (
     FileRefOut,
     IngestionOut,
     JobCreatedOut,
+    JobDetailOut,
+    JobFieldItemOut,
     JobOut,
+    JobPageOut,
+    JobSectionOut,
     JobSubmitOut,
     OrganisationOut,
 )
@@ -34,7 +38,11 @@ __all__ = [
     "FileRefOut",
     "IngestionOut",
     "JobCreatedOut",
+    "JobDetailOut",
+    "JobFieldItemOut",
     "JobOut",
+    "JobPageOut",
+    "JobSectionOut",
     "JobSubmitOut",
     "OrganisationOut",
 ]

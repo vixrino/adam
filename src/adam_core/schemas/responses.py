@@ -1,4 +1,4 @@
-"""Schemas Pydantic de reponse pour les endpoints Sprint 3.
+"""Schemas Pydantic de reponse pour les endpoints Sprint 3. 
 
 Chaque schema correspond a un type de retour d'endpoint.
 ``from_attributes=True`` permet de construire directement depuis un ORM row.
@@ -157,18 +157,74 @@ class JobOut(BaseModel):
 
 
 class JobCreatedOut(BaseModel):
+    """Reponse creation d'un job (POST /jobs)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
+    step: str
     state: str
+    agent_id: int
+    document_id: int
+    dataset_id: int
 
 
 class JobSubmitOut(BaseModel):
+    """Reponse soumission d'un job (PATCH /jobs/{id}/submit)."""
+
     id: int
     state: str
+    step: str
+    submitted_at: Optional[datetime] = None
 
 
 class FieldProposalOut(BaseModel):
+    """Reponse creation / mise a jour d'une proposition (POST /jobs/{id}/propose)."""
+
     id: int
-    value: str
+    job_id: int
+    document_field_id: int
+    step: str
+    value: Optional[str] = None
+    value_type: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Job detail (GET /jobs/{id}) — structure pages / sections
+# ---------------------------------------------------------------------------
+
+class JobFieldItemOut(BaseModel):
+    id: int
+    field_key: Optional[str] = None
+    step: str
+    value: Optional[str] = None
+    value_type: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class JobSectionOut(BaseModel):
+    section_id: str
+    section_label: Optional[str] = None
+    fields: List[JobFieldItemOut] = Field(default_factory=list)
+
+
+class JobPageOut(BaseModel):
+    page: int
+    sections: List[JobSectionOut] = Field(default_factory=list)
+
+
+class JobDetailOut(BaseModel):
+    """Reponse detaillee d'un job avec champs structures par page/section."""
+
+    id: int
+    step: str
+    state: str
+    agent_id: int
+    document_id: int
+    dataset_id: int
+    started_at: datetime
+    submitted_at: Optional[datetime] = None
+    pages: List[JobPageOut] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
