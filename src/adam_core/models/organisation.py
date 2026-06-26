@@ -1,4 +1,8 @@
-"""Table ORGANISATION : tenant de la plateforme ADAM."""
+"""Table ORGANISATION : tenant de la plateforme ADAM.
+
+Chaque user appartient directement à une organisation via
+User.organisation_id. Pas de table de jointure USER_ORGANISATION.
+"""
 
 from datetime import datetime
 from typing import Optional
@@ -16,17 +20,29 @@ class Organisation(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    users: Mapped[list["User"]] = relationship("User", back_populates="organisation", lazy="noload")
-    projects: Mapped[list["Project"]] = relationship(
-        "Project", back_populates="organisation", lazy="noload"
+    # Relationships
+    users: Mapped[list["User"]] = relationship(  # type: ignore[name-defined]
+        "User",
+        back_populates="organisation",
+        lazy="noload",
+    )
+    projects: Mapped[list["Project"]] = relationship(  # type: ignore[name-defined]
+        "Project",
+        back_populates="organisation",
+        lazy="noload",
     )
 
     def __repr__(self) -> str:
-        return f"<Organisation id={self.id} name={self.name} slug={self.slug}>"
+        return f"<Organisation id={self.id} name={self.name!r} slug={self.slug!r}>"

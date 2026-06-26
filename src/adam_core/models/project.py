@@ -1,4 +1,4 @@
-"""Table PROJECT : unite de travail rattachee a une organisation."""
+"""Table PROJECT : unité de travail rattachée à une organisation."""
 
 from datetime import datetime
 from typing import Optional
@@ -15,26 +15,52 @@ class Project(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     organisation_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("organisation.id", ondelete="RESTRICT"), nullable=False, index=True
+        Integer,
+        ForeignKey("organisation.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String, nullable=False, default=ProjectStatus.ACTIVE.value)
+    status: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default=ProjectStatus.ACTIVE.value,
+    )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
-    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    organisation: Mapped["Organisation"] = relationship(
-        "Organisation", back_populates="projects", lazy="noload"
+    # Relationships
+    organisation: Mapped["Organisation"] = relationship(  # type: ignore[name-defined]
+        "Organisation",
+        back_populates="projects",
+        lazy="noload",
     )
-    datasets: Mapped[list["Dataset"]] = relationship("Dataset", back_populates="project", lazy="noload")
-    schemas: Mapped[list["DocSchema"]] = relationship("DocSchema", back_populates="project", lazy="noload")
-    user_projects: Mapped[list["UserProject"]] = relationship(
-        "UserProject", back_populates="project", lazy="noload", cascade="all, delete-orphan"
+    # Tous les schémas créés dans ce projet
+    schemas: Mapped[list["DocSchema"]] = relationship(  # type: ignore[name-defined]
+        "DocSchema",
+        back_populates="project",
+        lazy="noload",
+    )
+    datasets: Mapped[list["Dataset"]] = relationship(  # type: ignore[name-defined]
+        "Dataset",
+        back_populates="project",
+        lazy="noload",
+    )
+    user_projects: Mapped[list["UserProject"]] = relationship(  # type: ignore[name-defined]
+        "UserProject",
+        back_populates="project",
+        lazy="noload",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:
