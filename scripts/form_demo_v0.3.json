@@ -1,0 +1,2117 @@
+{
+    "format_version": "0.3",
+    "document_id": "00000000-0000-4000-8000-000000000001",
+    "coordinate_unit": "pixel",
+    "page_count": 8,
+    "pages": [
+        {
+            "page_number": 1,
+            "width": 0,
+            "height": 0,
+            "sections": [
+                {
+                    "id": "eligibilite",
+                    "label": "Critères d'éligibilité - démo",
+                    "kv_pairs": [
+                        {
+                            "group_id": "demandeur",
+                            "id": "eligibilite.ei_oui",
+                            "label": "Personne physique - Oui",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "demandeur",
+                            "id": "eligibilite.ei_non",
+                            "label": "Personne physique - Non",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "demandeur",
+                            "id": "eligibilite.dette_pro_oui",
+                            "label": "Engagements professionnels - Oui",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "demandeur",
+                            "id": "eligibilite.dette_pro_non",
+                            "label": "Engagements professionnels - Non",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "co_demandeur",
+                            "id": "eligibilite.ei_oui",
+                            "label": "Personne physique - Oui",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "co_demandeur",
+                            "id": "eligibilite.ei_non",
+                            "label": "Personne physique - Non",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "co_demandeur",
+                            "id": "eligibilite.dette_pro_oui",
+                            "label": "Engagements professionnels - Oui",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "co_demandeur",
+                            "id": "eligibilite.dette_pro_non",
+                            "label": "Engagements professionnels - Non",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "page_number": 2,
+            "width": 0,
+            "height": 0,
+            "sections": [
+                {
+                    "id": "demandeur",
+                    "label": "Demandeur",
+                    "kv_pairs": [
+                        {
+                            "id": "demandeur.civilite_monsieur",
+                            "label": "Monsieur",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "demandeur.civilite_madame",
+                            "label": "Madame",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "demandeur.nom",
+                            "label": "Nom",
+                            "value": {
+                                "type": "text",
+                                "text": "NOM01",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "demandeur.prenoms",
+                            "label": "Prénoms",
+                            "value": {
+                                "type": "text",
+                                "text": "P01",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "demandeur.date_naissance",
+                            "label": "Date de naissance",
+                            "value": {
+                                "type": "date",
+                                "raw_text": "01/01/1985",
+                                "value": "1985-01-01",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        }
+                    ]
+                },
+                {
+                    "id": "co_demandeur",
+                    "label": "Co-demandeur",
+                    "kv_pairs": [
+                        {
+                            "id": "co_demandeur.nom",
+                            "label": "Nom",
+                            "value": {
+                                "type": "text",
+                                "text": "NOM02",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "co_demandeur.date_naissance",
+                            "label": "Date de naissance",
+                            "value": {
+                                "type": "date",
+                                "raw_text": "01/01/1983",
+                                "value": "1983-01-01",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        }
+                    ]
+                },
+                {
+                    "id": "coordonnees_personnelles",
+                    "label": "Coordonnées personnelles",
+                    "kv_pairs": [
+                        {
+                            "group_id": "demandeur",
+                            "id": "coordonnees_personnelles.telephone",
+                            "label": "Téléphone demandeur",
+                            "value": {
+                                "type": "text",
+                                "text": "0601020304",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "co_demandeur",
+                            "id": "coordonnees_personnelles.telephone",
+                            "label": "Téléphone co-demandeur",
+                            "value": {
+                                "type": "text",
+                                "text": "0605060708",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "page_number": 3,
+            "width": 0,
+            "height": 0,
+            "sections": [
+                {
+                    "id": "situation_familiale",
+                    "label": "Situation familiale",
+                    "kv_pairs": [
+                        {
+                            "id": "situation_familiale.marie",
+                            "label": "Marié(e)",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "situation_familiale.pacse",
+                            "label": "PACSé(e)",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "situation_familiale.concubin",
+                            "label": "Concubinage",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "situation_familiale.celibataire",
+                            "label": "Célibataire",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "situation_familiale.separe",
+                            "label": "Séparé(e)",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "situation_familiale.divorce",
+                            "label": "Divorcé(e)",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "situation_familiale.veuf",
+                            "label": "Veuf / Veuve",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        }
+                    ]
+                },
+                {
+                    "id": "personnes_domicile",
+                    "label": "Personnes au domicile",
+                    "kv_pairs": [
+                        {
+                            "group_id": "enfant_1",
+                            "id": "personnes_domicile.date_naissance",
+                            "label": "Date de naissance",
+                            "value": {
+                                "type": "date",
+                                "raw_text": "01/01/2000",
+                                "value": "2000-01-01",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "enfant_1",
+                            "id": "personnes_domicile.a_charge",
+                            "label": "À charge",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "enfant_1",
+                            "id": "personnes_domicile.garde_alternee",
+                            "label": "Garde alternée",
+                            "value": {
+                                "type": "boolean",
+                                "value": false,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "enfant_1",
+                            "id": "personnes_domicile.droit_de_visite",
+                            "label": "Droit de visite",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "enfant_2",
+                            "id": "personnes_domicile.date_naissance",
+                            "label": "Date de naissance",
+                            "value": {
+                                "type": "date",
+                                "raw_text": "01/01/2002",
+                                "value": "2002-01-01",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "enfant_3",
+                            "id": "personnes_domicile.date_naissance",
+                            "label": "Date de naissance",
+                            "value": {
+                                "type": "date",
+                                "raw_text": "01/01/2006",
+                                "value": "2006-01-01",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "autre_1",
+                            "id": "personnes_domicile.date_naissance",
+                            "label": "Date de naissance",
+                            "value": {
+                                "type": "date",
+                                "raw_text": "01/01/1940",
+                                "value": "1940-01-01",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "autre_2",
+                            "id": "personnes_domicile.date_naissance",
+                            "label": "Date de naissance",
+                            "value": {
+                                "type": "date",
+                                "raw_text": "01/01/1970",
+                                "value": "1970-01-01",
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        }
+                    ]
+                },
+                {
+                    "id": "situation_logement",
+                    "label": "Situation logement",
+                    "kv_pairs": [
+                        {
+                            "group_id": "demandeur",
+                            "id": "situation_logement.locataire",
+                            "label": "Locataire",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "demandeur",
+                            "id": "situation_logement.procedure_expulsion",
+                            "label": "Procédure administrative type B",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "co_demandeur",
+                            "id": "situation_logement.locataire",
+                            "label": "Locataire",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "group_id": "co_demandeur",
+                            "id": "situation_logement.procedure_expulsion",
+                            "label": "Procédure administrative type B",
+                            "value": {
+                                "type": "boolean",
+                                "value": true,
+                                "polygon": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                ],
+                                "confidence": 1.0
+                            }
+                        },
+                        {
+                            "id": "situation_logement_demandeur2",
+                            "label": "Situation logement demandeur 2",
+                            "kv_pairs": [
+                                {
+                                    "id": "situation_logement_demandeur2.locataire",
+                                    "label": "Locataire",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "id": "situation_logement_demandeur2.procedure_expulsion",
+                                    "label": "Procédure administrative type B",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "id": "situation_logement_co_demandeur2",
+                            "label": "Situation logement co demandeur 2",
+                            "kv_pairs": [
+                                {
+                                    "id": "situation_logement_co_demandeur2.locataire",
+                                    "label": "Locataire",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "id": "situation_logement_co_demandeur2.procedure_expulsion",
+                                    "label": "Procédure administrative type B",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "page_number": 4,
+                    "width": 0,
+                    "height": 0,
+                    "sections": [
+                        {
+                            "id": "prestations_familiales",
+                            "label": "Prestations familiales",
+                            "kv_pairs": [
+                                {
+                                    "group_id": "demandeur",
+                                    "id": "prestations_familiales.numero_allocataire_caf",
+                                    "label": "Numéro organisme A",
+                                    "value": {
+                                        "type": "text",
+                                        "text": "1000001",
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "demandeur",
+                                    "id": "prestations_familiales.numero_msa",
+                                    "label": "Numéro organisme B",
+                                    "value": {
+                                        "type": "text",
+                                        "text": "20000000001",
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "co_demandeur",
+                                    "id": "prestations_familiales.numero_allocataire_caf",
+                                    "label": "Numéro organisme A",
+                                    "value": {
+                                        "type": "text",
+                                        "text": "1000002",
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "co_demandeur",
+                                    "id": "prestations_familiales.numero_msa",
+                                    "label": "Numéro organisme B",
+                                    "value": {
+                                        "type": "text",
+                                        "text": "20000000002",
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "id": "situation_professionnelle_demandeur",
+                            "label": "Situation professionnelle demandeur",
+                            "kv_pairs": [
+                                {
+                                    "id": "situation_professionnelle_demandeur.profession",
+                                    "label": "Profession",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "categorie",
+                                    "id": "situation_professionnelle_demandeur.agriculteur",
+                                    "label": "Agriculteur",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "categorie",
+                                    "id": "situation_professionnelle_demandeur.profession_intermediaire",
+                                    "label": "Profession intermédiaire",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "situation_actuelle",
+                                    "id": "situation_professionnelle_demandeur.cdi",
+                                    "label": "CDI",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "id": "situation_professionnelle_demandeur.depuis",
+                                    "label": "Depuis",
+                                    "value": {
+                                        "type": "date",
+                                        "raw_text": "01/01/2012",
+                                        "value": "2012-01-01",
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "id": "situation_professionnelle_co_demandeur",
+                            "label": "Situation professionnelle co-demandeur",
+                            "kv_pairs": [
+                                {
+                                    "id": "situation_professionnelle_co_demandeur.profession",
+                                    "label": "Profession",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "categorie",
+                                    "id": "situation_professionnelle_co_demandeur.cadre",
+                                    "label": "Cadre",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "situation_actuelle",
+                                    "id": "situation_professionnelle_co_demandeur.cdi",
+                                    "label": "CDI",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "id": "situation_professionnelle_co_demandeur.depuis",
+                                    "label": "Depuis",
+                                    "value": {
+                                        "type": "date",
+                                        "raw_text": "01/01/1997",
+                                        "value": "1997-01-01",
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "id": "travailleur_social",
+                            "label": "Accompagnateur",
+                            "kv_pairs": [
+                                {
+                                    "id": "travailleur_social.nom_organisme",
+                                    "label": "Nom de l'organisme",
+                                    "value": null
+                                },
+                                {
+                                    "id": "travailleur_social.adresse",
+                                    "label": "Adresse",
+                                    "value": null
+                                },
+                                {
+                                    "id": "travailleur_social.telephone",
+                                    "label": "Téléphone",
+                                    "value": null
+                                },
+                                {
+                                    "id": "travailleur_social.courriel",
+                                    "label": "Courriel",
+                                    "value": null
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "page_number": 5,
+                    "width": 0,
+                    "height": 0,
+                    "sections": [
+                        {
+                            "id": "ressources_mensuelles_demandeur",
+                            "label": "Montant des ressources mensuelles - Demandeur",
+                            "kv_pairs": [
+                                {
+                                    "id": "ressources_mensuelles_demandeur.salaire_net",
+                                    "label": "Salaire net",
+                                    "value": {
+                                        "type": "number",
+                                        "raw_text": "1888.50",
+                                        "value": 1888.5,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "id": "ressources_mensuelles_demandeur.retraite",
+                                    "label": "Pension de retraite",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "autre",
+                                    "id": "ressources_mensuelles_demandeur.autre_type",
+                                    "label": "Autre ressource - type",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "autre",
+                                    "id": "ressources_mensuelles_demandeur.autre_montant",
+                                    "label": "Autre ressource - montant",
+                                    "value": null
+                                },
+                                {
+                                    "id": "ressources_mensuelles_demandeur.sans_ressources",
+                                    "label": "Sans ressources",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "id": "ressources_charges_logement_demandeur",
+                            "label": "Montant des charges - Logement - Demandeur",
+                            "kv_pairs": [
+                                {
+                                    "id": "ressources_charges_logement_demandeur.loyer_hors_charges",
+                                    "label": "Loyer hors charges",
+                                    "value": null
+                                },
+                                {
+                                    "id": "ressources_charges_logement_demandeur.loyer_toutes_charges",
+                                    "label": "Loyer toutes charges comprises",
+                                    "value": null
+                                },
+                                {
+                                    "id": "ressources_charges_logement_demandeur.chauffage",
+                                    "label": "Frais de chauffage",
+                                    "value": null
+                                },
+                                {
+                                    "id": "ressources_charges_logement_demandeur.frais_maison_retraite",
+                                    "label": "Frais maison de retraite",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "autre",
+                                    "id": "ressources_charges_logement_demandeur.autre_type",
+                                    "label": "Autre charge logement - type",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "autre",
+                                    "id": "ressources_charges_logement_demandeur.autre_montant",
+                                    "label": "Autre charge logement - montant",
+                                    "value": null
+                                }
+                            ]
+                        },
+                        {
+                            "id": "ressources_charges_impots_demandeur",
+                            "label": "Montant des charges - Impôts - Demandeur",
+                            "kv_pairs": [
+                                {
+                                    "id": "ressources_charges_impots_demandeur.impots_revenu",
+                                    "label": "Impôts sur le revenu",
+                                    "value": null
+                                },
+                                {
+                                    "id": "ressources_charges_impots_demandeur.taxe_fonciere",
+                                    "label": "Taxe foncière",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "autre",
+                                    "id": "ressources_charges_impots_demandeur.autre_type",
+                                    "label": "Autre impôt - type",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "autre",
+                                    "id": "ressources_charges_impots_demandeur.autre_montant",
+                                    "label": "Autre impôt - montant",
+                                    "value": null
+                                }
+                            ]
+                        },
+                        {
+                            "id": "ressources_charges_autres_demandeur",
+                            "label": "Montant des charges - Autres - Demandeur",
+                            "kv_pairs": [
+                                {
+                                    "id": "ressources_charges_autres_demandeur.mutuelle",
+                                    "label": "Mutuelle",
+                                    "value": null
+                                },
+                                {
+                                    "id": "ressources_charges_autres_demandeur.frais_transport",
+                                    "label": "Frais de transport",
+                                    "value": null
+                                },
+                                {
+                                    "id": "ressources_charges_autres_demandeur.pension_alimentaire",
+                                    "label": "Pension alimentaire",
+                                    "value": null
+                                },
+                                {
+                                    "id": "ressources_charges_autres_demandeur.frais_garde",
+                                    "label": "Frais de garde",
+                                    "value": null
+                                },
+                                {
+                                    "id": "ressources_charges_autres_demandeur.frais_scolarite",
+                                    "label": "Frais de scolarité",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "autre",
+                                    "id": "ressources_charges_autres_demandeur.autre_type",
+                                    "label": "Autre charge - type",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "autre",
+                                    "id": "ressources_charges_autres_demandeur.autre_montant",
+                                    "label": "Autre charge - montant",
+                                    "value": null
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "page_number": 6,
+                    "width": 0,
+                    "height": 0,
+                    "sections": [
+                        {
+                            "id": "vehicules",
+                            "label": "Véhicules",
+                            "kv_pairs": [
+                                {
+                                    "group_id": "vehicule_1",
+                                    "id": "vehicules.proprietaire_demandeur",
+                                    "label": "Propriétaire - Demandeur",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "vehicule_1",
+                                    "id": "vehicules.proprietaire_co_demandeur",
+                                    "label": "Propriétaire - Co-demandeur",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "vehicule_1",
+                                    "id": "vehicules.type_vehicule",
+                                    "label": "Type de véhicule",
+                                    "value": {
+                                        "type": "text",
+                                        "text": "Vehicule Demo 2015",
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "vehicule_1",
+                                    "id": "vehicules.premiere_immatriculation",
+                                    "label": "Date de première immatriculation",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "vehicule_1",
+                                    "id": "vehicules.loa_lld_oui",
+                                    "label": "LOA / LLD - Oui",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "vehicule_1",
+                                    "id": "vehicules.loa_lld_non",
+                                    "label": "LOA / LLD - Non",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "vehicule_1",
+                                    "id": "vehicules.valeur_estimee",
+                                    "label": "Valeur estimée",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "vehicule_2",
+                                    "id": "vehicules.proprietaire_demandeur",
+                                    "label": "Propriétaire - Demandeur",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "vehicule_2",
+                                    "id": "vehicules.proprietaire_co_demandeur",
+                                    "label": "Propriétaire - Co-demandeur",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "vehicule_2",
+                                    "id": "vehicules.type_vehicule",
+                                    "label": "Type de véhicule",
+                                    "value": {
+                                        "type": "text",
+                                        "text": "Vehicule Demo 2015",
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "vehicule_2",
+                                    "id": "vehicules.premiere_immatriculation",
+                                    "label": "Date de première immatriculation",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "vehicule_2",
+                                    "id": "vehicules.loa_lld_oui",
+                                    "label": "LOA / LLD - Oui",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "vehicule_2",
+                                    "id": "vehicules.loa_lld_non",
+                                    "label": "LOA / LLD - Non",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "vehicule_2",
+                                    "id": "vehicules.valeur_estimee",
+                                    "label": "Valeur estimée",
+                                    "value": null
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "page_number": 7,
+                    "width": 0,
+                    "height": 0,
+                    "sections": [
+                        {
+                            "id": "patrimoine",
+                            "label": "Patrimoine",
+                            "kv_pairs": [
+                                {
+                                    "id": "patrimoine.pas_de_patrimoine",
+                                    "label": "Pas de patrimoine",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "residence_principale",
+                                    "id": "patrimoine.pret_en_cours_oui",
+                                    "label": "Prêt en cours - Oui",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "residence_principale",
+                                    "id": "patrimoine.pret_en_cours_non",
+                                    "label": "Prêt en cours - Non",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "residence_principale",
+                                    "id": "patrimoine.valeur",
+                                    "label": "Valeur estimée",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "residence_principale",
+                                    "id": "patrimoine.indivision_oui",
+                                    "label": "Indivision - Oui",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "residence_principale",
+                                    "id": "patrimoine.indivision_non",
+                                    "label": "Indivision - Non",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "residence_principale",
+                                    "id": "patrimoine.proprietaire_demandeur",
+                                    "label": "Propriétaire demandeur",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "residence_principale",
+                                    "id": "patrimoine.proprietaire_co_demandeur",
+                                    "label": "Propriétaire co-demandeur",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "autre_immo_1",
+                                    "id": "patrimoine.precisez",
+                                    "label": "Autre bien immobilier - Précisez",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "autre_immo_2",
+                                    "id": "patrimoine.precisez",
+                                    "label": "Autre bien immobilier - Précisez",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "terrain",
+                                    "id": "patrimoine.valeur",
+                                    "label": "Valeur terrain",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "caravane",
+                                    "id": "patrimoine.valeur",
+                                    "label": "Valeur caravane",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "garage",
+                                    "id": "patrimoine.valeur",
+                                    "label": "Valeur garage",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "bijoux",
+                                    "id": "patrimoine.valeur",
+                                    "label": "Valeur des bijoux",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "bateau",
+                                    "id": "patrimoine.valeur",
+                                    "label": "Valeur bateau",
+                                    "value": null
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "page_number": 8,
+                    "width": 0,
+                    "height": 0,
+                    "sections": [
+                        {
+                            "id": "endettement",
+                            "label": "État des engagements",
+                            "kv_pairs": [
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.logement",
+                                    "label": "Dette logement",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.impots",
+                                    "label": "Dette impôts",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.sante_education",
+                                    "label": "Dette santé / éducation",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.charges_courantes",
+                                    "label": "Charges courantes",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.pension_alimentaire",
+                                    "label": "Pension alimentaire",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.amendes",
+                                    "label": "Amendes",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.dettes_frauduleuses",
+                                    "label": "Dettes frauduleuses",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.dettes_sociales",
+                                    "label": "Dettes sociales",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.autres",
+                                    "label": "Autres dettes",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.nom_creancier",
+                                    "label": "Nom du créancier",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.adresse_creancier",
+                                    "label": "Adresse du créancier",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.reference",
+                                    "label": "Référence",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.montant",
+                                    "label": "Montant de la dette",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.poursuites_oui",
+                                    "label": "Poursuites en cours - Oui",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_1",
+                                    "id": "endettement.poursuites_non",
+                                    "label": "Poursuites en cours - Non",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_2",
+                                    "id": "endettement.logement",
+                                    "label": "Dette logement",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_2",
+                                    "id": "endettement.impots",
+                                    "label": "Dette impôts",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_2",
+                                    "id": "endettement.nom_creancier",
+                                    "label": "Nom du créancier",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "dette_2",
+                                    "id": "endettement.montant",
+                                    "label": "Montant de la dette",
+                                    "value": null
+                                },
+                                {
+                                    "group_id": "dette_2",
+                                    "id": "endettement.poursuites_oui",
+                                    "label": "Poursuites en cours - Oui",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": false,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                },
+                                {
+                                    "group_id": "dette_2",
+                                    "id": "endettement.poursuites_non",
+                                    "label": "Poursuites en cours - Non",
+                                    "value": {
+                                        "type": "boolean",
+                                        "value": true,
+                                        "polygon": [
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0
+                                        ],
+                                        "confidence": 1.0
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}
