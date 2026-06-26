@@ -43,4 +43,4 @@ class Job(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<Job id={self.id} document_id={self.document_id} state={self.state!r}>"
+        return f"<Job id={self.id} step={self.step!r} state={self.state!r} agent_id={self.agent_id}>"

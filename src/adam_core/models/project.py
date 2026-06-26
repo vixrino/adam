@@ -38,4 +38,11 @@ class Project(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<Project id={self.id} name={self.name!r} status={self.status!r}>"
+        schemas_count = len(self.schemas) if self.schemas else "?"
+        datasets_count = len(self.datasets) if self.datasets else "?"
+        users_count = len(self.user_projects) if self.user_projects else "?"
+        return (
+            f"<Project id={self.id} name={self.name!r} "
+            f"status={self.status!r} org_id={self.organisation_id} "
+            f"schemas={schemas_count} datasets={datasets_count} users={users_count}>"
+        )

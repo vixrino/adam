@@ -31,7 +31,7 @@ class DatasetIn(BaseModel):
     description: Optional[str] = None
     ocr_provider: str = OcrProvider.PULSAR.value
     ocr_model_id: Optional[str] = None
-    required_operators: int = Field(default=2, ge=1, le=5)
+    required_operators: int = Field(default=3, ge=1, le=5)
     ocr_job_enabled: bool = True
     configs: Dict[str, Any] = Field(default_factory=dict)
 

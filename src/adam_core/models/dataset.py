@@ -28,7 +28,9 @@ class Dataset(Base):
     ocr_model_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default=DatasetStatus.DRAFT.value)
     ocr_job_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    required_operators: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    required_operators: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, comment="Nombre d'operateurs requis par document"
+    )
     configs: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
