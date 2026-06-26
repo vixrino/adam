@@ -10,8 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.functions import count
 
 from adam_core.db.session import get_async_session
-from adam_core.enums.states import JobState
-from adam_core.enums.status import DocumentFieldStatus, DocumentStatus
+from adam_core.enums.status import DocumentFieldStatus, DocumentStatus, JobState
 from adam_core.models import Dataset, Document, DocumentField, FieldProposal, Job
 from adam_core.utils.logging import get_logger
 

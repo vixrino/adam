@@ -20,8 +20,7 @@ from sqlalchemy.sql.functions import count
 
 from adam_api.dependencies.db import get_db
 from adam_api.services.consensus import try_resolve
-from adam_core.enums.states import JobState
-from adam_core.enums.status import DocumentFieldStatus, DocumentStatus, JobStep
+from adam_core.enums.status import DocumentFieldStatus, DocumentStatus, JobState, JobStep
 from adam_core.models import Dataset, Document, DocumentField, FieldProposal, Job, User
 from adam_core.schemas.responses import (
     FieldProposalOut,

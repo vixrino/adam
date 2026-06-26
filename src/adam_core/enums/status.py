@@ -42,6 +42,15 @@ class JobStep(str, Enum):
     CONSENSUS = "CONSENSUS"
 
 
+class JobState(str, Enum):
+    """Etat d'un job de labellisation."""
+
+    ASSIGNED = "ASSIGNED"
+    IN_PROGRESS = "IN_PROGRESS"
+    SUBMITTED = "SUBMITTED"
+    CANCELLED = "CANCELLED"
+
+
 class UserStatus(str, Enum):
     ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"

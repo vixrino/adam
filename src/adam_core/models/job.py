@@ -7,8 +7,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
-from adam_core.enums.states import JobState
-from adam_core.enums.status import JobStep
+from adam_core.enums.status import JobState, JobStep
 
 
 class Job(Base):
@@ -24,7 +23,7 @@ class Job(Base):
     agent_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("user.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    state: Mapped[str] = mapped_column(String, nullable=False, default=JobState.IN_PROGRESS.value)
+    state: Mapped[str] = mapped_column(String, nullable=False, default=JobState.ASSIGNED.value)
     step: Mapped[str] = mapped_column(String, nullable=False, default=JobStep.VALIDATION.value)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
