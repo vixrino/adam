@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +18,7 @@ from adam_core.schemas.responses import (
     DocumentOut,
     FileRefOut,
 )
-from adam_core.utils.exceptions import raise_not_found, raise_unprocessable
+from adam_core.utils.exceptions import raise_conflict, raise_not_found
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -165,7 +165,7 @@ async def patch_document(
     if not doc:
         raise_not_found(Document)
     if body.expected_current_status and doc.status != body.expected_current_status:
-        raise HTTPException(status_code=409, detail="Conflit de statut")
+        raise_conflict(Document, "Conflit de statut")
     doc.status = body.status
     await db.flush()
     return doc
