@@ -1,19 +1,30 @@
-"""Files - fichier physique sur PVC."""
+"""
+Files
+Un File est fichier physique sur PVC.
+Plusieurs Documents peuvent pointer vers le meme File.
+GET  : lecture simple, enrichie, et des documents utilisant le fichier
+POST : creation d'un fichier
+PATCH: mise a jour en cas de deplacement du fichier
+"""
 
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from adam_api.dependencies.db import get_db
 from adam_core.models import Document, File
-from adam_core.schemas.responses import DocumentOut, FileOut
-from adam_core.utils.exceptions import raise_already_exists, raise_not_found
+from adam_core.schemas.document import DocumentOut
+from adam_core.schemas.responses import FileCreatedOut, FileDetailOut, FileOut, FilePatchOut
+from adam_core.utils.exceptions import raise_not_found
 
 router = APIRouter(prefix="/files", tags=["Files"])
 
+
+# Schemas Pydantic
 
 class FileIn(BaseModel):
     file_path: str
@@ -25,49 +36,114 @@ class FileIn(BaseModel):
 
 
 class FilePatch(BaseModel):
-    file_path: Optional[str] = None
+    file_path: Optional[str] = None  # si le fichier est deplace sur le PVC
     page_count: Optional[int] = Field(default=None, ge=1)
 
 
+# GET
+
 @router.get("", response_model=List[FileOut])
-async def list_files(db: AsyncSession = Depends(get_db)) -> List[File]:
-    return list((await db.execute(select(File))).scalars().all())
+async def list_files(
+    storage_type: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+) -> List[File]:
+    query = select(File)
+    if storage_type:
+        query = query.where(File.storage_type == storage_type)
+    return list((await db.execute(query)).scalars().all())
 
 
-@router.get("/{file_id}", response_model=FileOut)
-async def get_file(file_id: int, db: AsyncSession = Depends(get_db)) -> File:
-    row = await db.get(File, file_id)
-    if not row:
+@router.get("/{file_id}", response_model=FileDetailOut)
+async def get_file(file_id: int, db: AsyncSession = Depends(get_db)) -> FileDetailOut:
+    result = await db.execute(
+        select(File).where(File.id == file_id).options(selectinload(File.documents))
+    )
+    file = result.scalar_one_or_none()
+    if not file:
         raise_not_found(File)
-    return row
+    return FileDetailOut(
+        id=file.id,
+        file_path=file.file_path,
+        storage_type=file.storage_type,
+        mime_type=file.mime_type,
+        page_count=file.page_count,
+        file_size_bytes=file.file_size_bytes,
+        sha256_checksum=file.sha256_checksum,
+        created_at=file.created_at,
+        documents_count=len(file.documents),
+    )
 
 
 @router.get("/{file_id}/documents", response_model=List[DocumentOut])
 async def get_file_documents(file_id: int, db: AsyncSession = Depends(get_db)) -> List[Document]:
-    return list(
-        (await db.execute(select(Document).where(Document.file_id == file_id))).scalars().all()
+    """Tous les documents qui referencent ce fichier physique."""
+    file = await db.get(File, file_id)
+    if not file:
+        raise_not_found(File)
+    rows = (await db.execute(select(Document).where(Document.file_id == file_id))).scalars().all()
+    return list(rows)
+
+
+# POST
+
+@router.post("", response_model=FileCreatedOut, status_code=201)
+async def create_file(
+    payload: FileIn, response: Response, db: AsyncSession = Depends(get_db)
+) -> FileCreatedOut:
+    """Cree un fichier physique.
+
+    Si le sha256 existe deja, retourne le fichier existant (deduplication).
+    """
+    existing = (
+        await db.execute(select(File).where(File.sha256_checksum == payload.sha256_checksum))
+    ).scalar_one_or_none()
+
+    if existing:
+        response.status_code = 200  # deduplication est consideree comme 200
+        return FileCreatedOut(
+            id=existing.id,
+            file_path=existing.file_path,
+            sha256_checksum=existing.sha256_checksum,
+            deduplicated=True,
+        )
+
+    file = File(
+        file_path=payload.file_path,
+        sha256_checksum=payload.sha256_checksum,
+        file_size_bytes=payload.file_size_bytes,
+        page_count=payload.page_count,
+        mime_type=payload.mime_type,
+        storage_type=payload.storage_type,
+    )
+    db.add(file)
+    await db.flush()
+    return FileCreatedOut(
+        id=file.id,
+        file_path=file.file_path,
+        sha256_checksum=file.sha256_checksum,
+        deduplicated=False,
     )
 
 
-@router.post("", response_model=FileOut, status_code=201)
-async def create_file(body: FileIn, db: AsyncSession = Depends(get_db)) -> File:
-    existing = (
-        await db.execute(select(File).where(File.sha256_checksum == body.sha256_checksum))
-    ).scalar_one_or_none()
-    if existing:
-        raise_already_exists(File)
-    row = File(**body.model_dump())
-    db.add(row)
-    await db.flush()
-    return row
+# PATCH
 
+@router.patch("/{file_id}", response_model=FilePatchOut)
+async def patch_file(
+    file_id: int,
+    payload: FilePatch,
+    db: AsyncSession = Depends(get_db),
+) -> FilePatchOut:
+    """Met a jour les metadonnees d'un fichier.
 
-@router.patch("/{file_id}", response_model=FileOut)
-async def patch_file(file_id: int, body: FilePatch, db: AsyncSession = Depends(get_db)) -> File:
-    row = await db.get(File, file_id)
-    if not row:
+    Utile si le fichier est deplace sur le PVC ou si le page_count est corrige.
+    Le sha256 et file_size_bytes sont immuables.
+    """
+    file = await db.get(File, file_id)
+    if not file:
         raise_not_found(File)
-    for key, val in body.model_dump(exclude_unset=True).items():
-        setattr(row, key, val)
+    if payload.file_path is not None:
+        file.file_path = payload.file_path
+    if payload.page_count is not None:
+        file.page_count = payload.page_count
     await db.flush()
-    return row
+    return FilePatchOut(id=file.id, file_path=file.file_path, page_count=file.page_count)

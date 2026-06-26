@@ -62,6 +62,40 @@ class FileOut(BaseModel):
     page_count: int
     mime_type: str
     storage_type: str
+    created_at: datetime
+
+
+class FileDetailOut(BaseModel):
+    """Reponse GET /files/{id} — inclut le nombre de documents references."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    file_path: str
+    sha256_checksum: str
+    file_size_bytes: int
+    page_count: int
+    mime_type: str
+    storage_type: str
+    created_at: datetime
+    documents_count: int
+
+
+class FileCreatedOut(BaseModel):
+    """Reponse POST /files — indique si le fichier est une deduplication."""
+
+    id: int
+    file_path: str
+    sha256_checksum: str
+    deduplicated: bool
+
+
+class FilePatchOut(BaseModel):
+    """Reponse PATCH /files/{id} — seuls les champs mutables sont retournes."""
+
+    id: int
+    file_path: str
+    page_count: int
 
 
 class FileRefOut(BaseModel):
