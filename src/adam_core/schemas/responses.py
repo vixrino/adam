@@ -442,6 +442,9 @@ class SchemaListItemOut(BaseModel):
     id: int
     name: str
     document_type: str
+    version: int
+    project_id: int
+    created_at: Optional[datetime] = None
 
 
 class FieldSpecItemOut(BaseModel):
@@ -459,6 +462,28 @@ class FieldSpecItemOut(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class FieldSpecDetailOut(BaseModel):
+    id: int
+    schema_id: int
+    page: int
+    section_id: str
+    section_label: str
+    field_key: str
+    display_label: str
+    value_type: str
+    required: bool
+    display_order: int
+    group_id: Optional[str] = None
+    polygon: Optional[List[float]] = None
+    updated_at: Optional[datetime] = None
+
+
+class FieldSpecCreatedOut(BaseModel):
+    id: int
+    field_key: str
+    schema_id: int
+
+
 class SchemaDetailOut(BaseModel):
     id: int
     name: str
@@ -474,6 +499,8 @@ class SchemaCreatedOut(BaseModel):
     id: int
     name: str
     document_type: str
+    version: int
+    field_specs_created: int = 0
 
 
 # ---------------------------------------------------------------------------
