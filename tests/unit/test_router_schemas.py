@@ -102,8 +102,9 @@ def _make_field_spec(
 
 
 def _unlocked_db(mock_db: AsyncMock) -> AsyncMock:
-    """Configure le mock pour simuler un schema non verrouille (aucun dataset actif)."""
+    """Configure le mock pour simuler un schema non verrouille et sans DocumentFields."""
     mock_db.execute.return_value.scalar_one_or_none.return_value = None
+    mock_db.execute.return_value.scalar_one.return_value = 0
     return mock_db
 
 
