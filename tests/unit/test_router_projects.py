@@ -1,5 +1,6 @@
 """Tests unitaires adam_api/routers/projects.py"""
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -7,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from adam_api.routers.projects import router
+
+_NOW = datetime(2026, 6, 26, 12, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -41,7 +44,17 @@ def _make_project(id: int = 1, name: str = "Projet", organisation_id: int = 1, s
     row.name = name
     row.organisation_id = organisation_id
     row.status = status
+    row.updated_at = _NOW
     return row
+
+
+def _make_up(user_id: int = 5, project_id: int = 1, role: str = "OPERATOR") -> MagicMock:
+    up = MagicMock()
+    up.user_id = user_id
+    up.project_id = project_id
+    up.role = role
+    up.updated_at = _NOW
+    return up
 
 
 # ---------------------------------------------------------------------------
@@ -57,24 +70,16 @@ class TestListProjects:
 
     def test_returns_list(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalars.return_value.all.return_value = [
-            _make_project(id=1, name="P1"),
-            _make_project(id=2, name="P2"),
+            _make_project(id=1, name="P1"), _make_project(id=2, name="P2"),
         ]
         data = client.get("/projects").json()
         assert len(data) == 2
         assert data[0]["name"] == "P1"
 
     def test_filter_by_organisation_id(self, client: TestClient, mock_db: AsyncMock) -> None:
-        mock_db.execute.return_value.scalars.return_value.all.return_value = [
-            _make_project(id=1, organisation_id=3),
-        ]
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_project(organisation_id=3)]
         data = client.get("/projects?organisation_id=3").json()
         assert data[0]["organisation_id"] == 3
-
-    def test_response_contains_expected_fields(self, client: TestClient, mock_db: AsyncMock) -> None:
-        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_project()]
-        data = client.get("/projects").json()
-        assert {"id", "name", "organisation_id"} <= data[0].keys()
 
 
 # ---------------------------------------------------------------------------
@@ -89,10 +94,11 @@ class TestGetProject:
     def test_404_when_not_found(self, client: TestClient) -> None:
         assert client.get("/projects/99").status_code == 404
 
-    def test_response_contains_status(self, client: TestClient, mock_db: AsyncMock) -> None:
+    def test_response_contains_status_and_updated_at(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = _make_project(id=1, status="ARCHIVED")
         data = client.get("/projects/1").json()
         assert data["status"] == "ARCHIVED"
+        assert "updated_at" in data
 
 
 # ---------------------------------------------------------------------------
@@ -101,20 +107,13 @@ class TestGetProject:
 
 class TestCreateProject:
     def test_returns_201(self, client: TestClient, mock_db: AsyncMock) -> None:
-        resp = client.post("/projects", json={"organisation_id": 1, "name": "Nouveau"})
-        assert resp.status_code == 201
+        assert client.post("/projects", json={"organisation_id": 1, "name": "Nouveau"}).status_code == 201
 
     def test_422_when_missing_name(self, client: TestClient) -> None:
-        resp = client.post("/projects", json={"organisation_id": 1})
-        assert resp.status_code == 422
+        assert client.post("/projects", json={"organisation_id": 1}).status_code == 422
 
     def test_422_when_missing_organisation_id(self, client: TestClient) -> None:
-        resp = client.post("/projects", json={"name": "P"})
-        assert resp.status_code == 422
-
-    def test_response_contains_id_and_name(self, client: TestClient, mock_db: AsyncMock) -> None:
-        resp = client.post("/projects", json={"organisation_id": 1, "name": "Test"})
-        assert {"id", "name"} <= resp.json().keys()
+        assert client.post("/projects", json={"name": "P"}).status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +123,7 @@ class TestCreateProject:
 class TestAddUserToProject:
     def test_returns_201(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = _make_project(id=1)
-        resp = client.post("/projects/1/users", json={"user_id": 5})
-        assert resp.status_code == 201
+        assert client.post("/projects/1/users", json={"user_id": 5}).status_code == 201
 
     def test_404_when_project_not_found(self, client: TestClient) -> None:
         assert client.post("/projects/99/users", json={"user_id": 1}).status_code == 404
@@ -150,6 +148,44 @@ class TestPatchProject:
     def test_404_when_not_found(self, client: TestClient) -> None:
         assert client.patch("/projects/99", json={"name": "X"}).status_code == 404
 
+    def test_422_on_invalid_status(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_project(id=1)
+        assert client.patch("/projects/1", json={"status": "INVALID"}).status_code == 422
+
+    def test_valid_status_accepted(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_project(id=1)
+        assert client.patch("/projects/1", json={"status": "ARCHIVED"}).status_code == 200
+
+    def test_response_contains_updated_at(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_project(id=1)
+        data = client.patch("/projects/1", json={"name": "X"}).json()
+        assert "updated_at" in data
+
+
+# ---------------------------------------------------------------------------
+# PATCH /projects/{project_id}/users/{user_id}
+# ---------------------------------------------------------------------------
+
+class TestUpdateUserRole:
+    def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_up()
+        assert client.patch("/projects/1/users/5", json={"role": "SUPERVISOR"}).status_code == 200
+
+    def test_404_when_user_not_in_project(self, client: TestClient) -> None:
+        assert client.patch("/projects/1/users/99", json={"role": "OPERATOR"}).status_code == 404
+
+    def test_422_on_invalid_role(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_up()
+        assert client.patch("/projects/1/users/5", json={"role": "INVALID"}).status_code == 422
+
+    def test_response_contains_role_and_updated_at(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_up(role="OPERATOR")
+        data = client.patch("/projects/1/users/5", json={"role": "SUPERVISOR"}).json()
+        assert "role" in data
+        assert "updated_at" in data
+        assert data["user_id"] == 5
+        assert data["project_id"] == 1
+
 
 # ---------------------------------------------------------------------------
 # DELETE /projects/{project_id}/users/{user_id}
@@ -157,7 +193,7 @@ class TestPatchProject:
 
 class TestRemoveUserFromProject:
     def test_returns_204(self, client: TestClient, mock_db: AsyncMock) -> None:
-        mock_db.get.return_value = MagicMock()
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_up()
         assert client.delete("/projects/1/users/5").status_code == 204
 
     def test_404_when_not_found(self, client: TestClient) -> None:

@@ -413,6 +413,7 @@ class ProjectDetailOut(BaseModel):
     id: int
     name: str
     status: str
+    updated_at: Optional[datetime] = None
 
 
 class ProjectCreatedOut(BaseModel):
@@ -424,6 +425,13 @@ class UserProjectOut(BaseModel):
     user_id: int
     project_id: int
     role: str
+
+
+class UserRolePatchOut(BaseModel):
+    user_id: int
+    project_id: int
+    role: str
+    updated_at: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------
@@ -438,18 +446,34 @@ class SchemaListItemOut(BaseModel):
 
 class FieldSpecItemOut(BaseModel):
     id: int
+    page: int
+    section_id: str
+    section_label: str
     field_key: str
+    display_label: str
+    value_type: str
+    required: bool
+    display_order: int
+    group_id: Optional[str] = None
+    polygon: Optional[List[float]] = None
+    updated_at: Optional[datetime] = None
 
 
 class SchemaDetailOut(BaseModel):
     id: int
     name: str
-    field_specs: List[FieldSpecItemOut]
+    document_type: str
+    version: int
+    project_id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    field_specs: List[FieldSpecItemOut] = []
 
 
 class SchemaCreatedOut(BaseModel):
     id: int
     name: str
+    document_type: str
 
 
 # ---------------------------------------------------------------------------
