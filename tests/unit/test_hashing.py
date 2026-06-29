@@ -18,3 +18,27 @@ def test_sha256_file_matches_bytes(tmp_path: Path) -> None:
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(content)
     assert sha256_file(pdf) == sha256_bytes(content)
+
+
+def test_sha256_bytes_empty() -> None:
+    assert sha256_bytes(b"") == hashlib.sha256(b"").hexdigest()
+
+
+def test_sha256_file_with_string_path(tmp_path: Path) -> None:
+    content = b"test string path"
+    f = tmp_path / "file.bin"
+    f.write_bytes(content)
+    assert sha256_file(str(f)) == sha256_bytes(content)
+
+
+def test_sha256_file_empty(tmp_path: Path) -> None:
+    f = tmp_path / "empty.bin"
+    f.write_bytes(b"")
+    assert sha256_file(f) == sha256_bytes(b"")
+
+
+def test_sha256_file_multipart(tmp_path: Path) -> None:
+    content = b"x" * (1024 * 1024 + 1)
+    f = tmp_path / "big.bin"
+    f.write_bytes(content)
+    assert sha256_file(f) == hashlib.sha256(content).hexdigest()
