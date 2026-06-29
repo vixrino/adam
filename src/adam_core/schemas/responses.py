@@ -241,7 +241,7 @@ class JobOut(BaseModel):
     agent_id: int
     state: str
     step: str
-    started_at: datetime
+    started_at: Optional[datetime] = None
     submitted_at: Optional[datetime] = None
 
 
@@ -311,7 +311,7 @@ class JobDetailOut(BaseModel):
     agent_id: int
     document_id: int
     dataset_id: int
-    started_at: datetime
+    started_at: Optional[datetime] = None
     submitted_at: Optional[datetime] = None
     pages: List[JobPageOut] = Field(default_factory=list)
 
