@@ -22,6 +22,9 @@ class OrganisationOut(BaseModel):
     id: int
     name: str
     slug: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------
@@ -348,27 +351,42 @@ class OcrResultOut(BaseModel):
     id: int
     document_id: int
     dataset_id: int
+    storage_mode: str
+    processed_at: Optional[datetime] = None
 
 
 class OcrResultDetailOut(BaseModel):
     id: int
     document_id: int
+    dataset_id: int
     storage_mode: str
+    processed_at: Optional[datetime] = None
+    raw_json: Optional[Dict[str, Any]] = None
 
 
 class OcrResultCreatedOut(BaseModel):
-    id: int
+    ocr_result_id: int
     document_fields_created: int
+    document_fields_skipped: int
+    document_status: str
 
 
 # ---------------------------------------------------------------------------
 # Organisation (extensions)
 # ---------------------------------------------------------------------------
 
+class UserProjectRefOut(BaseModel):
+    project_id: int
+    role: str
+
+
 class OrgUserOut(BaseModel):
     id: int
     email: str
+    full_name: str
     matricule: str
+    status: str
+    projects: List[UserProjectRefOut] = []
 
 
 class OrganisationPatchOut(BaseModel):
