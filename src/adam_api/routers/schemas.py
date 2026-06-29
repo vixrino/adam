@@ -336,7 +336,7 @@ async def delete_field_spec(
     fs = await db.get(FieldSpec, spec_id)
     if not fs or fs.schema_id != schema_id:
         raise_not_found(FieldSpec)
-    referenced = (
+    referenced: int = (
         await db.execute(
             select(func.count(DocumentField.id)).where(DocumentField.field_spec_id == spec_id)
         )
