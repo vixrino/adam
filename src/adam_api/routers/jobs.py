@@ -9,7 +9,7 @@ PATCH : finalisation (submit)
 """
 
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
@@ -93,7 +93,7 @@ async def get_job(job_id: int, db: AsyncSession = Depends(get_db)) -> JobDetailO
 
     proposal_index = {p.document_field_id: p for p in job.field_proposals}
 
-    pages: dict = {}
+    pages: dict[int, Any] = {}
     for df in job.document.document_fields:
         fs = df.field_spec
         page_num = fs.page if fs else 0
