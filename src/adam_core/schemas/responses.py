@@ -459,20 +459,50 @@ class SchemaCreatedOut(BaseModel):
 class UserListItemOut(BaseModel):
     id: int
     email: str
+    full_name: str
     matricule: str
+    status: str
+    organisation_id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
+
+
+class UserProjectDetailOut(BaseModel):
+    project_id: int
+    role: str
+    created_at: Optional[datetime] = None
 
 
 class UserDetailOut(BaseModel):
     id: int
     email: str
+    full_name: str
+    matricule: str
     status: str
+    organisation_id: int
+    created_at: Optional[datetime] = None
+    last_login_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
+    projects: List[UserProjectDetailOut] = []
 
 
 class UserCreatedOut(BaseModel):
     id: int
     email: str
+    full_name: str
+    matricule: str
+    status: str
 
 
 class UserPatchOut(BaseModel):
     id: int
+    email: str
+    full_name: str
+    matricule: str
     status: str
+    organisation_id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
