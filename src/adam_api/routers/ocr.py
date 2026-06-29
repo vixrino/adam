@@ -1,6 +1,6 @@
 """Resultats OCR - GET/POST."""
 
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -12,6 +12,7 @@ from adam_core.enums.ocr import StorageMode
 from adam_core.enums.status import DocumentFieldStatus
 from adam_core.models import Document, DocumentField, FieldSpec, OcrResult
 from adam_core.schemas.interface_contract import FormDocument
+from adam_core.schemas.responses import OcrResultCreatedOut, OcrResultDetailOut, OcrResultOut
 from adam_core.utils.exceptions import raise_not_found
 
 router = APIRouter(prefix="/ocr-results", tags=["OCR"])
@@ -20,32 +21,32 @@ router = APIRouter(prefix="/ocr-results", tags=["OCR"])
 class OcrResultIn(BaseModel):
     document_id: int
     dataset_id: int
-    raw_json: Dict[str, Any]
+    raw_json: dict
     storage_mode: str = Field(default=StorageMode.JSONB.value)
 
 
-@router.get("", response_model=List[Dict[str, Any]])
+@router.get("", response_model=List[OcrResultOut])
 async def list_ocr_results(
     document_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
-) -> List[Dict[str, Any]]:
+) -> List[OcrResultOut]:
     query = select(OcrResult)
     if document_id is not None:
         query = query.where(OcrResult.document_id == document_id)
     rows = (await db.execute(query)).scalars().all()
-    return [{"id": r.id, "document_id": r.document_id, "dataset_id": r.dataset_id} for r in rows]
+    return [OcrResultOut(id=r.id, document_id=r.document_id, dataset_id=r.dataset_id) for r in rows]
 
 
-@router.get("/{ocr_id}", response_model=Dict[str, Any])
-async def get_ocr_result(ocr_id: int, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+@router.get("/{ocr_id}", response_model=OcrResultDetailOut)
+async def get_ocr_result(ocr_id: int, db: AsyncSession = Depends(get_db)) -> OcrResultDetailOut:
     row = await db.get(OcrResult, ocr_id)
     if not row:
         raise_not_found(OcrResult)
-    return {"id": row.id, "document_id": row.document_id, "storage_mode": row.storage_mode}
+    return OcrResultDetailOut(id=row.id, document_id=row.document_id, storage_mode=row.storage_mode)
 
 
-@router.post("", response_model=Dict[str, Any], status_code=201)
-async def post_ocr_result(body: OcrResultIn, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+@router.post("", response_model=OcrResultCreatedOut, status_code=201)
+async def post_ocr_result(body: OcrResultIn, db: AsyncSession = Depends(get_db)) -> OcrResultCreatedOut:
     form_doc = FormDocument.model_validate(body.raw_json)
     ocr = OcrResult(
         document_id=body.document_id,
@@ -80,4 +81,4 @@ async def post_ocr_result(body: OcrResultIn, db: AsyncSession = Depends(get_db))
         db.add(df)
         created += 1
     await db.flush()
-    return {"id": ocr.id, "document_fields_created": created}
+    return OcrResultCreatedOut(id=ocr.id, document_fields_created=created)

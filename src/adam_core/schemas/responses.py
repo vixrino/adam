@@ -338,3 +338,123 @@ class IngestionOut(BaseModel):
     already_exists: int
     rejected: int
     results: List[FileIngestionItemOut]
+
+
+# ---------------------------------------------------------------------------
+# OCR
+# ---------------------------------------------------------------------------
+
+class OcrResultOut(BaseModel):
+    id: int
+    document_id: int
+    dataset_id: int
+
+
+class OcrResultDetailOut(BaseModel):
+    id: int
+    document_id: int
+    storage_mode: str
+
+
+class OcrResultCreatedOut(BaseModel):
+    id: int
+    document_fields_created: int
+
+
+# ---------------------------------------------------------------------------
+# Organisation (extensions)
+# ---------------------------------------------------------------------------
+
+class OrgUserOut(BaseModel):
+    id: int
+    email: str
+    matricule: str
+
+
+class OrganisationPatchOut(BaseModel):
+    id: int
+    name: str
+
+
+class OrganisationArchiveOut(BaseModel):
+    id: int
+    archived: bool
+
+
+# ---------------------------------------------------------------------------
+# Project
+# ---------------------------------------------------------------------------
+
+class ProjectOut(BaseModel):
+    id: int
+    name: str
+    organisation_id: int
+
+
+class ProjectDetailOut(BaseModel):
+    id: int
+    name: str
+    status: str
+
+
+class ProjectCreatedOut(BaseModel):
+    id: int
+    name: str
+
+
+class UserProjectOut(BaseModel):
+    user_id: int
+    project_id: int
+    role: str
+
+
+# ---------------------------------------------------------------------------
+# DocSchema
+# ---------------------------------------------------------------------------
+
+class SchemaListItemOut(BaseModel):
+    id: int
+    name: str
+    document_type: str
+
+
+class FieldSpecItemOut(BaseModel):
+    id: int
+    field_key: str
+
+
+class SchemaDetailOut(BaseModel):
+    id: int
+    name: str
+    field_specs: List[FieldSpecItemOut]
+
+
+class SchemaCreatedOut(BaseModel):
+    id: int
+    name: str
+
+
+# ---------------------------------------------------------------------------
+# User
+# ---------------------------------------------------------------------------
+
+class UserListItemOut(BaseModel):
+    id: int
+    email: str
+    matricule: str
+
+
+class UserDetailOut(BaseModel):
+    id: int
+    email: str
+    status: str
+
+
+class UserCreatedOut(BaseModel):
+    id: int
+    email: str
+
+
+class UserPatchOut(BaseModel):
+    id: int
+    status: str
