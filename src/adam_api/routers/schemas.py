@@ -338,7 +338,7 @@ async def delete_field_spec(
         raise_not_found(FieldSpec)
     referenced: int = (
         await db.execute(
-            select(func.count(DocumentField.id)).where(DocumentField.field_spec_id == spec_id)
+            select(func.count(DocumentField.id)).where(DocumentField.field_spec_id == spec_id)  # pylint: disable=not-callable
         )
     ).scalar_one()
     if referenced:
