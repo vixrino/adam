@@ -392,3 +392,24 @@ class TestDeleteFieldSpec:
         locked.status = "ARCHIVED"
         mock_db.execute.return_value.scalar_one_or_none.return_value = locked
         assert client.delete("/schemas/1/field-specs/10").status_code == 423
+
+    def test_409_when_referenced_by_document_field(self, client: TestClient, mock_db: AsyncMock) -> None:
+        fs = _make_field_spec(id=10, schema_id=1)
+        mock_db.get.return_value = fs
+        # premier execute : lock check (pas verrouille)
+        # deuxieme execute : compte les DocumentFields → 3 references
+        not_locked = MagicMock()
+        not_locked.scalar_one_or_none.return_value = None
+        doc_field_count = MagicMock()
+        doc_field_count.scalar_one.return_value = 3
+        results = [not_locked, doc_field_count]
+        call_count = 0
+
+        async def _exec(*args: object, **kwargs: object) -> MagicMock:
+            nonlocal call_count
+            r = results[min(call_count, len(results) - 1)]
+            call_count += 1
+            return r
+
+        mock_db.execute.side_effect = _exec
+        assert client.delete("/schemas/1/field-specs/10").status_code == 409

@@ -15,7 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from adam_api.dependencies.db import get_db
 from adam_core.enums.status import DatasetStatus, FieldValueType
-from adam_core.models import Dataset, DocSchema, FieldSpec
+from adam_core.models import Dataset, DocSchema, DocumentField, FieldSpec
 from adam_core.schemas.responses import (
     FieldSpecCreatedOut,
     FieldSpecDetailOut,
@@ -24,7 +24,7 @@ from adam_core.schemas.responses import (
     SchemaDetailOut,
     SchemaListItemOut,
 )
-from adam_core.utils.exceptions import raise_not_found
+from adam_core.utils.exceptions import raise_conflict, raise_not_found
 
 router = APIRouter(prefix="/schemas", tags=["Schemas"])
 
@@ -336,4 +336,11 @@ async def delete_field_spec(
     fs = await db.get(FieldSpec, spec_id)
     if not fs or fs.schema_id != schema_id:
         raise_not_found(FieldSpec)
+    referenced = (
+        await db.execute(
+            select(func.count(DocumentField.id)).where(DocumentField.field_spec_id == spec_id)
+        )
+    ).scalar_one()
+    if referenced:
+        raise_conflict(FieldSpec, f"FieldSpec {spec_id} est reference par {referenced} document(s)")
     await db.delete(fs)
