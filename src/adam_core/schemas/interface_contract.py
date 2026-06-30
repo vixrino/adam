@@ -28,6 +28,27 @@ class FormKVPair(BaseModel):
     def field_key(self) -> str:
         return self.id
 
+    def _parse_number(self) -> Optional[str]:
+        v = self.value
+        raw = v.value if v.value is not None else v.text
+        if raw is None or str(raw).strip() == "":
+            return None
+        return str(raw)
+
+    def _parse_date(self) -> Optional[str]:
+        v = self.value
+        raw = v.value if v.value is not None else v.text
+        if raw is None or str(raw).strip() == "":
+            return None
+        return str(raw)
+
+    def _parse_datetime(self) -> Optional[str]:
+        v = self.value
+        raw = v.value if v.value is not None else v.text
+        if raw is None or str(raw).strip() == "":
+            return None
+        return str(raw)
+
     @property
     def extracted_value(self) -> str:
         v = self.value
@@ -35,8 +56,12 @@ class FormKVPair(BaseModel):
             return str(v.value).lower()
         if v.type == "text":
             return v.text or ""
-        if v.type in ("date", "datetime", "number"):
-            return str(v.value if v.value is not None else v.text or "")
+        if v.type == "number":
+            return self._parse_number() or ""
+        if v.type == "date":
+            return self._parse_date() or ""
+        if v.type == "datetime":
+            return self._parse_datetime() or ""
         return str(v.text or v.value or "")
 
     @property
