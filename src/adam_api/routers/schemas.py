@@ -10,6 +10,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.sql.functions import count
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -338,7 +339,7 @@ async def delete_field_spec(
         raise_not_found(FieldSpec)
     referenced: int = (
         await db.execute(
-            select(func.count(DocumentField.id)).where(DocumentField.field_spec_id == spec_id)  # pylint: disable=not-callable
+            select(count(DocumentField.id)).where(DocumentField.field_spec_id == spec_id)
         )
     ).scalar_one()
     if referenced:
