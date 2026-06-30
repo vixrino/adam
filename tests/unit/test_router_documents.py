@@ -186,8 +186,39 @@ class TestGetDocumentFields:
         ]
         response = client.get("/documents/1/fields")
         field = response.json()[0]
-        for key in ("id", "document_id", "field_spec_id", "status", "consensus_reached"):
+        for key in ("id", "document_id", "field_spec_id", "status", "consensus_reached", "value_type"):
             assert key in field
+
+    def test_field_exposes_value_type(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_document_field()
+        ]
+        response = client.get("/documents/1/fields")
+        assert response.json()[0]["value_type"] == "text"
+
+    def test_boolean_field_returns_native_bool(self, client: TestClient, mock_db: AsyncMock) -> None:
+        df = _make_document_field()
+        df.field_spec.value_type = "BOOLEAN"
+        df.ocr_value = "true"
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [df]
+        response = client.get("/documents/1/fields")
+        assert response.json()[0]["ocr_value"] is True
+
+    def test_number_field_returns_native_int(self, client: TestClient, mock_db: AsyncMock) -> None:
+        df = _make_document_field()
+        df.field_spec.value_type = "NUMBER"
+        df.ocr_value = "450000"
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [df]
+        response = client.get("/documents/1/fields")
+        assert response.json()[0]["ocr_value"] == 450000
+
+    def test_number_non_convertible_returns_string(self, client: TestClient, mock_db: AsyncMock) -> None:
+        df = _make_document_field()
+        df.field_spec.value_type = "NUMBER"
+        df.ocr_value = "12 BIS"
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [df]
+        response = client.get("/documents/1/fields")
+        assert response.json()[0]["ocr_value"] == "12 BIS"
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +207,11 @@ class DocumentFieldsBySectionOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 class DocumentFieldOut(BaseModel):
-    """CA-3 : inclut ocr_polygon, statut et valeur resolue."""
+    """CA-3 : inclut ocr_polygon, statut et valeur resolue.
+
+    ocr_value et resolved_value sont exposees dans leur type natif JSON
+    (bool, int, float ou str) selon value_type, via parse_field_value.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -215,12 +219,20 @@ class DocumentFieldOut(BaseModel):
     document_id: int
     field_spec_id: int
     group_id: Optional[str] = None
-    ocr_value: Optional[str] = None
-    resolved_value: Optional[str] = None
+    value_type: Optional[str] = None
+    ocr_value: Optional[Any] = None
+    resolved_value: Optional[Any] = None
     status: str
     ocr_confidence: Optional[float] = None
     consensus_reached: bool
     ocr_polygon: Optional[List[float]] = None
+
+    @model_validator(mode="after")
+    def _parse_values(self) -> "DocumentFieldOut":
+        from adam_core.utils.field_parser import parse_field_value
+        self.ocr_value = parse_field_value(self.ocr_value, self.value_type)
+        self.resolved_value = parse_field_value(self.resolved_value, self.value_type)
+        return self
 
 
 class DocumentFieldPatchOut(BaseModel):
