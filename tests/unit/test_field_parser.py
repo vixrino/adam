@@ -45,6 +45,27 @@ def test_number_none_returns_none() -> None:
     assert parse_field_value(None, "NUMBER") is None
 
 
+def test_number_french_thousand_separator_space() -> None:
+    assert parse_field_value("450 000", "NUMBER") == 450000
+    assert isinstance(parse_field_value("450 000", "NUMBER"), int)
+
+
+def test_number_french_decimal_comma() -> None:
+    assert parse_field_value("12,5", "NUMBER") == 12.5
+
+
+def test_number_french_thousand_dot_decimal_comma() -> None:
+    assert parse_field_value("1.234,56", "NUMBER") == 1234.56
+
+
+def test_number_french_thousand_space_decimal_comma() -> None:
+    assert parse_field_value("1 234,56", "NUMBER") == 1234.56
+
+
+def test_number_french_not_convertible_returns_raw() -> None:
+    assert parse_field_value("12 BIS", "NUMBER") == "12 BIS"
+
+
 # ---------------------------------------------------------------------------
 # BOOLEAN
 # ---------------------------------------------------------------------------
@@ -89,6 +110,18 @@ def test_date_none_returns_none() -> None:
     assert parse_field_value(None, "DATE") is None
 
 
+def test_date_french_slash_format() -> None:
+    assert parse_field_value("20/06/2026", "DATE") == "2026-06-20"
+
+
+def test_date_french_dash_format() -> None:
+    assert parse_field_value("20-06-2026", "DATE") == "2026-06-20"
+
+
+def test_date_french_dot_format() -> None:
+    assert parse_field_value("20.06.2026", "DATE") == "2026-06-20"
+
+
 # ---------------------------------------------------------------------------
 # DATETIME
 # ---------------------------------------------------------------------------
@@ -104,6 +137,18 @@ def test_datetime_invalid_returns_raw() -> None:
 
 def test_datetime_none_returns_none() -> None:
     assert parse_field_value(None, "DATETIME") is None
+
+
+def test_datetime_french_slash_with_seconds() -> None:
+    assert parse_field_value("20/06/2026 14:30:00", "DATETIME") == "2026-06-20T14:30:00"
+
+
+def test_datetime_french_slash_without_seconds() -> None:
+    assert parse_field_value("20/06/2026 14:30", "DATETIME") == "2026-06-20T14:30:00"
+
+
+def test_datetime_french_dash_format() -> None:
+    assert parse_field_value("20-06-2026 14:30", "DATETIME") == "2026-06-20T14:30:00"
 
 
 # ---------------------------------------------------------------------------
