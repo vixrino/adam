@@ -176,11 +176,11 @@ async def seed_hardcoded(session: AsyncSession, project: Project) -> None:
 async def seed_from_form_json(
     session: AsyncSession, project: Project, json_path: Path
 ) -> None:
-    from adam_core.schemas.interface_contract import SmartdocDocument
+    from adam_core.schemas.interface_contract import FormDocument
     print(f"\n --- Mode : FORM JSON ({json_path.name}) ---")
     with open(json_path, encoding="utf-8") as f:
        json_raw = json.load(f)
-    form_doc = SmartdocDocument.model_validate(json_raw)
+    form_doc = FormDocument.model_validate(json_raw)
     print(f" JSON valide : {form_doc.page_count} pages, document_id={form_doc.document_id}")
     print(" [4/8] DocSchema...")
     schema = DocSchema(

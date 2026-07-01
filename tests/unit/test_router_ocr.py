@@ -158,7 +158,7 @@ class TestPostOcrResult:
         no_existing.scalars.return_value.all.return_value = []
         mock_db.execute.side_effect = [no_specs, no_existing]
 
-        with patch("adam_api.routers.ocr.SmartdocDocument") as mock_form:
+        with patch("adam_api.routers.ocr.FormDocument") as mock_form:
             mock_form.model_validate.return_value.iter_kv_pairs.return_value = []
             resp = client.post("/ocr-results", json={
                 "document_id": 1, "dataset_id": 1, "raw_json": {"pages": []}
@@ -188,7 +188,7 @@ class TestPostOcrResult:
         existing_result.scalars.return_value.all.return_value = [10]  # already exists
         mock_db.execute.side_effect = [specs_result, existing_result]
 
-        with patch("adam_api.routers.ocr.SmartdocDocument") as mock_form:
+        with patch("adam_api.routers.ocr.FormDocument") as mock_form:
             mock_form.model_validate.return_value.iter_kv_pairs.return_value = []
             resp = client.post("/ocr-results", json={
                 "document_id": 1, "dataset_id": 1, "raw_json": {}

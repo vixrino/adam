@@ -1,8 +1,8 @@
-from adam_core.schemas.interface_contract import SmartdocDocument
+from adam_core.schemas.interface_contract import FormDocument
 
 
 def test_form_document_minimal() -> None:
-    doc = SmartdocDocument.model_validate(
+    doc = FormDocument.model_validate(
         {
             "format_version": "0.3",
             "document_id": "test",
@@ -14,8 +14,8 @@ def test_form_document_minimal() -> None:
     assert doc.extract_field_specs() == []
 
 
-def _doc_with_single_field(value_type: str) -> SmartdocDocument:
-    return SmartdocDocument.model_validate(
+def _doc_with_single_field(value_type: str) -> FormDocument:
+    return FormDocument.model_validate(
         {
             "format_version": "0.3",
             "document_id": "test",

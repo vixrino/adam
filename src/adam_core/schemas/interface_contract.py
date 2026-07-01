@@ -61,7 +61,7 @@ class FormPage(BaseModel):
     sections: List[FormSection] = Field(default_factory=list)
 
 
-class SmartdocDocument(BaseModel):
+class FormDocument(BaseModel):
     format_version: str
     document_id: str
     coordinate_unit: str = "pixel"
