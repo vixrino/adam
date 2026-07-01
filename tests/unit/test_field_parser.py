@@ -142,6 +142,10 @@ def test_date_french_strips_surrounding_whitespace() -> None:
     assert parse_field_value("  20/06/2026  ", "DATE") == "2026-06-20"
 
 
+def test_date_french_space_separator() -> None:
+    assert parse_field_value("20 06 2026", "DATE") == "2026-06-20"
+
+
 # ---------------------------------------------------------------------------
 # DATETIME
 # ---------------------------------------------------------------------------
@@ -177,6 +181,10 @@ def test_datetime_strips_surrounding_whitespace() -> None:
 
 def test_datetime_z_suffix_normalized_to_offset() -> None:
     assert parse_field_value("2024-01-15T10:30:00Z", "DATETIME") == "2024-01-15T10:30:00+00:00"
+
+
+def test_datetime_french_space_date_separator() -> None:
+    assert parse_field_value("20 06 2026 14:30", "DATETIME") == "2026-06-20T14:30:00"
 
 
 # ---------------------------------------------------------------------------

@@ -17,15 +17,24 @@ from typing import Any, Optional
 
 from adam_core.enums.status import FieldValueType
 
-_FRENCH_DATE_FORMATS = ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y")
-_FRENCH_DATETIME_FORMATS = (
-    "%d/%m/%Y %H:%M:%S",
-    "%d/%m/%Y %H:%M",
-    "%d-%m-%Y %H:%M:%S",
-    "%d-%m-%Y %H:%M",
-    "%d.%m.%Y %H:%M:%S",
-    "%d.%m.%Y %H:%M",
-)
+_DATE_SEPARATORS = ("/", "-", ".", " ")
+_TIME_FORMATS = ("%H:%M:%S", "%H:%M")
+
+
+def _date_formats(year_directive: str) -> tuple[str, ...]:
+    return tuple(f"%d{sep}%m{sep}{year_directive}" for sep in _DATE_SEPARATORS)
+
+
+def _datetime_formats(year_directive: str) -> tuple[str, ...]:
+    return tuple(
+        f"%d{sep}%m{sep}{year_directive} {time_fmt}"
+        for sep in _DATE_SEPARATORS
+        for time_fmt in _TIME_FORMATS
+    )
+
+
+_FRENCH_DATE_FORMATS = _date_formats("%Y")
+_FRENCH_DATETIME_FORMATS = _datetime_formats("%Y")
 _THOUSAND_SEPARATORS = (" ", "\xa0", " ")  # espace, espace insecable, espace fine insecable
 
 
