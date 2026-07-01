@@ -90,6 +90,8 @@ class FormDocument(BaseModel):
                         ftype = FieldValueType.NUMBER.value
                     elif vtype == "DATE":
                         ftype = FieldValueType.DATE.value
+                    elif vtype == "DATETIME":
+                        ftype = FieldValueType.DATETIME.value
                     else:
                         ftype = FieldValueType.TEXT.value
                     specs.append(

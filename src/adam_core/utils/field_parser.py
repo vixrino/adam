@@ -11,6 +11,7 @@ le format ISO 8601 / anglo-saxon ne correspond pas.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any, Optional
 
@@ -25,7 +26,7 @@ _FRENCH_DATETIME_FORMATS = (
     "%d.%m.%Y %H:%M:%S",
     "%d.%m.%Y %H:%M",
 )
-_THOUSAND_SEPARATORS = (" ", " ", " ")
+_THOUSAND_SEPARATORS = (" ", "\xa0", " ")  # espace, espace insecable, espace fine insecable
 
 
 def _normalize_french_number(raw: str) -> str:
@@ -37,6 +38,21 @@ def _normalize_french_number(raw: str) -> str:
         s = s.replace(".", "")  # points restants = separateurs de milliers ("1.234,56")
         s = s.replace(",", ".")
     return s
+
+
+def _try_number(s: str) -> Optional[Any]:
+    """Tente int puis float ; rejette nan/inf, non representables en JSON strict."""
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        pass
+    try:
+        value = float(s)
+    except (ValueError, TypeError):
+        return None
+    if not math.isfinite(value):
+        return None
+    return value
 
 
 def parse_field_value(raw: Optional[str], value_type: Optional[str]) -> Any:
@@ -54,43 +70,34 @@ def parse_field_value(raw: Optional[str], value_type: Optional[str]) -> Any:
     if value_type == FieldValueType.BOOLEAN.value:
         return raw.strip().lower() in {"true", "1", "yes", "oui"}
     if value_type == FieldValueType.NUMBER.value:
-        try:
-            return int(raw)
-        except (ValueError, TypeError):
-            pass
-        try:
-            return float(raw)
-        except (ValueError, TypeError):
-            pass
-        normalized = _normalize_french_number(raw)
-        try:
-            return int(normalized)
-        except (ValueError, TypeError):
-            pass
-        try:
-            return float(normalized)
-        except (ValueError, TypeError):
-            pass
+        result = _try_number(raw)
+        if result is not None:
+            return result
+        result = _try_number(_normalize_french_number(raw))
+        if result is not None:
+            return result
         return raw
     if value_type == FieldValueType.DATE.value:
+        candidate = raw.strip()
         try:
-            return datetime.fromisoformat(raw).date().isoformat()
+            return datetime.fromisoformat(candidate).date().isoformat()
         except (ValueError, TypeError):
             pass
         for fmt in _FRENCH_DATE_FORMATS:
             try:
-                return datetime.strptime(raw, fmt).date().isoformat()
+                return datetime.strptime(candidate, fmt).date().isoformat()
             except (ValueError, TypeError):
                 continue
         return raw
     if value_type == FieldValueType.DATETIME.value:
+        candidate = raw.strip()
         try:
-            return datetime.fromisoformat(raw).isoformat()
+            return datetime.fromisoformat(candidate).isoformat()
         except (ValueError, TypeError):
             pass
         for fmt in _FRENCH_DATETIME_FORMATS:
             try:
-                return datetime.strptime(raw, fmt).isoformat()
+                return datetime.strptime(candidate, fmt).isoformat()
             except (ValueError, TypeError):
                 continue
         return raw
