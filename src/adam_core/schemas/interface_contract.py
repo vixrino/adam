@@ -14,7 +14,7 @@ class FormValue(BaseModel):
     text: Optional[str] = None
     value: Optional[Any] = None
     raw_text: Optional[str] = None
-    polygon: List[float] = Field(default_factory=lambda: [0, 0, 0, 0, 0, 0, 0, 0])
+    polygon: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     confidence: float = 1.0
 
 
@@ -61,7 +61,7 @@ class FormPage(BaseModel):
     sections: List[FormSection] = Field(default_factory=list)
 
 
-class FormDocument(BaseModel):
+class SmartdocDocument(BaseModel):
     format_version: str
     document_id: str
     coordinate_unit: str = "pixel"
