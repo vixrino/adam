@@ -1,6 +1,8 @@
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from adam_core.utils.hashing import sha256_bytes, sha256_file
 
 
@@ -42,3 +44,8 @@ def test_sha256_file_multipart(tmp_path: Path) -> None:
     f = tmp_path / "big.bin"
     f.write_bytes(content)
     assert sha256_file(f) == hashlib.sha256(content).hexdigest()
+
+
+def test_sha256_file_missing_path_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        sha256_file(tmp_path / "does-not-exist.bin")
