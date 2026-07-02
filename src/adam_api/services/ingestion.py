@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from adam_core.enums.status import DocumentStatus
@@ -46,7 +47,13 @@ def pvc_relative_path(checksum: str) -> Path:
 async def _get_or_create_file(
     db: AsyncSession, *, checksum: str, content: bytes, pvc_root: Path
 ) -> Tuple[File, bool]:
-    """Reutilise le FILE existant (par hash) ou le cree, en ecrivant sur le PVC."""
+    """Reutilise le FILE existant (par hash) ou le cree, en ecrivant sur le PVC.
+
+    L'INSERT utilise ON CONFLICT DO NOTHING sur sha256_checksum (contrainte
+    unique) pour rester correct sous ingestion concurrente du meme contenu :
+    si une autre transaction a cree la ligne entre notre SELECT et notre
+    INSERT, on ne leve pas d'IntegrityError, on relit la ligne gagnante.
+    """
     file_row = (
         await db.execute(select(File).where(File.sha256_checksum == checksum))
     ).scalar_one_or_none()
@@ -60,16 +67,29 @@ async def _get_or_create_file(
 
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_bytes(content)
-    file_row = File(
-        file_path=str(pvc_relative_path(checksum)),
-        storage_type="pvc",
-        mime_type=PDF_MIME,
-        file_size_bytes=len(content),
-        sha256_checksum=checksum,
+
+    stmt = (
+        pg_insert(File)
+        .values(
+            file_path=str(pvc_relative_path(checksum)),
+            storage_type="pvc",
+            mime_type=PDF_MIME,
+            file_size_bytes=len(content),
+            sha256_checksum=checksum,
+        )
+        .on_conflict_do_nothing(index_elements=[File.sha256_checksum])
+        .returning(File)
     )
-    db.add(file_row)
-    await db.flush()
-    return file_row, True
+    file_row = (await db.execute(stmt)).scalar_one_or_none()
+    if file_row is not None:
+        await db.flush()
+        return file_row, True
+
+    # Course perdue : une autre transaction a insere la ligne en premier.
+    file_row = (
+        await db.execute(select(File).where(File.sha256_checksum == checksum))
+    ).scalar_one()
+    return file_row, False
 
 
 async def ingest_pdf(

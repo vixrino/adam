@@ -100,18 +100,46 @@ async def test_get_or_create_file_existing_missing_from_disk(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_get_or_create_file_new(tmp_path: Path) -> None:
     checksum = "c" * 64
+    new_file = MagicMock()
+
+    select_result = MagicMock()
+    select_result.scalar_one_or_none.return_value = None
+    insert_result = MagicMock()
+    insert_result.scalar_one_or_none.return_value = new_file
+
     db = AsyncMock()
-    db.add = MagicMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=mock_result)
+    db.execute = AsyncMock(side_effect=[select_result, insert_result])
     db.flush = AsyncMock()
 
     file_row, created = await _get_or_create_file(db, checksum=checksum, content=b"new content", pvc_root=tmp_path)
     abs_path = tmp_path / pvc_relative_path(checksum)
     assert abs_path.exists()
     assert created is True
-    db.add.assert_called_once()
+    assert file_row is new_file
+    db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_file_concurrent_insert_loses_race(tmp_path: Path) -> None:
+    """L'INSERT ON CONFLICT DO NOTHING ne retourne rien : on relit la ligne gagnante."""
+    checksum = "d" * 64
+    winning_file = MagicMock()
+
+    select_result = MagicMock()
+    select_result.scalar_one_or_none.return_value = None
+    insert_result = MagicMock()
+    insert_result.scalar_one_or_none.return_value = None
+    reselect_result = MagicMock()
+    reselect_result.scalar_one.return_value = winning_file
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=[select_result, insert_result, reselect_result])
+    db.flush = AsyncMock()
+
+    file_row, created = await _get_or_create_file(db, checksum=checksum, content=b"content", pvc_root=tmp_path)
+    assert file_row is winning_file
+    assert created is False
+    db.flush.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
