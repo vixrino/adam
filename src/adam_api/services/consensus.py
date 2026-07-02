@@ -92,9 +92,17 @@ async def _resolve(document_id: int, dataset_id: int, db: AsyncSession) -> dict[
     for p in proposals:
         by_field.setdefault(p.document_field_id, []).append(p)
     all_resolved = all(_apply_vote(df, by_field.get(df.id, [])) for df in fields)
+    disputed_count = sum(1 for df in fields if df.status == DocumentFieldStatus.DISPUTED.value)
     if all_resolved:
         document.status = DocumentStatus.VALIDATED.value
-    disputed_count = sum(1 for df in fields if df.status == DocumentFieldStatus.DISPUTED.value)
+        logger.info("document valide [document_id=%s]", document_id)
+    else:
+        logger.info(
+            "consensus partiel [document_id=%s disputed=%s/%s]",
+            document_id,
+            disputed_count,
+            len(fields),
+        )
     return {
         "document_id": document_id,
         "document_status": document.status,
