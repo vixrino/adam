@@ -19,27 +19,15 @@ from adam_core.enums.status import DocumentStatus
 # ---------------------------------------------------------------------------
 
 def test_looks_like_pdf_magic_bytes() -> None:
-    assert looks_like_pdf(b"%PDF-1.4 content", content_type=None, file_name=None) is True
+    assert looks_like_pdf(b"%PDF-1.4 content") is True
 
 
-def test_looks_like_pdf_content_type() -> None:
-    assert looks_like_pdf(b"not pdf", content_type="application/pdf", file_name=None) is True
+def test_looks_like_pdf_no_magic_bytes() -> None:
+    assert looks_like_pdf(b"not pdf") is False
 
 
-def test_looks_like_pdf_extension() -> None:
-    assert looks_like_pdf(b"not pdf", content_type=None, file_name="doc.pdf") is True
-
-
-def test_looks_like_pdf_extension_uppercase() -> None:
-    assert looks_like_pdf(b"not pdf", content_type=None, file_name="DOC.PDF") is True
-
-
-def test_looks_like_pdf_no_match() -> None:
-    assert looks_like_pdf(b"not pdf", content_type="text/plain", file_name="doc.txt") is False
-
-
-def test_looks_like_pdf_no_file_name() -> None:
-    assert looks_like_pdf(b"not pdf", content_type=None, file_name=None) is False
+def test_looks_like_pdf_empty_content() -> None:
+    assert looks_like_pdf(b"") is False
 
 
 # ---------------------------------------------------------------------------

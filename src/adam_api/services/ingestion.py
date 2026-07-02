@@ -13,7 +13,7 @@ des Documents distincts dans des datasets differents.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -30,13 +30,13 @@ PDF_MIME = "application/pdf"
 _PDF_MAGIC = b"%PDF-"
 
 
-def looks_like_pdf(content: bytes, *, content_type: Optional[str], file_name: Optional[str]) -> bool:
-    """Heuristique simple : magic bytes %PDF-, content-type ou extension."""
-    if content[:5] == _PDF_MAGIC:
-        return True
-    if content_type == PDF_MIME:
-        return True
-    return (file_name or "").lower().endswith(".pdf")
+def looks_like_pdf(content: bytes) -> bool:
+    """Valide le contenu reel via les magic bytes %PDF-.
+
+    content-type et nom de fichier sont fournis par le client et donc
+    falsifiables : ils ne sont jamais utilises comme critere de validation.
+    """
+    return content[:5] == _PDF_MAGIC
 
 
 def pvc_relative_path(checksum: str) -> Path:

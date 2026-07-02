@@ -140,7 +140,7 @@ async def ingest_documents(
     for upload in files:
         file_name = upload.filename or "sans_nom.pdf"
         content = await upload.read()
-        if not looks_like_pdf(content, content_type=upload.content_type, file_name=file_name):
+        if not looks_like_pdf(content):
             logger.warning("Fichier ignore (non PDF) [dataset_id=%s file_name=%s]", dataset_id, file_name)
             items.append(FileIngestionItemOut(file_name=file_name, status="rejected", reason="non-PDF"))
             continue
