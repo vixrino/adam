@@ -13,7 +13,7 @@ des Documents distincts dans des datasets differents.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any, Tuple, cast
 
 import pymupdf
 from sqlalchemy import select
@@ -37,10 +37,15 @@ def looks_like_pdf(content: bytes) -> bool:
     falsifiables : ils ne sont jamais utilises comme critere de validation.
     """
     try:
-        with pymupdf.open(stream=content, filetype="pdf") as doc:
-            return doc.page_count > 0
+        # pymupdf expose py.typed mais Document.__init__ n'a pas d'annotations :
+        # l'appel et l'attribut suivant sont donc non types cote lib, pas cote nous.
+        doc = pymupdf.open(stream=content, filetype="pdf")  # type: ignore[no-untyped-call]
     except RuntimeError:
         return False
+    try:
+        return cast(int, doc.page_count) > 0
+    finally:
+        doc.close()  # type: ignore[no-untyped-call]
 
 
 def pvc_relative_path(checksum: str) -> Path:
