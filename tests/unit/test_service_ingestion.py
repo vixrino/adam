@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pymupdf
 import pytest
 
 from adam_api.services.ingestion import (
@@ -18,8 +19,16 @@ from adam_core.enums.status import DocumentStatus
 # looks_like_pdf
 # ---------------------------------------------------------------------------
 
-def test_looks_like_pdf_magic_bytes() -> None:
-    assert looks_like_pdf(b"%PDF-1.4 content") is True
+def _minimal_valid_pdf() -> bytes:
+    doc = pymupdf.open()
+    doc.new_page()
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_looks_like_pdf_valid_structure() -> None:
+    assert looks_like_pdf(_minimal_valid_pdf()) is True
 
 
 def test_looks_like_pdf_no_magic_bytes() -> None:
@@ -28,6 +37,11 @@ def test_looks_like_pdf_no_magic_bytes() -> None:
 
 def test_looks_like_pdf_empty_content() -> None:
     assert looks_like_pdf(b"") is False
+
+
+def test_looks_like_pdf_header_only_without_valid_structure() -> None:
+    # magic bytes presents mais structure PDF absente/corrompue.
+    assert looks_like_pdf(b"%PDF-1.4\ngarbage, not a real xref table") is False
 
 
 # ---------------------------------------------------------------------------

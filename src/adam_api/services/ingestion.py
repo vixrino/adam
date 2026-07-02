@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Tuple
 
+import pymupdf
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,16 +28,19 @@ from adam_core.utils.logging import get_logger
 logger = get_logger(__name__)
 
 PDF_MIME = "application/pdf"
-_PDF_MAGIC = b"%PDF-"
 
 
 def looks_like_pdf(content: bytes) -> bool:
-    """Valide le contenu reel via les magic bytes %PDF-.
+    """Valide que le contenu est un PDF structurellement correct (via pymupdf).
 
     content-type et nom de fichier sont fournis par le client et donc
     falsifiables : ils ne sont jamais utilises comme critere de validation.
     """
-    return content[:5] == _PDF_MAGIC
+    try:
+        with pymupdf.open(stream=content, filetype="pdf") as doc:
+            return doc.page_count > 0
+    except RuntimeError:
+        return False
 
 
 def pvc_relative_path(checksum: str) -> Path:
