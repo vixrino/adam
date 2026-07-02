@@ -1,6 +1,9 @@
 """
 Tests unitaires adam_api/routers/datasets.py
 """
+from pathlib import Path
+
+import pymupdf
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
@@ -213,3 +216,163 @@ class TestPatchDataset:
         mock_db.get.return_value = _make_dataset()
         response = client.patch("/datasets/1", json={"required_operators": 99})
         assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# POST /datasets/{dataset_id}/documents
+# ---------------------------------------------------------------------------
+
+
+def _minimal_valid_pdf() -> bytes:
+    doc = pymupdf.open()
+    doc.new_page()
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def _exec_result(scalar_one_or_none: object = None, scalar_one: object = None) -> MagicMock:
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = scalar_one_or_none
+    if scalar_one is not None:
+        result.scalar_one.return_value = scalar_one
+    return result
+
+
+def _capture_document_id(instance: object) -> None:
+    if type(instance).__name__ == "Document":
+        instance.id = 42  # type: ignore[attr-defined]
+
+
+class TestIngestDocuments:
+    def test_404_when_dataset_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = None
+        response = client.post(
+            "/datasets/99/documents",
+            files=[("files", ("doc.pdf", _minimal_valid_pdf(), "application/pdf"))],
+        )
+        assert response.status_code == 404
+
+    def test_new_file_returns_200_and_created(
+        self,
+        client: TestClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr("adam_api.routers.datasets.settings.pvc_mount_path", str(tmp_path))
+        mock_db.get.return_value = _make_dataset()
+        mock_db.add = MagicMock(side_effect=_capture_document_id)
+        new_file = MagicMock()
+        new_file.id = 7
+        mock_db.execute = AsyncMock(
+            side_effect=[
+                _exec_result(scalar_one_or_none=None),  # existing document (dataset+checksum) -> aucun
+                _exec_result(scalar_one_or_none=None),  # File existant par checksum -> aucun
+                _exec_result(scalar_one_or_none=new_file),  # INSERT ... RETURNING -> cree
+            ]
+        )
+
+        response = client.post(
+            "/datasets/1/documents",
+            files=[("files", ("doc.pdf", _minimal_valid_pdf(), "application/pdf"))],
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["created"] == 1
+        assert body["already_exists"] == 0
+        assert body["rejected"] == 0
+        assert body["results"][0]["file_name"] == "doc.pdf"
+        assert body["results"][0]["status"] == "created"
+
+    def test_duplicate_file_in_dataset_returns_already_exists(
+        self,
+        client: TestClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr("adam_api.routers.datasets.settings.pvc_mount_path", str(tmp_path))
+        mock_db.get.return_value = _make_dataset()
+        existing_doc = MagicMock()
+        existing_doc.id = 10
+        existing_doc.file_id = 3
+        mock_db.execute = AsyncMock(
+            side_effect=[
+                _exec_result(scalar_one_or_none=existing_doc),  # deja lie dans ce dataset
+            ]
+        )
+
+        response = client.post(
+            "/datasets/1/documents",
+            files=[("files", ("doc.pdf", _minimal_valid_pdf(), "application/pdf"))],
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["created"] == 0
+        assert body["already_exists"] == 1
+        assert body["results"][0]["status"] == "already_exists"
+        assert body["results"][0]["document_id"] == 10
+
+    def test_non_pdf_content_rejected(
+        self,
+        client: TestClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr("adam_api.routers.datasets.settings.pvc_mount_path", str(tmp_path))
+        mock_db.get.return_value = _make_dataset()
+
+        response = client.post(
+            "/datasets/1/documents",
+            files=[("files", ("fake.pdf", b"not a real pdf", "application/pdf"))],
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["created"] == 0
+        assert body["rejected"] == 1
+        assert body["results"][0]["status"] == "rejected"
+        assert body["results"][0]["reason"] == "non-PDF"
+        # aucun appel DB pour un fichier rejete avant meme la validation
+        mock_db.execute.assert_not_awaited()
+
+    def test_multiple_files_detailed_per_file(
+        self,
+        client: TestClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr("adam_api.routers.datasets.settings.pvc_mount_path", str(tmp_path))
+        mock_db.get.return_value = _make_dataset()
+        mock_db.add = MagicMock(side_effect=_capture_document_id)
+        new_file = MagicMock()
+        new_file.id = 7
+        mock_db.execute = AsyncMock(
+            side_effect=[
+                _exec_result(scalar_one_or_none=None),  # existing doc check (fichier 1)
+                _exec_result(scalar_one_or_none=None),  # File select (fichier 1)
+                _exec_result(scalar_one_or_none=new_file),  # INSERT RETURNING (fichier 1)
+            ]
+        )
+
+        response = client.post(
+            "/datasets/1/documents",
+            files=[
+                ("files", ("valid.pdf", _minimal_valid_pdf(), "application/pdf")),
+                ("files", ("invalid.pdf", b"garbage", "application/pdf")),
+            ],
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["received"] == 2
+        assert body["created"] == 1
+        assert body["rejected"] == 1
+        statuses = {r["file_name"]: r["status"] for r in body["results"]}
+        assert statuses["valid.pdf"] == "created"
+        assert statuses["invalid.pdf"] == "rejected"
