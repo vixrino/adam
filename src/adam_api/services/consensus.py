@@ -51,11 +51,14 @@ def _apply_vote(df: DocumentField, field_proposals: list[FieldProposal]) -> bool
 async def _resolve(document_id: int, dataset_id: int, db: AsyncSession) -> dict[str, Any]:
     dataset = await db.get(Dataset, dataset_id)
     if not dataset:
+        logger.error("try_resolve: dataset introuvable [dataset_id=%s]", dataset_id)
         return {"document_id": document_id, "status": "error", "reason": "dataset introuvable"}
     document = await db.get(Document, document_id)
     if not document:
+        logger.error("try_resolve: document introuvable [document_id=%s]", document_id)
         return {"document_id": document_id, "status": "error", "reason": "document introuvable"}
     if document.status == DocumentStatus.VALIDATED.value:
+        logger.debug("try_resolve: document deja valide [document_id=%s]", document_id)
         return {"document_id": document_id, "status": "already_validated"}
     submitted_count: int = (
         await db.execute(
@@ -65,6 +68,12 @@ async def _resolve(document_id: int, dataset_id: int, db: AsyncSession) -> dict[
         )
     ).scalar_one()
     if submitted_count < dataset.required_operators:
+        logger.debug(
+            "try_resolve: en attente [document_id=%s submitted=%s/%s]",
+            document_id,
+            submitted_count,
+            dataset.required_operators,
+        )
         return {
             "document_id": document_id,
             "status": "waiting",
