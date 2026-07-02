@@ -57,13 +57,3 @@ cd src/adam_core && python -m alembic upgrade head
 4. Push : `git push origin feature/ma-feature`
 5. Ouvrir une Merge Request vers `develop`
 6. Review + merge
-
-
-
-from nota_core.schemas.interface_contract import SmartdocDocument
-from tests.unit.test_router_ocr import _valid_raw_json  # ou le nom exact de la fixture
-
-try:
-    SmartdocDocument.model_validate(_valid_raw_json())
-except Exception as e:
-    print(e)
