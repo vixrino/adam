@@ -471,7 +471,7 @@ class TestFieldProposalOut:
 
     def test_with_value(self):
         p = FieldProposalOut(
-            id=2, job_id=1, document_field_id=3, step="CONSENSUS", value="Dupont", value_type="text"
+            id=2, job_id=1, document_field_id=3, step="CONSENSUS", value="Dupont", value_type="TEXT"
         )
         assert p.value == "Dupont"
 

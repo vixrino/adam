@@ -226,4 +226,4 @@ class TestExtractFieldSpecs:
         kv = KVPair(id="deposant.nom")
         doc = _document(pages=[_page(sections=[_section("deposant", [kv])])])
         spec = doc.extract_field_specs()[0]
-        assert spec["value_type"] == "text"
+        assert spec["value_type"] == "TEXT"

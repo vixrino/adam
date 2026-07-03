@@ -64,8 +64,8 @@ class ExportStatus(str, Enum):
 
 
 class FieldValueType(str, Enum):
-    TEXT = "text"
-    NUMBER = "number"
-    DATE = "date"
-    DATETIME = "datetime"
-    BOOLEAN = "boolean"
+    TEXT = "TEXT"
+    NUMBER = "NUMBER"
+    DATE = "DATE"
+    DATETIME = "DATETIME"
+    BOOLEAN = "BOOLEAN"

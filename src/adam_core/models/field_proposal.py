@@ -41,7 +41,7 @@ class FieldProposal(Base):
         String,
         nullable=False,
         default=FieldValueType.TEXT.value,
-        comment="Type de valeur : text, number, date, datetime, boolean",
+        comment="Type de valeur : TEXT, NUMBER, DATE, DATETIME, BOOLEAN",
     )
     value: Mapped[Optional[str]] = mapped_column(
         String,

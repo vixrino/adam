@@ -66,7 +66,7 @@ class FieldSpec(Base):
         String,
         nullable=False,
         default=FieldValueType.TEXT.value,
-        comment="Type de valeur : text, number, date, datetime, boolean",
+        comment="Type de valeur : TEXT, NUMBER, DATE, DATETIME, BOOLEAN",
     )
     required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

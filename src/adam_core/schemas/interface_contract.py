@@ -8,6 +8,14 @@ from pydantic import BaseModel, Field
 
 from adam_core.enums.status import FieldValueType
 
+_FIELD_VALUE_TYPE_BY_WIRE_TYPE = {
+    "text": FieldValueType.TEXT.value,
+    "number": FieldValueType.NUMBER.value,
+    "date": FieldValueType.DATE.value,
+    "datetime": FieldValueType.DATETIME.value,
+    "boolean": FieldValueType.BOOLEAN.value,
+}
+
 
 class KVTextValue(BaseModel):
     type: Literal["text"] = "text"
@@ -143,9 +151,7 @@ class SmartdocDocument(BaseModel):
                     if dedup_key in seen:
                         continue
                     seen.add(dedup_key)
-                    ftype = kv.value_type or FieldValueType.TEXT.value
-                    if ftype not in {t.value for t in FieldValueType}:
-                        ftype = FieldValueType.TEXT.value
+                    ftype = _FIELD_VALUE_TYPE_BY_WIRE_TYPE.get(kv.value_type, FieldValueType.TEXT.value)
                     specs.append(
                         {
                             "page": page.page_number,
