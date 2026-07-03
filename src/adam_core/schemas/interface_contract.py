@@ -151,7 +151,7 @@ class SmartdocDocument(BaseModel):
                     if dedup_key in seen:
                         continue
                     seen.add(dedup_key)
-                    ftype = _FIELD_VALUE_TYPE_BY_WIRE_TYPE.get(kv.value_type, FieldValueType.TEXT.value)
+                    ftype = _FIELD_VALUE_TYPE_BY_WIRE_TYPE.get(kv.value_type or "", FieldValueType.TEXT.value)
                     specs.append(
                         {
                             "page": page.page_number,
