@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -62,9 +62,9 @@ class FormPage(BaseModel):
 
 
 class FormDocument(BaseModel):
-    format_version: str
+    format_version: Literal["0.3"]
     document_id: str
-    coordinate_unit: str = "pixel"
+    coordinate_unit: Literal["inch", "mm", "pixel"] = "pixel"
     page_count: int
     pages: List[FormPage] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
