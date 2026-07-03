@@ -21,7 +21,7 @@ class KVTextValue(BaseModel):
     type: Literal["text"] = "text"
     text: Optional[str] = None
     raw_text: Optional[str] = None
-    polygon: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    polygon: Optional[List[float]] = None
     confidence: float = 1.0
 
 
@@ -32,7 +32,7 @@ class KVNumberValue(BaseModel):
     type: Literal["number"] = "number"
     value: Optional[Any] = None
     raw_text: Optional[str] = None
-    polygon: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    polygon: Optional[List[float]] = None
     confidence: float = 1.0
 
 
@@ -40,7 +40,7 @@ class KVDateValue(BaseModel):
     type: Literal["date"] = "date"
     value: Optional[str] = None
     raw_text: Optional[str] = None
-    polygon: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    polygon: Optional[List[float]] = None
     confidence: float = 1.0
 
 
@@ -48,7 +48,7 @@ class KVDatetimeValue(BaseModel):
     type: Literal["datetime"] = "datetime"
     value: Optional[str] = None
     raw_text: Optional[str] = None
-    polygon: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    polygon: Optional[List[float]] = None
     confidence: float = 1.0
 
 
@@ -56,7 +56,7 @@ class KVBooleanValue(BaseModel):
     type: Literal["boolean"] = "boolean"
     value: Optional[bool] = None
     raw_text: Optional[str] = None
-    polygon: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    polygon: Optional[List[float]] = None
     confidence: float = 1.0
 
 
@@ -107,10 +107,8 @@ class KVPair(BaseModel):
         return self.value.confidence if self.value else 0.0
 
     @property
-    def polygon(self) -> List[float]:
-        if self.value:
-            return self.value.polygon
-        return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    def polygon(self) -> Optional[List[float]]:
+        return self.value.polygon if self.value else None
 
 
 class Section(BaseModel):
