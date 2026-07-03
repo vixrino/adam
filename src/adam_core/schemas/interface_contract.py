@@ -132,7 +132,7 @@ class SmartdocDocument(BaseModel):
     coordinate_unit: Literal["inch", "mm", "pixel"] = "pixel"
     page_count: int
     pages: List[Page] = Field(default_factory=list)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict, min_length=1)
 
     def iter_kv_pairs(self) -> Iterator[Tuple[int, Section, KVPair]]:
         for page in self.pages:
