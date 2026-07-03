@@ -151,7 +151,16 @@ class SmartdocDocument(BaseModel):
                     if dedup_key in seen:
                         continue
                     seen.add(dedup_key)
-                    ftype = _FIELD_VALUE_TYPE_BY_WIRE_TYPE.get(kv.value_type or "", FieldValueType.TEXT.value)
+                    if kv.value_type is None:
+                        ftype = FieldValueType.TEXT.value
+                    else:
+                        try:
+                            ftype = _FIELD_VALUE_TYPE_BY_WIRE_TYPE[kv.value_type]
+                        except KeyError:
+                            raise ValueError(
+                                f"Type de valeur OCR non supporte {kv.value_type!r} "
+                                f"pour le champ {kv.field_key!r}"
+                            ) from None
                     specs.append(
                         {
                             "page": page.page_number,
