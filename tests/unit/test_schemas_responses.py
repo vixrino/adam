@@ -214,14 +214,27 @@ class TestFileRefOut:
 
 class TestDocumentOut:
     def test_defaults(self):
-        d = DocumentOut(id=1, dataset_id=1, file_id=1, file_name="doc.pdf", status="RECEIVED")
+        d = DocumentOut(
+            id=1,
+            dataset_id=1,
+            file_id=1,
+            file_name="doc.pdf",
+            status="RECEIVED",
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
         assert d.page_count is None
         assert d.image_paths is None
         assert d.metadata is None
 
     def test_with_page_count(self):
         d = DocumentOut(
-            id=1, dataset_id=1, file_id=1, file_name="doc.pdf", status="RECEIVED", page_count=7
+            id=1,
+            dataset_id=1,
+            file_id=1,
+            file_name="doc.pdf",
+            status="RECEIVED",
+            page_count=7,
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         assert d.page_count == 7
 
@@ -237,6 +250,7 @@ class TestDocumentOut:
             metadata_ = {"source": "scan"}
             image_paths = None
             page_count = 3
+            updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
         d = DocumentOut.model_validate(FakeDoc())
         assert d.metadata == {"source": "scan"}

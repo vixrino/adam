@@ -1,6 +1,8 @@
 """
 Tests unitaires adam_api/routers/documents.py
 """
+from datetime import datetime, timezone
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
@@ -266,6 +268,7 @@ class TestCreateDocument:
             instance.dataset_id = 1  # type: ignore[attr-defined]
             instance.file_id = 1  # type: ignore[attr-defined]
             instance.metadata_ = {}  # type: ignore[attr-defined]
+            instance.updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)  # type: ignore[attr-defined]
 
         mock_db.add.side_effect = capture_add
         response = client.post(

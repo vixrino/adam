@@ -130,6 +130,7 @@ class DocumentOut(BaseModel):
     # CA-2 : rempli par le mini worker une fois les images generees
     page_count: Optional[int] = None
     image_paths: Optional[List[str]] = None
+    updated_at: datetime
 
 
 class DocumentFieldInPageOut(BaseModel):
