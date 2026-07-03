@@ -36,7 +36,7 @@ class DatasetIn(BaseModel):
     configs: Dict[str, Any] = Field(default_factory=dict)
 
 
-class DocumentsIn(BaseModel):
+class IngestionPdfIn(BaseModel):
     """Upload multipart d'un ou plusieurs fichiers PDF."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -131,7 +131,7 @@ async def patch_dataset_status(
 @router.post("/{dataset_id}/documents", response_model=IngestionOut)
 async def ingest_documents(
     dataset_id: int,
-    payload: DocumentsIn = UploadField(),
+    payload: IngestionPdfIn = UploadField(),
     db: AsyncSession = Depends(get_db),
 ) -> IngestionOut:
     """Ingestion multipart de PDF bruts vers le PVC (statut RECEIVED).
