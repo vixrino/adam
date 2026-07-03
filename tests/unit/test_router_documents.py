@@ -200,7 +200,7 @@ class TestGetDocumentFields:
 
     def test_boolean_field_returns_native_bool(self, client: TestClient, mock_db: AsyncMock) -> None:
         df = _make_document_field()
-        df.field_spec.value_type = "BOOLEAN"
+        df.field_spec.value_type = "boolean"
         df.ocr_value = "true"
         mock_db.execute.return_value.scalars.return_value.all.return_value = [df]
         response = client.get("/documents/1/fields")
@@ -208,7 +208,7 @@ class TestGetDocumentFields:
 
     def test_number_field_returns_native_int(self, client: TestClient, mock_db: AsyncMock) -> None:
         df = _make_document_field()
-        df.field_spec.value_type = "NUMBER"
+        df.field_spec.value_type = "number"
         df.ocr_value = "450000"
         mock_db.execute.return_value.scalars.return_value.all.return_value = [df]
         response = client.get("/documents/1/fields")
@@ -216,7 +216,7 @@ class TestGetDocumentFields:
 
     def test_number_non_convertible_returns_string(self, client: TestClient, mock_db: AsyncMock) -> None:
         df = _make_document_field()
-        df.field_spec.value_type = "NUMBER"
+        df.field_spec.value_type = "number"
         df.ocr_value = "12 BIS"
         mock_db.execute.return_value.scalars.return_value.all.return_value = [df]
         response = client.get("/documents/1/fields")

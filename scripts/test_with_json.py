@@ -4,7 +4,7 @@ Usage: python scripts/test_with_json.py mon_fichier.json
 Simule le flux complet (ingestion -> lecture typee) sur un fichier JSON reel,
 sans besoin de serveur ni de base de donnees.
 
-NOTE: le champ racine attendu par FormDocument est "format_version".
+NOTE: le champ racine attendu par SmartdocDocument est "smartdoc_version".
 Si le fichier source utilise un autre nom de cle pour la version
 (n'importe quelle cle racine finissant par "_version"), elle est
 detectee et mappee automatiquement.
@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, "src")
 
-from adam_core.schemas.interface_contract import FormDocument
+from adam_core.schemas.interface_contract import SmartdocDocument
 from adam_core.utils.field_parser import parse_field_value
 
 
@@ -22,14 +22,14 @@ def main(json_path: str) -> None:
     with open(json_path, encoding="utf-8") as f:
         raw_json = json.load(f)
 
-    # Detecte automatiquement toute cle racine "*_version" si "format_version" est absent
-    if "format_version" not in raw_json:
+    # Detecte automatiquement toute cle racine "*_version" si "smartdoc_version" est absent
+    if "smartdoc_version" not in raw_json:
         for key in raw_json:
             if key.endswith("_version"):
-                raw_json["format_version"] = raw_json[key]
+                raw_json["smartdoc_version"] = raw_json[key]
                 break
 
-    doc = FormDocument.model_validate(raw_json)
+    doc = SmartdocDocument.model_validate(raw_json)
     specs = doc.extract_field_specs()
     kv_by_key = {kv.field_key: kv for _, _, kv in doc.iter_kv_pairs()}
 

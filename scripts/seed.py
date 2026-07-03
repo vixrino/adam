@@ -130,7 +130,7 @@ HARDCODED_OCR_VALUES: Dict = {
     "creance.date_echeance":        ("2040-01-15",                  0.94, [322,222,498,222,498,248,322,248]),
 }
 HARDCODED_RAW_JSON = {
-    "format_version": "0.3",
+    "smartdoc_version": "0.3",
     "document_id": "form_demo_001",
     "coordinate_unit": "pixel",
     "page_count": 2,
@@ -176,11 +176,11 @@ async def seed_hardcoded(session: AsyncSession, project: Project) -> None:
 async def seed_from_form_json(
     session: AsyncSession, project: Project, json_path: Path
 ) -> None:
-    from adam_core.schemas.interface_contract import FormDocument
+    from adam_core.schemas.interface_contract import SmartdocDocument
     print(f"\n --- Mode : FORM JSON ({json_path.name}) ---")
     with open(json_path, encoding="utf-8") as f:
        json_raw = json.load(f)
-    form_doc = FormDocument.model_validate(json_raw)
+    form_doc = SmartdocDocument.model_validate(json_raw)
     print(f" JSON valide : {form_doc.page_count} pages, document_id={form_doc.document_id}")
     print(" [4/8] DocSchema...")
     schema = DocSchema(
@@ -242,7 +242,7 @@ async def seed_from_form_json(
        dataset_id=dataset.id, file_id=file_.id,
        file_name=f"{form_doc.document_id}.pdf",
        metadata={
-           "format_version": form_doc.format_version,
+           "smartdoc_version": form_doc.smartdoc_version,
            "document_id": form_doc.document_id,
            "coordinate_unit": form_doc.coordinate_unit,
        },

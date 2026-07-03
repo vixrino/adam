@@ -20,7 +20,7 @@ from sqlalchemy.sql.functions import count
 
 from adam_api.dependencies.db import get_db
 from adam_api.services.consensus import try_resolve
-from adam_core.enums.status import DocumentFieldStatus, DocumentStatus, JobState, JobStep
+from adam_core.enums.status import DocumentFieldStatus, DocumentStatus, FieldValueType, JobState, JobStep
 from adam_core.models import Dataset, Document, DocumentField, FieldProposal, Job, User
 from adam_core.schemas.responses import (
     FieldProposalOut,
@@ -222,7 +222,7 @@ async def propose_field_value(
             document_field_id=payload.document_field_id,
             step=job.step,
             value=payload.value,
-            value_type=payload.value_type or "TEXT",
+            value_type=payload.value_type or FieldValueType.TEXT.value,
             reason=payload.reason,
         )
         db.add(proposal)

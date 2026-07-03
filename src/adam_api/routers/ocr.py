@@ -1,6 +1,6 @@
 """Resultats OCR
 GET : lecture simple
-POST : injection d'un resultat OCR (FormDocument)
+POST : injection d'un resultat OCR (SmartdocDocument)
 """
 
 from typing import Any, Dict, List, Optional, Sequence
@@ -14,7 +14,7 @@ from adam_api.dependencies.db import get_db
 from adam_core.enums.ocr import StorageMode
 from adam_core.enums.status import DocumentFieldStatus, DocumentStatus
 from adam_core.models import Dataset, Document, DocumentField, FieldSpec, OcrResult
-from adam_core.schemas.interface_contract import FormDocument
+from adam_core.schemas.interface_contract import SmartdocDocument
 from adam_core.schemas.responses import OcrResultCreatedOut, OcrResultDetailOut, OcrResultOut
 from adam_core.utils.exceptions import raise_not_found, raise_unprocessable
 from adam_core.utils.logging import get_logger
@@ -94,7 +94,7 @@ async def post_ocr_result(
         raise_not_found(Dataset)
 
     try:
-        ocr_doc = FormDocument.model_validate(payload.raw_json)
+        ocr_doc = SmartdocDocument.model_validate(payload.raw_json)
     except ValidationError as e:
         raise_unprocessable(detail=str(e))
 
