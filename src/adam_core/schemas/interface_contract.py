@@ -145,17 +145,23 @@ class KVPair(BaseModel):
     @property
     def extracted_value(self) -> Optional[str]:
         """Valeur serialisee en string, telle que stockee en base
-        (DocumentField.ocr_value), avant reconversion par field_parser."""
+        (DocumentField.ocr_value), avant reconversion par field_parser.
+
+        Chaque type de la wire union est traite explicitement : un type
+        non couvert ici leve une erreur plutot que de retomber
+        silencieusement sur une chaine mal formee."""
         v = self.value
         if v is None:
             return None
         if v.type == "boolean":
             return str(v.value).lower()
         if v.type == "text":
-            return v.text or ""
+            return v.text
         if v.type in ("date", "datetime", "number"):
-            return str(v.value if v.value is not None else v.raw_text or "")
-        return str(v.raw_text or v.value or "")
+            return str(v.value)
+        raise ValueError(
+            f"Type de valeur OCR non supporte {v.type!r} pour le champ {self.field_key!r}"
+        )
 
     @property
     def confidence(self) -> float:
