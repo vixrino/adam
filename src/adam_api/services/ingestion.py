@@ -80,7 +80,7 @@ async def _get_or_create_file(
     stmt = (
         pg_insert(File)
         .values(
-            file_path=str(pvc_relative_path(checksum)),
+            file_path=pvc_relative_path(checksum).as_posix(),
             storage_type="pvc",
             mime_type=PDF_MIME,
             file_size_bytes=len(content),
