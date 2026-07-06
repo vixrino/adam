@@ -31,10 +31,14 @@ _FIELD_VALUE_TYPE_BY_WIRE_TYPE = {
 
 
 class KVTextValue(BaseModel):
-    """Valeur de type texte libre extraite par l'OCR."""
+    """Valeur de type texte libre extraite par l'OCR.
+
+    `text` est obligatoire : un champ sans donnee doit etre represente par
+    KVPair.value = None, pas par un KVTextValue avec `text` absent.
+    """
 
     type: Literal["text"] = "text"
-    text: Optional[str] = None
+    text: str
     raw_text: Optional[str] = None
     polygon: Optional[List[float]] = None
     confidence: float = 1.0
@@ -43,43 +47,57 @@ class KVTextValue(BaseModel):
 class KVNumberValue(BaseModel):
     """Valeur numerique extraite par l'OCR.
 
-    `value` reste `Any` : l'OCR peut renvoyer un nombre deja parse ou une
-    chaine brute non convertible (ex: "12 BIS"), a charge de field_parser
-    de tenter la conversion en aval, sans jamais lever d'exception.
+    `value` est obligatoire mais reste `Any` : l'OCR peut renvoyer un nombre
+    deja parse ou une chaine brute non convertible (ex: "12 BIS"), a charge
+    de field_parser de tenter la conversion en aval, sans jamais lever
+    d'exception. Un champ sans donnee doit etre represente par
+    KVPair.value = None, pas par un KVNumberValue avec `value` absent.
     """
 
     type: Literal["number"] = "number"
-    value: Optional[Any] = None
+    value: Any
     raw_text: Optional[str] = None
     polygon: Optional[List[float]] = None
     confidence: float = 1.0
 
 
 class KVDateValue(BaseModel):
-    """Valeur de type date (sans heure) extraite par l'OCR."""
+    """Valeur de type date (sans heure) extraite par l'OCR.
+
+    `value` est obligatoire : un champ sans donnee doit etre represente par
+    KVPair.value = None, pas par un KVDateValue avec `value` absent.
+    """
 
     type: Literal["date"] = "date"
-    value: Optional[str] = None
+    value: str
     raw_text: Optional[str] = None
     polygon: Optional[List[float]] = None
     confidence: float = 1.0
 
 
 class KVDatetimeValue(BaseModel):
-    """Valeur de type date+heure extraite par l'OCR."""
+    """Valeur de type date+heure extraite par l'OCR.
+
+    `value` est obligatoire : un champ sans donnee doit etre represente par
+    KVPair.value = None, pas par un KVDatetimeValue avec `value` absent.
+    """
 
     type: Literal["datetime"] = "datetime"
-    value: Optional[str] = None
+    value: str
     raw_text: Optional[str] = None
     polygon: Optional[List[float]] = None
     confidence: float = 1.0
 
 
 class KVBooleanValue(BaseModel):
-    """Valeur booleenne extraite par l'OCR (ex: case a cocher)."""
+    """Valeur booleenne extraite par l'OCR (ex: case a cocher).
+
+    `value` est obligatoire : un champ sans donnee doit etre represente par
+    KVPair.value = None, pas par un KVBooleanValue avec `value` absent.
+    """
 
     type: Literal["boolean"] = "boolean"
-    value: Optional[bool] = None
+    value: bool
     raw_text: Optional[str] = None
     polygon: Optional[List[float]] = None
     confidence: float = 1.0
