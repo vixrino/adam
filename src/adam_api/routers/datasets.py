@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File as UploadField, UploadFile
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.functions import count
@@ -34,14 +34,6 @@ class DatasetIn(BaseModel):
     required_operators: int = Field(default=3, ge=1, le=5)
     ocr_job_enabled: bool = True
     configs: Dict[str, Any] = Field(default_factory=dict)
-
-
-class IngestionPdfIn(BaseModel):
-    """Upload multipart d'un ou plusieurs fichiers PDF."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    files: List[UploadFile] = Field(..., description="Un ou plusieurs fichiers PDF")
 
 
 class DatasetPatch(BaseModel):
@@ -131,7 +123,7 @@ async def patch_dataset_status(
 @router.post("/{dataset_id}/documents", response_model=IngestionOut)
 async def ingest_documents(
     dataset_id: int,
-    payload: IngestionPdfIn = UploadField(),
+    files: List[UploadFile] = UploadField(..., description="Un ou plusieurs fichiers PDF"),
     db: AsyncSession = Depends(get_db),
 ) -> IngestionOut:
     """Ingestion multipart de PDF bruts vers le PVC (statut RECEIVED).
@@ -145,7 +137,7 @@ async def ingest_documents(
 
     pvc_root = Path(settings.pvc_mount_path)
     items: List[FileIngestionItemOut] = []
-    for upload in payload.files:
+    for upload in files:
         file_name = upload.filename or "sans_nom.pdf"
         content = await upload.read()
         if not looks_like_pdf(content):
