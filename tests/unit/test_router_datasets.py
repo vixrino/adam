@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from adam_api.routers.datasets import router
+from adam_core.models import Dataset, DocSchema, Organisation, Project
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,48 @@ def _make_dataset(
     ds.created_at = None
     ds.updated_at = None
     return ds
+
+
+def _make_schema(id: int = 1, document_type: str = "cerfa") -> MagicMock:
+    s = MagicMock()
+    s.id = id
+    s.document_type = document_type
+    return s
+
+
+def _make_project(id: int = 1, organisation_id: int = 1) -> MagicMock:
+    p = MagicMock()
+    p.id = id
+    p.organisation_id = organisation_id
+    return p
+
+
+def _make_organisation(id: int = 1, slug: str = "dires") -> MagicMock:
+    o = MagicMock()
+    o.id = id
+    o.slug = slug
+    return o
+
+
+def _db_get_side_effect(
+    dataset: object = None,
+    schema: object = None,
+    project: object = None,
+    organisation: object = None,
+):
+    """Dispatch db.get(Model, id) selon Model, pour mocker les lookups
+    dataset/schema/project/organisation de l'endpoint d'ingestion."""
+    by_model = {
+        Dataset: dataset,
+        DocSchema: schema if schema is not None else _make_schema(),
+        Project: project if project is not None else _make_project(),
+        Organisation: organisation if organisation is not None else _make_organisation(),
+    }
+
+    async def _get(model: object, _id: object) -> object:
+        return by_model.get(model)
+
+    return _get
 
 
 def _dataset_payload(**overrides: object) -> dict:
@@ -231,9 +274,14 @@ def _minimal_valid_pdf() -> bytes:
     return data
 
 
-def _exec_result(scalar_one_or_none: object = None, scalar_one: object = None) -> MagicMock:
+def _exec_result(
+    scalar_one_or_none: object = None,
+    scalar_one: object = None,
+    one_or_none: object = None,
+) -> MagicMock:
     result = MagicMock()
     result.scalar_one_or_none.return_value = scalar_one_or_none
+    result.one_or_none.return_value = one_or_none
     if scalar_one is not None:
         result.scalar_one.return_value = scalar_one
     return result
@@ -261,10 +309,11 @@ class TestIngestDocuments:
         tmp_path: Path,
     ) -> None:
         monkeypatch.setattr("adam_api.routers.datasets.settings.pvc_mount_path", str(tmp_path))
-        mock_db.get.return_value = _make_dataset()
+        mock_db.get = AsyncMock(side_effect=_db_get_side_effect(dataset=_make_dataset()))
         mock_db.add = MagicMock(side_effect=_capture_document_id)
         new_file = MagicMock()
         new_file.id = 7
+        new_file.file_path = "dires/cerfa/2026_01_15_1321/doc.pdf"
         mock_db.execute = AsyncMock(
             side_effect=[
                 _exec_result(scalar_one_or_none=None),  # existing document (dataset+checksum) -> aucun
@@ -294,13 +343,13 @@ class TestIngestDocuments:
         tmp_path: Path,
     ) -> None:
         monkeypatch.setattr("adam_api.routers.datasets.settings.pvc_mount_path", str(tmp_path))
-        mock_db.get.return_value = _make_dataset()
+        mock_db.get = AsyncMock(side_effect=_db_get_side_effect(dataset=_make_dataset()))
         existing_doc = MagicMock()
         existing_doc.id = 10
         existing_doc.file_id = 3
         mock_db.execute = AsyncMock(
             side_effect=[
-                _exec_result(scalar_one_or_none=existing_doc),  # deja lie dans ce dataset
+                _exec_result(one_or_none=(existing_doc, "dires/cerfa/2026_01_01_0000/doc.pdf")),  # deja lie dans ce dataset
             ]
         )
 
@@ -324,7 +373,7 @@ class TestIngestDocuments:
         tmp_path: Path,
     ) -> None:
         monkeypatch.setattr("adam_api.routers.datasets.settings.pvc_mount_path", str(tmp_path))
-        mock_db.get.return_value = _make_dataset()
+        mock_db.get = AsyncMock(side_effect=_db_get_side_effect(dataset=_make_dataset()))
 
         response = client.post(
             "/datasets/1/documents",
@@ -348,10 +397,11 @@ class TestIngestDocuments:
         tmp_path: Path,
     ) -> None:
         monkeypatch.setattr("adam_api.routers.datasets.settings.pvc_mount_path", str(tmp_path))
-        mock_db.get.return_value = _make_dataset()
+        mock_db.get = AsyncMock(side_effect=_db_get_side_effect(dataset=_make_dataset()))
         mock_db.add = MagicMock(side_effect=_capture_document_id)
         new_file = MagicMock()
         new_file.id = 7
+        new_file.file_path = "dires/cerfa/2026_01_15_1321/doc.pdf"
         mock_db.execute = AsyncMock(
             side_effect=[
                 _exec_result(scalar_one_or_none=None),  # existing doc check (fichier 1)

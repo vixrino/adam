@@ -1,5 +1,6 @@
 """Tests unitaires pour adam_api.services.ingestion."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,7 +13,6 @@ from adam_api.services.ingestion import (
     looks_like_pdf,
     pvc_relative_path,
 )
-from adam_core.enums.status import DocumentStatus
 
 
 # ---------------------------------------------------------------------------
@@ -48,52 +48,79 @@ def test_looks_like_pdf_header_only_without_valid_structure() -> None:
 # pvc_relative_path
 # ---------------------------------------------------------------------------
 
+_INGESTED_AT = datetime(2026, 1, 15, 13, 21, tzinfo=timezone.utc)
+
+
 def test_pvc_relative_path_structure() -> None:
-    checksum = "abcdef1234567890"
-    path = pvc_relative_path(checksum)
-    assert path == Path("documents/ab/cd/abcdef1234567890.pdf")
+    path = pvc_relative_path(
+        organisation_slug="dires",
+        document_type="cerfa",
+        ingested_at=_INGESTED_AT,
+        file_name="cerfa_13594_sample.pdf",
+    )
+    assert path == Path("dires/cerfa/2026_01_15_1321/cerfa_13594_sample.pdf")
 
 
-def test_pvc_relative_path_uses_first_four_chars() -> None:
-    checksum = "1234abcd"
-    path = pvc_relative_path(checksum)
-    assert path.parts[1] == "12"
-    assert path.parts[2] == "34"
+def test_pvc_relative_path_keeps_original_file_name() -> None:
+    path = pvc_relative_path(
+        organisation_slug="dires",
+        document_type="cerfa",
+        ingested_at=_INGESTED_AT,
+        file_name="Un Nom Bizarre (1).pdf",
+    )
+    assert path.name == "Un Nom Bizarre (1).pdf"
+
+
+def test_pvc_relative_path_strips_directory_traversal_from_file_name() -> None:
+    path = pvc_relative_path(
+        organisation_slug="dires",
+        document_type="cerfa",
+        ingested_at=_INGESTED_AT,
+        file_name="../../etc/passwd.pdf",
+    )
+    assert path == Path("dires/cerfa/2026_01_15_1321/passwd.pdf")
 
 
 # ---------------------------------------------------------------------------
 # _get_or_create_file
 # ---------------------------------------------------------------------------
 
+_RELATIVE_PATH = Path("dires/cerfa/2026_01_15_1321/doc.pdf")
+
+
 @pytest.mark.asyncio
 async def test_get_or_create_file_existing_on_disk(tmp_path: Path) -> None:
-    checksum = "a" * 64
-    abs_path = tmp_path / pvc_relative_path(checksum)
+    existing_file = MagicMock()
+    existing_file.file_path = "dires/cerfa/2025_06_01_0800/existing.pdf"
+    abs_path = tmp_path / existing_file.file_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_bytes(b"existing")
 
-    existing_file = MagicMock()
     db = AsyncMock()
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = existing_file
     db.execute = AsyncMock(return_value=mock_result)
 
-    file_row, created = await _get_or_create_file(db, checksum=checksum, content=b"content", pvc_root=tmp_path)
+    file_row, created = await _get_or_create_file(
+        db, checksum="a" * 64, content=b"content", pvc_root=tmp_path, relative_path=_RELATIVE_PATH
+    )
     assert file_row is existing_file
     assert created is False
 
 
 @pytest.mark.asyncio
 async def test_get_or_create_file_existing_missing_from_disk(tmp_path: Path) -> None:
-    checksum = "b" * 64
     existing_file = MagicMock()
+    existing_file.file_path = "dires/cerfa/2025_06_01_0800/existing.pdf"
     db = AsyncMock()
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = existing_file
     db.execute = AsyncMock(return_value=mock_result)
 
-    file_row, created = await _get_or_create_file(db, checksum=checksum, content=b"restored", pvc_root=tmp_path)
-    abs_path = tmp_path / pvc_relative_path(checksum)
+    file_row, created = await _get_or_create_file(
+        db, checksum="b" * 64, content=b"restored", pvc_root=tmp_path, relative_path=_RELATIVE_PATH
+    )
+    abs_path = tmp_path / existing_file.file_path
     assert abs_path.exists()
     assert abs_path.read_bytes() == b"restored"
     assert created is False
@@ -101,7 +128,6 @@ async def test_get_or_create_file_existing_missing_from_disk(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_get_or_create_file_new(tmp_path: Path) -> None:
-    checksum = "c" * 64
     new_file = MagicMock()
 
     select_result = MagicMock()
@@ -113,8 +139,10 @@ async def test_get_or_create_file_new(tmp_path: Path) -> None:
     db.execute = AsyncMock(side_effect=[select_result, insert_result])
     db.flush = AsyncMock()
 
-    file_row, created = await _get_or_create_file(db, checksum=checksum, content=b"new content", pvc_root=tmp_path)
-    abs_path = tmp_path / pvc_relative_path(checksum)
+    file_row, created = await _get_or_create_file(
+        db, checksum="c" * 64, content=b"new content", pvc_root=tmp_path, relative_path=_RELATIVE_PATH
+    )
+    abs_path = tmp_path / _RELATIVE_PATH
     assert abs_path.exists()
     assert created is True
     assert file_row is new_file
@@ -124,7 +152,6 @@ async def test_get_or_create_file_new(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_get_or_create_file_concurrent_insert_loses_race(tmp_path: Path) -> None:
     """L'INSERT ON CONFLICT DO NOTHING ne retourne rien : on relit la ligne gagnante."""
-    checksum = "d" * 64
     winning_file = MagicMock()
 
     select_result = MagicMock()
@@ -138,7 +165,9 @@ async def test_get_or_create_file_concurrent_insert_loses_race(tmp_path: Path) -
     db.execute = AsyncMock(side_effect=[select_result, insert_result, reselect_result])
     db.flush = AsyncMock()
 
-    file_row, created = await _get_or_create_file(db, checksum=checksum, content=b"content", pvc_root=tmp_path)
+    file_row, created = await _get_or_create_file(
+        db, checksum="d" * 64, content=b"content", pvc_root=tmp_path, relative_path=_RELATIVE_PATH
+    )
     assert file_row is winning_file
     assert created is False
     db.flush.assert_not_awaited()
@@ -158,13 +187,18 @@ async def test_ingest_pdf_already_exists(tmp_path: Path) -> None:
     existing_doc.id = 42
     existing_doc.file_id = 7
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing_doc
+    mock_result.one_or_none.return_value = (existing_doc, "dires/cerfa/2025_06_01_0800/doc.pdf")
     db.execute = AsyncMock(return_value=mock_result)
 
-    result = await ingest_pdf(db, dataset, file_name="doc.pdf", content=b"%PDF-1.4", pvc_root=tmp_path)
+    result = await ingest_pdf(
+        db, dataset,
+        organisation_slug="dires", document_type="cerfa",
+        file_name="doc.pdf", content=b"%PDF-1.4", pvc_root=tmp_path,
+    )
     assert result["status"] == "already_exists"
     assert result["document_id"] == 42
     assert result["file_id"] == 7
+    assert result["file_path"] == "dires/cerfa/2025_06_01_0800/doc.pdf"
 
 
 @pytest.mark.asyncio
@@ -175,19 +209,24 @@ async def test_ingest_pdf_new_file_created(tmp_path: Path) -> None:
     dataset.id = 1
 
     not_found = MagicMock()
-    not_found.scalar_one_or_none.return_value = None
+    not_found.one_or_none.return_value = None
     db.execute = AsyncMock(return_value=not_found)
     db.flush = AsyncMock()
 
     file_mock = MagicMock()
     file_mock.id = 5
+    file_mock.file_path = "dires/cerfa/2026_01_15_1321/new.pdf"
 
     with patch("adam_api.services.ingestion._get_or_create_file", AsyncMock(return_value=(file_mock, True))):
-        result = await ingest_pdf(db, dataset, file_name="new.pdf", content=b"%PDF-1.4", pvc_root=tmp_path)
+        result = await ingest_pdf(
+            db, dataset,
+            organisation_slug="dires", document_type="cerfa",
+            file_name="new.pdf", content=b"%PDF-1.4", pvc_root=tmp_path,
+        )
 
     assert result["status"] == "created"
     assert result["file_id"] == 5
-    assert result["file_reused"] is False
+    assert result["file_path"] == "dires/cerfa/2026_01_15_1321/new.pdf"
 
 
 @pytest.mark.asyncio
@@ -198,15 +237,19 @@ async def test_ingest_pdf_file_reused(tmp_path: Path) -> None:
     dataset.id = 1
 
     not_found = MagicMock()
-    not_found.scalar_one_or_none.return_value = None
+    not_found.one_or_none.return_value = None
     db.execute = AsyncMock(return_value=not_found)
     db.flush = AsyncMock()
 
     file_mock = MagicMock()
     file_mock.id = 3
+    file_mock.file_path = "dires/cerfa/2025_06_01_0800/dup.pdf"
 
     with patch("adam_api.services.ingestion._get_or_create_file", AsyncMock(return_value=(file_mock, False))):
-        result = await ingest_pdf(db, dataset, file_name="dup.pdf", content=b"%PDF-1.4", pvc_root=tmp_path)
+        result = await ingest_pdf(
+            db, dataset,
+            organisation_slug="dires", document_type="cerfa",
+            file_name="dup.pdf", content=b"%PDF-1.4", pvc_root=tmp_path,
+        )
 
-    assert result["status"] == "created"
-    assert result["file_reused"] is True
+    assert result["status"] == "created_file_reused"

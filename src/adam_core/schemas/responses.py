@@ -340,10 +340,10 @@ class FileIngestionItemOut(BaseModel):
     """Resultat pour un fichier dans la reponse d'ingestion."""
 
     file_name: str
-    status: str  # created | already_exists | rejected
+    status: str  # created | created_file_reused | already_exists | rejected
     document_id: Optional[int] = None
     file_id: Optional[int] = None
-    file_reused: Optional[bool] = None
+    file_path: Optional[str] = None  # a titre de debug
     reason: Optional[str] = None
 
 
