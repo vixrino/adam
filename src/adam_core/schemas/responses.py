@@ -389,16 +389,6 @@ class OrgUserOut(BaseModel):
     projects: List[UserProjectRefOut] = []
 
 
-class OrganisationPatchOut(BaseModel):
-    id: int
-    name: str
-
-
-class OrganisationArchiveOut(BaseModel):
-    id: int
-    archived: bool
-
-
 # ---------------------------------------------------------------------------
 # Project
 # ---------------------------------------------------------------------------
