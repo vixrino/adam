@@ -1,4 +1,12 @@
-"""Consensus Worker : retry le calcul de consensus des documents en attente."""
+"""Consensus Worker : retry des documents en attente de resolution.
+
+Relance try_resolve sur les documents qui ont atteint required_operators
+jobs submitted mais ne sont pas encore VALIDATED (echec de la background
+task declenchee depuis submit_job, ou conflit non resolu). Idempotent :
+try_resolve gere ses propres gardes internes (compte de jobs soumis,
+document deja VALIDATED), donc relancer un document deja resolu est sans
+effet.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +20,8 @@ from adam_worker.base_worker import BaseWorker
 
 
 class ConsensusWorker(BaseWorker):
+    """Cherche les documents PENDING_CONSENSUS et tente de resoudre leur consensus."""
+
     async def poll(self) -> None:
         async with get_async_session() as db:
             pending = (
