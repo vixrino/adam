@@ -53,7 +53,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/adam_core", "src/adam_api"]
+packages = ["src/adam_core", "src/adam_api", "src/adam_worker"]
 
 [tool.black]
 target-version = ["py312"]
