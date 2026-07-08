@@ -31,6 +31,8 @@ dependencies = [
   "pydantic>=2.7.4",
   "pydantic-settings>=2.3.4",
   "python-jose[cryptography]>=3.3.0",
+  "pymupdf>=1.24.0",
+  "pypdf>=4.2.0",
 ]
 
 [project.optional-dependencies]
@@ -52,7 +54,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/adam_core", "src/adam_api"]
+packages = ["src/adam_core", "src/adam_api", "src/adam_worker"]
 
 [tool.black]
 target-version = ["py312"]
