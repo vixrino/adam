@@ -17,8 +17,13 @@ from sqlalchemy.orm import selectinload
 
 from adam_api.dependencies.db import get_db
 from adam_core.models import Document, File
-from adam_core.schemas.document import DocumentOut
-from adam_core.schemas.responses import FileCreatedOut, FileDetailOut, FileOut, FilePatchOut
+from adam_core.schemas.responses import (
+    DocumentOut,
+    FileCreatedOut,
+    FileDetailOut,
+    FileOut,
+    FilePatchOut,
+)
 from adam_core.utils.exceptions import raise_not_found
 
 router = APIRouter(prefix="/files", tags=["Files"])
