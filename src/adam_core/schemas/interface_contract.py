@@ -184,9 +184,9 @@ class Page(BaseModel):
     """Une page du document scanne, avec ses metadonnees d'image."""
 
     page_number: int
-    width: int = 0
-    height: int = 0
-    dpi: Optional[int] = 150
+    width: float = 0
+    height: float = 0
+    dpi: Optional[int] = 300
     angle_deg: Optional[float] = 0.0
     sections: List[Section] = Field(default_factory=list)
 
