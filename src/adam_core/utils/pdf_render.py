@@ -1,8 +1,7 @@
 """Rendu des pages d'un PDF en images PNG (mini worker Sprint 3, ticket 8).
 
-pypdf (successeur maintenu de PyPDF2, meme API PdfReader) valide la
-structure du PDF et sert de premiere ligne de defense contre un fichier
-corrompu. PyMuPDF (fitz) fait le rendu image page par page.
+PyMuPDF (fitz) fait tout le travail : ouverture/validation du PDF et rendu
+image page par page.
 """
 
 from __future__ import annotations
@@ -11,8 +10,6 @@ from pathlib import Path
 from typing import List
 
 import fitz  # PyMuPDF
-from pypdf import PdfReader
-from pypdf.errors import PdfReadError
 
 _PAGE_IMAGE_DPI = 150
 
@@ -34,23 +31,12 @@ def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
     si le PDF est corrompu ou si une page ne peut pas etre rendue ; toute
     image deja ecrite pour ce PDF est alors supprimee (pas d'etat partiel).
     """
-    try:
-        expected_page_count = len(PdfReader(str(pdf_path)).pages)
-    except PdfReadError as exc:
-        raise PdfRenderError(f"PDF illisible ({pdf_path}): {exc}") from exc
-
-    if expected_page_count == 0:
-        raise PdfRenderError(f"PDF sans page ({pdf_path})")
-
     output_dir.mkdir(parents=True, exist_ok=True)
     written: List[Path] = []
     try:
         with fitz.open(str(pdf_path)) as doc:
-            if doc.page_count != expected_page_count:
-                raise PdfRenderError(
-                    f"Nombre de pages incoherent entre pypdf ({expected_page_count}) "
-                    f"et PyMuPDF ({doc.page_count}) pour {pdf_path}"
-                )
+            if doc.page_count == 0:
+                raise PdfRenderError(f"PDF sans page ({pdf_path})")
             for page_number in range(1, doc.page_count + 1):
                 page = doc.load_page(page_number - 1)
                 pixmap = page.get_pixmap(dpi=_PAGE_IMAGE_DPI)
@@ -61,6 +47,10 @@ def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
         for path in written:
             path.unlink(missing_ok=True)
         raise
+    except fitz.FileDataError as exc:
+        for path in written:
+            path.unlink(missing_ok=True)
+        raise PdfRenderError(f"PDF illisible ({pdf_path}): {exc}") from exc
     except Exception as exc:
         for path in written:
             path.unlink(missing_ok=True)
