@@ -40,16 +40,17 @@ class CoreSettings(BaseSettings):
 
     @property
     def async_database_url(self) -> str:
-        return str(
-            URL.create(
-                drivername="postgresql+asyncpg",
-                username=self.postgres_user,
-                password=self.postgres_password,
-                host=self.postgres_host,
-                port=self.postgres_port,
-                database=self.postgres_db,
-            )
-        )
+        # str(URL) masque le mot de passe (rendu "***") depuis SQLAlchemy 2.x ;
+        # il faut render_as_string(hide_password=False) pour obtenir une URL
+        # de connexion utilisable par asyncpg.
+        return URL.create(
+            drivername="postgresql+asyncpg",
+            username=self.postgres_user,
+            password=self.postgres_password,
+            host=self.postgres_host,
+            port=self.postgres_port,
+            database=self.postgres_db,
+        ).render_as_string(hide_password=False)
 
 
 @lru_cache

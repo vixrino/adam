@@ -214,14 +214,27 @@ class TestFileRefOut:
 
 class TestDocumentOut:
     def test_defaults(self):
-        d = DocumentOut(id=1, dataset_id=1, file_id=1, file_name="doc.pdf", status="RECEIVED")
+        d = DocumentOut(
+            id=1,
+            dataset_id=1,
+            file_id=1,
+            file_name="doc.pdf",
+            status="RECEIVED",
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
         assert d.page_count is None
         assert d.image_paths is None
         assert d.metadata is None
 
     def test_with_page_count(self):
         d = DocumentOut(
-            id=1, dataset_id=1, file_id=1, file_name="doc.pdf", status="RECEIVED", page_count=7
+            id=1,
+            dataset_id=1,
+            file_id=1,
+            file_name="doc.pdf",
+            status="RECEIVED",
+            page_count=7,
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         assert d.page_count == 7
 
@@ -237,6 +250,7 @@ class TestDocumentOut:
             metadata_ = {"source": "scan"}
             image_paths = None
             page_count = 3
+            updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
         d = DocumentOut.model_validate(FakeDoc())
         assert d.metadata == {"source": "scan"}
@@ -470,10 +484,14 @@ class TestFieldProposalOut:
 class TestFileIngestionItemOut:
     def test_created(self):
         item = FileIngestionItemOut(
-            file_name="doc.pdf", status="created", document_id=1, file_id=2, file_reused=False
+            file_name="doc.pdf",
+            status="created",
+            document_id=1,
+            file_id=2,
+            file_path="dires/cerfa/2026_01_15_1321/doc.pdf",
         )
         assert item.status == "created"
-        assert item.file_reused is False
+        assert item.file_path == "dires/cerfa/2026_01_15_1321/doc.pdf"
 
     def test_rejected(self):
         item = FileIngestionItemOut(file_name="bad.txt", status="rejected", reason="non-PDF")
@@ -482,9 +500,12 @@ class TestFileIngestionItemOut:
 
     def test_already_exists(self):
         item = FileIngestionItemOut(
-            file_name="dup.pdf", status="already_exists", file_id=5, file_reused=True
+            file_name="dup.pdf",
+            status="already_exists",
+            file_id=5,
+            file_path="dires/cerfa/2025_06_01_0800/dup.pdf",
         )
-        assert item.file_reused is True
+        assert item.status == "already_exists"
 
 
 class TestIngestionOut:
@@ -492,9 +513,7 @@ class TestIngestionOut:
         items = [
             FileIngestionItemOut(file_name="a.pdf", status="created", document_id=1, file_id=1),
             FileIngestionItemOut(file_name="b.pdf", status="rejected", reason="non-PDF"),
-            FileIngestionItemOut(
-                file_name="c.pdf", status="already_exists", file_id=2, file_reused=True
-            ),
+            FileIngestionItemOut(file_name="c.pdf", status="already_exists", file_id=2),
         ]
         o = IngestionOut(
             dataset_id=1, received=3, created=1, already_exists=1, rejected=1, results=items

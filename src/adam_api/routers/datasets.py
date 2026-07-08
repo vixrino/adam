@@ -14,7 +14,7 @@ from adam_api.dependencies.db import get_db
 from adam_api.services.ingestion import ingest_pdf, looks_like_pdf
 from adam_core.enums.ocr import OcrProvider
 from adam_core.enums.status import DatasetStatus, DocumentStatus
-from adam_core.models import Dataset, Document
+from adam_core.models import Dataset, DocSchema, Document, Organisation, Project
 from adam_core.schemas.responses import DatasetOut, DatasetStatsOut, IngestionOut, FileIngestionItemOut
 from adam_core.utils.exceptions import raise_not_found, raise_unprocessable
 from adam_core.utils.logging import get_logger
@@ -135,22 +135,36 @@ async def ingest_documents(
     if not dataset:
         raise_not_found(Dataset)
 
+    schema = await db.get(DocSchema, dataset.schema_id)
+    project = await db.get(Project, dataset.project_id)
+    organisation = await db.get(Organisation, project.organisation_id) if project else None
+    if not schema or not organisation:
+        raise_unprocessable("Dataset rattache a un schema ou une organisation introuvable")
+
     pvc_root = Path(settings.pvc_mount_path)
     items: List[FileIngestionItemOut] = []
     for upload in files:
         file_name = upload.filename or "sans_nom.pdf"
         content = await upload.read()
-        if not looks_like_pdf(content, content_type=upload.content_type, file_name=file_name):
+        if not looks_like_pdf(content):
             logger.warning("Fichier ignore (non PDF) [dataset_id=%s file_name=%s]", dataset_id, file_name)
             items.append(FileIngestionItemOut(file_name=file_name, status="rejected", reason="non-PDF"))
             continue
-        raw = await ingest_pdf(db, dataset, file_name=file_name, content=content, pvc_root=pvc_root)
+        raw = await ingest_pdf(
+            db,
+            dataset,
+            organisation_slug=organisation.slug,
+            document_type=schema.document_type,
+            file_name=file_name,
+            content=content,
+            pvc_root=pvc_root,
+        )
         items.append(FileIngestionItemOut(**raw))
 
     return IngestionOut(
         dataset_id=dataset_id,
         received=len(items),
-        created=sum(1 for r in items if r.status == "created"),
+        created=sum(1 for r in items if r.status in ("created", "created_file_reused")),
         already_exists=sum(1 for r in items if r.status == "already_exists"),
         rejected=sum(1 for r in items if r.status == "rejected"),
         results=items,

@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +130,7 @@ class DocumentOut(BaseModel):
     # CA-2 : rempli par le mini worker une fois les images generees
     page_count: Optional[int] = None
     image_paths: Optional[List[str]] = None
+    updated_at: datetime
 
 
 class DocumentFieldInPageOut(BaseModel):
@@ -207,7 +208,11 @@ class DocumentFieldsBySectionOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 class DocumentFieldOut(BaseModel):
-    """CA-3 : inclut ocr_polygon, statut et valeur resolue."""
+    """CA-3 : inclut ocr_polygon, statut et valeur resolue.
+
+    ocr_value et resolved_value sont exposees dans leur type natif JSON
+    (bool, int, float ou str) selon value_type, via parse_field_value.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -215,12 +220,20 @@ class DocumentFieldOut(BaseModel):
     document_id: int
     field_spec_id: int
     group_id: Optional[str] = None
-    ocr_value: Optional[str] = None
-    resolved_value: Optional[str] = None
+    value_type: Optional[str] = None
+    ocr_value: Optional[Any] = None
+    resolved_value: Optional[Any] = None
     status: str
     ocr_confidence: Optional[float] = None
     consensus_reached: bool
     ocr_polygon: Optional[List[float]] = None
+
+    @model_validator(mode="after")
+    def _parse_values(self) -> "DocumentFieldOut":
+        from adam_core.utils.field_parser import parse_field_value
+        self.ocr_value = parse_field_value(self.ocr_value, self.value_type)
+        self.resolved_value = parse_field_value(self.resolved_value, self.value_type)
+        return self
 
 
 class DocumentFieldPatchOut(BaseModel):
@@ -327,10 +340,10 @@ class FileIngestionItemOut(BaseModel):
     """Resultat pour un fichier dans la reponse d'ingestion."""
 
     file_name: str
-    status: str  # created | already_exists | rejected
+    status: str  # created | created_file_reused | already_exists | rejected
     document_id: Optional[int] = None
     file_id: Optional[int] = None
-    file_reused: Optional[bool] = None
+    file_path: Optional[str] = None  # a titre de debug
     reason: Optional[str] = None
 
 

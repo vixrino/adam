@@ -57,3 +57,19 @@ cd src/adam_core && python -m alembic upgrade head
 4. Push : `git push origin feature/ma-feature`
 5. Ouvrir une Merge Request vers `develop`
 6. Review + merge
+
+Adds and hardens the field value parser (parse_field_value), which converts raw OCR values into native Python/JSON types (TEXT, NUMBER, DATE, DATETIME, BOOLEAN) in a tolerant way — never raises, falls back to the raw value when a value can't be converted.
+
+Features
+- Typed parsing wired into GET /documents/{id}/fields
+- French format support: dates DD/MM/YYYY (/, -, ., space separators), numbers with thousand separators and comma decimal separator
+- ISO 8601 tried first, French formats used as fallback
+
+Fixes
+- Missing DATETIME branch in extract_field_specs (datetime fields were never parsed on the API side)
+- Strip surrounding whitespace before DATE/DATETIME parsing (common in OCR output)
+- Reject non-finite NUMBER results (nan/inf/-inf)
+
+Tests
+- 43 unit tests covering all types and edge cases (invalid formats, non-convertible values, mixed separators)
+- scripts/test_with_json.py + test_fixture_all_types.json fixture for manual validation without a server/DB

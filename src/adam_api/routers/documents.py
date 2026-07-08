@@ -146,13 +146,30 @@ async def get_document(
 @router.get("/{document_id}/fields", response_model=List[DocumentFieldOut])
 async def get_document_fields(
     document_id: int, db: AsyncSession = Depends(get_db)
-) -> List[DocumentField]:
-    rows = list(
-        (await db.execute(select(DocumentField).where(DocumentField.document_id == document_id)))
-        .scalars()
-        .all()
-    )
-    return rows
+) -> List[DocumentFieldOut]:
+    rows = (
+        await db.execute(
+            select(DocumentField)
+            .where(DocumentField.document_id == document_id)
+            .options(selectinload(DocumentField.field_spec))
+        )
+    ).scalars().all()
+    return [
+        DocumentFieldOut(
+            id=df.id,
+            document_id=df.document_id,
+            field_spec_id=df.field_spec_id,
+            group_id=df.group_id,
+            value_type=df.field_spec.value_type if df.field_spec else None,
+            ocr_value=df.ocr_value,
+            resolved_value=df.resolved_value,
+            status=df.status,
+            ocr_confidence=df.ocr_confidence,
+            consensus_reached=df.consensus_reached,
+            ocr_polygon=df.ocr_polygon,
+        )
+        for df in rows
+    ]
 
 
 @router.get("/{document_id}/fields/by-section", response_model=DocumentFieldsBySectionOut)
