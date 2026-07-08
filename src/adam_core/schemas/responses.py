@@ -141,6 +141,7 @@ class DocumentFieldInPageOut(BaseModel):
     ocr_value: Optional[str] = None
     resolved_value: Optional[str] = None
     status: str
+    consensus_reached: bool
 
 
 class DocumentSectionOut(BaseModel):
