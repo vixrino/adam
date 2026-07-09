@@ -25,11 +25,13 @@ class DocumentStatus(str, Enum):
     PENDING_CONSENSUS = "PENDING_CONSENSUS"
     VALIDATED = "VALIDATED"
     DISPUTED = "DISPUTED"
+    EXPORTED = "EXPORTED"
     ARCHIVED = "ARCHIVED"
 
 
 class DocumentFieldStatus(str, Enum):
     PENDING = "PENDING"
+    CORRECTED = "CORRECTED"
     VALIDATED = "VALIDATED"
     DISPUTED = "DISPUTED"
 
@@ -37,6 +39,16 @@ class DocumentFieldStatus(str, Enum):
 class JobStep(str, Enum):
     VALIDATION = "VALIDATION"
     CORRECTION = "CORRECTION"
+    CONSENSUS = "CONSENSUS"
+
+
+class JobState(str, Enum):
+    """Etat d'un job de labellisation."""
+
+    ASSIGNED = "ASSIGNED"
+    IN_PROGRESS = "IN_PROGRESS"
+    SUBMITTED = "SUBMITTED"
+    CANCELLED = "CANCELLED"
 
 
 class UserStatus(str, Enum):

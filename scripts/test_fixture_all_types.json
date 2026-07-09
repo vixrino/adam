@@ -1,0 +1,70 @@
+{
+  "smartdoc_version": "0.3",
+  "document_id": "TEST-ALL-TYPES-0001",
+  "coordinate_unit": "pixel",
+  "page_count": 1,
+  "pages": [
+    {
+      "page_number": 1,
+      "width": 0,
+      "height": 0,
+      "sections": [
+        {
+          "id": "section_boolean",
+          "label": "BOOLEAN",
+          "kv_pairs": [
+            {"id": "bool_true", "label": "Bool true", "value": {"type": "boolean", "value": true}},
+            {"id": "bool_false", "label": "Bool false", "value": {"type": "boolean", "value": false}}
+          ]
+        },
+        {
+          "id": "section_text",
+          "label": "TEXT",
+          "kv_pairs": [
+            {"id": "text_simple", "label": "Text simple", "value": {"type": "text", "text": "MOULIN"}},
+            {"id": "text_empty", "label": "Text vide", "value": {"type": "text", "text": ""}}
+          ]
+        },
+        {
+          "id": "section_number",
+          "label": "NUMBER",
+          "kv_pairs": [
+            {"id": "num_int", "label": "Entier simple", "value": {"type": "number", "value": "450000"}},
+            {"id": "num_small_int", "label": "Petit entier", "value": {"type": "number", "value": "85"}},
+            {"id": "num_float_dot", "label": "Float point", "value": {"type": "number", "value": "3.14"}},
+            {"id": "num_fr_thousand_space", "label": "Milliers espace FR", "value": {"type": "number", "value": "450 000"}},
+            {"id": "num_fr_decimal_comma", "label": "Decimale virgule FR", "value": {"type": "number", "value": "12,5"}},
+            {"id": "num_fr_thousand_dot_decimal_comma", "label": "Milliers point + decimale virgule FR", "value": {"type": "number", "value": "1.234,56"}},
+            {"id": "num_fr_thousand_space_decimal_comma", "label": "Milliers espace + decimale virgule FR", "value": {"type": "number", "value": "1 234,56"}},
+            {"id": "num_not_convertible", "label": "Numero de voie non convertible", "value": {"type": "number", "value": "12 BIS"}},
+            {"id": "num_alphanumeric", "label": "Alphanumerique", "value": {"type": "number", "value": "ABC123"}}
+          ]
+        },
+        {
+          "id": "section_date",
+          "label": "DATE",
+          "kv_pairs": [
+            {"id": "date_iso", "label": "Date ISO", "value": {"type": "date", "value": "1990-01-01"}},
+            {"id": "date_fr_slash", "label": "Date FR slash", "value": {"type": "date", "value": "20/06/2026"}},
+            {"id": "date_fr_dash", "label": "Date FR tiret", "value": {"type": "date", "value": "20-06-2026"}},
+            {"id": "date_fr_dot", "label": "Date FR point", "value": {"type": "date", "value": "20.06.2026"}},
+            {"id": "date_invalid", "label": "Date invalide", "value": {"type": "date", "value": "not-a-date"}}
+          ]
+        },
+        {
+          "id": "section_datetime",
+          "label": "DATETIME",
+          "kv_pairs": [
+            {"id": "datetime_iso", "label": "Datetime ISO", "value": {"type": "datetime", "value": "2024-01-15T10:30:00"}},
+            {"id": "datetime_iso_z", "label": "Datetime ISO Z", "value": {"type": "datetime", "value": "2024-01-15T10:30:00Z"}},
+            {"id": "datetime_space", "label": "Datetime espace", "value": {"type": "datetime", "value": "2024-01-15 10:30:00"}},
+            {"id": "datetime_fr_slash_seconds", "label": "Datetime FR slash avec secondes", "value": {"type": "datetime", "value": "20/06/2026 14:30:00"}},
+            {"id": "datetime_fr_slash_no_seconds", "label": "Datetime FR slash sans secondes", "value": {"type": "datetime", "value": "20/06/2026 14:30"}},
+            {"id": "datetime_fr_dash", "label": "Datetime FR tiret", "value": {"type": "datetime", "value": "20-06-2026 14:30"}},
+            {"id": "datetime_invalid", "label": "Datetime invalide", "value": {"type": "datetime", "value": "not-a-datetime"}}
+          ]
+        }
+      ]
+    }
+  ]
+}

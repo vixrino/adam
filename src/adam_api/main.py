@@ -2,10 +2,11 @@
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Dict
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -62,6 +63,33 @@ app.include_router(organisations.router)
 app.include_router(projects.router)
 app.include_router(schemas.router)
 app.include_router(users.router)
+
+
+def _add_binary_format_to_file_uploads(schema: Dict[str, Any]) -> None:
+    """Swagger UI n'affiche le bouton de selection de fichier que si le champ
+    porte `format: binary` (convention OpenAPI 3.0). Pydantic v2/FastAPI
+    genere `contentMediaType` (convention OpenAPI 3.1) pour les UploadFile,
+    que Swagger UI ne reconnait pas comme un champ fichier : sans ce patch,
+    `files` s'affiche comme un simple tableau de chaines editable a la main."""
+    for component in schema.get("components", {}).get("schemas", {}).values():
+        for prop in component.get("properties", {}).values():
+            target = prop.get("items", prop)
+            if target.get("contentMediaType") == "application/octet-stream":
+                target["format"] = "binary"
+
+
+def custom_openapi() -> Dict[str, Any]:
+    if app.openapi_schema is None:
+        app.openapi_schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            routes=app.routes,
+        )
+        _add_binary_format_to_file_uploads(app.openapi_schema)
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi  # type: ignore[method-assign]
 
 
 @app.get("/health")
