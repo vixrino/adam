@@ -55,14 +55,14 @@ def looks_like_pdf(content: bytes) -> bool:
 def pvc_relative_path(
     *, organisation_slug: str, document_type: str, ingested_at: datetime, file_name: str
 ) -> Path:
-    """Chemin lisible : organisation/type_document/horodatage/nom_fichier.
+    """Chemin lisible : organisation/type_document/date/nom_fichier.
 
     Le nom de fichier envoye par le client n'est jamais renomme, seulement
     ramene a son basename (`Path(file_name).name`) pour empecher toute
     traversee de repertoire : c'est une entree utilisateur falsifiable
     (cf. looks_like_pdf).
     """
-    timestamp = ingested_at.strftime("%Y_%m_%d_%H%M")
+    timestamp = ingested_at.strftime("%Y_%m_%d")
     safe_name = Path(file_name).name
     return Path(organisation_slug) / document_type / timestamp / safe_name
 

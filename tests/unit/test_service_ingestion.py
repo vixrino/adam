@@ -58,7 +58,7 @@ def test_pvc_relative_path_structure() -> None:
         ingested_at=_INGESTED_AT,
         file_name="cerfa_13594_sample.pdf",
     )
-    assert path == Path("dires/cerfa/2026_01_15_1321/cerfa_13594_sample.pdf")
+    assert path == Path("dires/cerfa/2026_01_15/cerfa_13594_sample.pdf")
 
 
 def test_pvc_relative_path_keeps_original_file_name() -> None:
@@ -78,14 +78,14 @@ def test_pvc_relative_path_strips_directory_traversal_from_file_name() -> None:
         ingested_at=_INGESTED_AT,
         file_name="../../etc/passwd.pdf",
     )
-    assert path == Path("dires/cerfa/2026_01_15_1321/passwd.pdf")
+    assert path == Path("dires/cerfa/2026_01_15/passwd.pdf")
 
 
 # ---------------------------------------------------------------------------
 # _get_or_create_file
 # ---------------------------------------------------------------------------
 
-_RELATIVE_PATH = Path("dires/cerfa/2026_01_15_1321/doc.pdf")
+_RELATIVE_PATH = Path("dires/cerfa/2026_01_15/doc.pdf")
 
 
 @pytest.mark.asyncio
@@ -215,7 +215,7 @@ async def test_ingest_pdf_new_file_created(tmp_path: Path) -> None:
 
     file_mock = MagicMock()
     file_mock.id = 5
-    file_mock.file_path = "dires/cerfa/2026_01_15_1321/new.pdf"
+    file_mock.file_path = "dires/cerfa/2026_01_15/new.pdf"
 
     with patch("adam_api.services.ingestion._get_or_create_file", AsyncMock(return_value=(file_mock, True))):
         result = await ingest_pdf(
@@ -226,7 +226,7 @@ async def test_ingest_pdf_new_file_created(tmp_path: Path) -> None:
 
     assert result["status"] == "created"
     assert result["file_id"] == 5
-    assert result["file_path"] == "dires/cerfa/2026_01_15_1321/new.pdf"
+    assert result["file_path"] == "dires/cerfa/2026_01_15/new.pdf"
 
 
 @pytest.mark.asyncio
