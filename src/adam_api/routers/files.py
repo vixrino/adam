@@ -7,14 +7,17 @@ POST : creation d'un fichier
 PATCH: mise a jour en cas de deplacement du fichier
 """
 
+from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from adam_api.core.config import settings
 from adam_api.dependencies.db import get_db
 from adam_core.models import Document, File
 from adam_core.schemas.responses import (
@@ -77,6 +80,18 @@ async def get_file(file_id: int, db: AsyncSession = Depends(get_db)) -> FileDeta
         created_at=file.created_at,
         documents_count=len(file.documents),
     )
+
+
+@router.get("/{file_id}/content")
+async def get_file_content(file_id: int, db: AsyncSession = Depends(get_db)) -> FileResponse:
+    """Retourne les octets bruts du fichier physique (PDF), pour visualisation/telechargement."""
+    file = await db.get(File, file_id)
+    if not file:
+        raise_not_found(File)
+    abs_path = Path(settings.pvc_mount_path) / file.file_path
+    if not abs_path.exists():
+        raise HTTPException(status_code=404, detail="Fichier absent du PVC")
+    return FileResponse(abs_path, media_type=file.mime_type, filename=abs_path.name)
 
 
 @router.get("/{file_id}/documents", response_model=List[DocumentOut])
