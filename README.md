@@ -23,3 +23,6 @@ git checkout develop
 
 - Développeur : dev@example.com
 "e9e019a6165c812904c95a35da2e6eaafa688593d488c1133984df8f3c55e621"
+
+
+Copy-Item .\data\pvc\test\test_fixture.pdf .\data\pvc\documents\e9\e0\e9e019a6165c812904c95a35da2e6eaafa688593d488c1133984df8f3c55e621.pdf
