@@ -22,3 +22,4 @@ git checkout develop
 ## Contact
 
 - Développeur : dev@example.com
+"e9e019a6165c812904c95a35da2e6eaafa688593d488c1133984df8f3c55e621"
