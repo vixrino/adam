@@ -83,11 +83,12 @@ class PageImageWorker(BaseWorker):
             output_dir = self.pvc_root / pages_relative_dir(file_row.id)
             try:
                 written = render_pages_to_png(pdf_path, output_dir)
-            except PdfRenderError:
-                self.logger.exception(
-                    "PDF illisible, document laisse en RECEIVED [document_id=%s file_id=%s]",
+            except PdfRenderError as exc:
+                self.logger.warning(
+                    "PDF illisible, document laisse en RECEIVED [document_id=%s file_id=%s]: %s",
                     document_id,
                     file_row.id,
+                    exc,
                 )
                 return
 
