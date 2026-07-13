@@ -11,7 +11,7 @@ from typing import List
 
 import fitz  # PyMuPDF
 
-_PAGE_IMAGE_DPI = 150
+_PAGE_IMAGE_DPI = 300
 
 
 class PdfRenderError(Exception):
