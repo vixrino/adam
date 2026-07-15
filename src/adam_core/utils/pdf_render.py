@@ -23,6 +23,16 @@ def pages_relative_dir(file_id: int) -> Path:
     return Path(str(file_id)) / "pages"
 
 
+def page_image_filename(page_number: int) -> str:
+    """Nom du PNG d'une page (1-indexee), zero-padded pour un tri lexicographique correct."""
+    return f"{page_number:04d}.png"
+
+
+def page_image_relative_path(file_id: int, page_number: int) -> Path:
+    """Chemin PVC relatif de l'image d'une page (1-indexee) : file_id/pages/NNNN.png."""
+    return pages_relative_dir(file_id) / page_image_filename(page_number)
+
+
 def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
     """Convertit chaque page de `pdf_path` en PNG dans `output_dir`.
 
@@ -40,7 +50,7 @@ def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
             for page_number in range(1, doc.page_count + 1):
                 page = doc.load_page(page_number - 1)
                 pixmap = page.get_pixmap(dpi=_PAGE_IMAGE_DPI)
-                image_path = output_dir / f"{page_number:04d}.png"
+                image_path = output_dir / page_image_filename(page_number)
                 pixmap.save(str(image_path))
                 written.append(image_path)
     except PdfRenderError:

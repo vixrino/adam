@@ -5,7 +5,12 @@ from pathlib import Path
 import fitz
 import pytest
 
-from adam_core.utils.pdf_render import PdfRenderError, pages_relative_dir, render_pages_to_png
+from adam_core.utils.pdf_render import (
+    PdfRenderError,
+    page_image_relative_path,
+    pages_relative_dir,
+    render_pages_to_png,
+)
 
 
 def _make_pdf(path: Path, page_count: int) -> None:
@@ -19,6 +24,10 @@ def _make_pdf(path: Path, page_count: int) -> None:
 
 def test_pages_relative_dir() -> None:
     assert pages_relative_dir(42) == Path("42") / "pages"
+
+
+def test_page_image_relative_path() -> None:
+    assert page_image_relative_path(42, 7) == Path("42") / "pages" / "0007.png"
 
 
 def test_render_pages_to_png_creates_one_png_per_page(tmp_path: Path) -> None:
