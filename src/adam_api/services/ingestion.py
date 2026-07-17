@@ -53,18 +53,26 @@ def looks_like_pdf(content: bytes) -> bool:
 
 
 def pvc_relative_path(
-    *, organisation_slug: str, document_type: str, ingested_at: datetime, file_name: str
+    *,
+    organisation_slug: str,
+    document_type: str,
+    ingested_at: datetime,
+    file_name: str,
+    checksum: str,
 ) -> Path:
-    """Chemin lisible : organisation/type_document/date/nom_fichier.
+    """Chemin lisible : organisation/type_document/date/nom.fragment_sha256.ext.
 
-    Le nom de fichier envoye par le client n'est jamais renomme, seulement
-    ramene a son basename (`Path(file_name).name`) pour empecher toute
-    traversee de repertoire : c'est une entree utilisateur falsifiable
-    (cf. looks_like_pdf).
+    Le nom de fichier envoye par le client est conserve mais ramene a son
+    basename (`Path(file_name).name`) pour empecher toute traversee de
+    repertoire (entree utilisateur falsifiable, cf. looks_like_pdf), et
+    suffixe d'un fragment du sha256 : sans lui, deux contenus differents
+    envoyes le meme jour sous le meme nom partageraient le meme chemin et
+    le second write_bytes ecraserait le PDF du premier FILE sur le PVC.
     """
     timestamp = ingested_at.strftime("%Y_%m_%d")
     safe_name = Path(file_name).name
-    return Path(organisation_slug) / document_type / timestamp / safe_name
+    unique_name = f"{Path(safe_name).stem}.{checksum[:8]}{Path(safe_name).suffix}"
+    return Path(organisation_slug) / document_type / timestamp / unique_name
 
 
 async def _get_or_create_file(
@@ -110,9 +118,7 @@ async def _get_or_create_file(
         return file_row, True
 
     # Course perdue : une autre transaction a insere la ligne en premier.
-    file_row = (
-        await db.execute(select(File).where(File.sha256_checksum == checksum))
-    ).scalar_one()
+    file_row = (await db.execute(select(File).where(File.sha256_checksum == checksum))).scalar_one()
     return file_row, False
 
 
@@ -158,6 +164,7 @@ async def ingest_pdf(
         document_type=document_type,
         ingested_at=datetime.now(timezone.utc),
         file_name=file_name,
+        checksum=checksum,
     )
     file_row, file_created = await _get_or_create_file(
         db, checksum=checksum, content=content, pvc_root=pvc_root, relative_path=relative_path

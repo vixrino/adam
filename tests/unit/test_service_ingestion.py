@@ -14,10 +14,10 @@ from adam_api.services.ingestion import (
     pvc_relative_path,
 )
 
-
 # ---------------------------------------------------------------------------
 # looks_like_pdf
 # ---------------------------------------------------------------------------
+
 
 def _minimal_valid_pdf() -> bytes:
     doc = pymupdf.open()
@@ -49,6 +49,7 @@ def test_looks_like_pdf_header_only_without_valid_structure() -> None:
 # ---------------------------------------------------------------------------
 
 _INGESTED_AT = datetime(2026, 1, 15, 13, 21, tzinfo=timezone.utc)
+_CHECKSUM = "a3f9" + "0" * 60
 
 
 def test_pvc_relative_path_structure() -> None:
@@ -57,18 +58,21 @@ def test_pvc_relative_path_structure() -> None:
         document_type="cerfa",
         ingested_at=_INGESTED_AT,
         file_name="cerfa_13594_sample.pdf",
+        checksum=_CHECKSUM,
     )
-    assert path == Path("dires/cerfa/2026_01_15/cerfa_13594_sample.pdf")
+    assert path == Path("dires/cerfa/2026_01_15/cerfa_13594_sample.a3f90000.pdf")
 
 
-def test_pvc_relative_path_keeps_original_file_name() -> None:
+def test_pvc_relative_path_keeps_original_stem_and_suffix() -> None:
     path = pvc_relative_path(
         organisation_slug="dires",
         document_type="cerfa",
         ingested_at=_INGESTED_AT,
         file_name="Un Nom Bizarre (1).pdf",
+        checksum=_CHECKSUM,
     )
-    assert path.name == "Un Nom Bizarre (1).pdf"
+    assert path.name.startswith("Un Nom Bizarre (1).")
+    assert path.suffix == ".pdf"
 
 
 def test_pvc_relative_path_strips_directory_traversal_from_file_name() -> None:
@@ -77,8 +81,24 @@ def test_pvc_relative_path_strips_directory_traversal_from_file_name() -> None:
         document_type="cerfa",
         ingested_at=_INGESTED_AT,
         file_name="../../etc/passwd.pdf",
+        checksum=_CHECKSUM,
     )
-    assert path == Path("dires/cerfa/2026_01_15/passwd.pdf")
+    assert path == Path("dires/cerfa/2026_01_15/passwd.a3f90000.pdf")
+
+
+def test_pvc_relative_path_no_collision_same_name_same_day_different_content() -> None:
+    """Regression : deux contenus differents, meme nom et meme jour, ne doivent
+    pas partager le meme chemin physique (sinon le second ecrase le premier)."""
+    common = dict(
+        organisation_slug="dires",
+        document_type="cerfa",
+        ingested_at=_INGESTED_AT,
+        file_name="demo_multipage.pdf",
+    )
+    path_v1 = pvc_relative_path(**common, checksum="1" * 64)
+    path_v2 = pvc_relative_path(**common, checksum="2" * 64)
+    assert path_v1 != path_v2
+    assert path_v1.parent == path_v2.parent  # meme dossier date, seuls les noms different
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +160,11 @@ async def test_get_or_create_file_new(tmp_path: Path) -> None:
     db.flush = AsyncMock()
 
     file_row, created = await _get_or_create_file(
-        db, checksum="c" * 64, content=b"new content", pvc_root=tmp_path, relative_path=_RELATIVE_PATH
+        db,
+        checksum="c" * 64,
+        content=b"new content",
+        pvc_root=tmp_path,
+        relative_path=_RELATIVE_PATH,
     )
     abs_path = tmp_path / _RELATIVE_PATH
     assert abs_path.exists()
@@ -177,6 +201,7 @@ async def test_get_or_create_file_concurrent_insert_loses_race(tmp_path: Path) -
 # ingest_pdf
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_ingest_pdf_already_exists(tmp_path: Path) -> None:
     db = AsyncMock()
@@ -191,9 +216,13 @@ async def test_ingest_pdf_already_exists(tmp_path: Path) -> None:
     db.execute = AsyncMock(return_value=mock_result)
 
     result = await ingest_pdf(
-        db, dataset,
-        organisation_slug="dires", document_type="cerfa",
-        file_name="doc.pdf", content=b"%PDF-1.4", pvc_root=tmp_path,
+        db,
+        dataset,
+        organisation_slug="dires",
+        document_type="cerfa",
+        file_name="doc.pdf",
+        content=b"%PDF-1.4",
+        pvc_root=tmp_path,
     )
     assert result["status"] == "already_exists"
     assert result["document_id"] == 42
@@ -217,11 +246,17 @@ async def test_ingest_pdf_new_file_created(tmp_path: Path) -> None:
     file_mock.id = 5
     file_mock.file_path = "dires/cerfa/2026_01_15/new.pdf"
 
-    with patch("adam_api.services.ingestion._get_or_create_file", AsyncMock(return_value=(file_mock, True))):
+    with patch(
+        "adam_api.services.ingestion._get_or_create_file", AsyncMock(return_value=(file_mock, True))
+    ):
         result = await ingest_pdf(
-            db, dataset,
-            organisation_slug="dires", document_type="cerfa",
-            file_name="new.pdf", content=b"%PDF-1.4", pvc_root=tmp_path,
+            db,
+            dataset,
+            organisation_slug="dires",
+            document_type="cerfa",
+            file_name="new.pdf",
+            content=b"%PDF-1.4",
+            pvc_root=tmp_path,
         )
 
     assert result["status"] == "created"
@@ -245,11 +280,18 @@ async def test_ingest_pdf_file_reused(tmp_path: Path) -> None:
     file_mock.id = 3
     file_mock.file_path = "dires/cerfa/2025_06_01_0800/dup.pdf"
 
-    with patch("adam_api.services.ingestion._get_or_create_file", AsyncMock(return_value=(file_mock, False))):
+    with patch(
+        "adam_api.services.ingestion._get_or_create_file",
+        AsyncMock(return_value=(file_mock, False)),
+    ):
         result = await ingest_pdf(
-            db, dataset,
-            organisation_slug="dires", document_type="cerfa",
-            file_name="dup.pdf", content=b"%PDF-1.4", pvc_root=tmp_path,
+            db,
+            dataset,
+            organisation_slug="dires",
+            document_type="cerfa",
+            file_name="dup.pdf",
+            content=b"%PDF-1.4",
+            pvc_root=tmp_path,
         )
 
     assert result["status"] == "created_file_reused"
