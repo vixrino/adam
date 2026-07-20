@@ -3,20 +3,20 @@
 Stub minimal Sprint 3 : pas de scheduler, chaque worker boucle sur son
 propre polling (voir BaseWorker.run_forever).
 
-NOTE PORTAGE NOTA : ne pas ecraser le main.py existant de nota avec ce
+NOTE PORTAGE ADAM : ne pas ecraser le main.py existant de adam avec ce
 fichier. Ajouter seulement PageImageWorker() a la liste `workers` du
-main.py de nota, en conservant les workers deja enregistres la-bas
-(le ConsensusWorker d'adam n'existe pas sous ce nom sur nota).
+main.py de adam, en conservant les workers deja enregistres la-bas
+(le ConsensusWorker d'adam n'existe pas sous ce nom sur adam).
 """
 
-from __future__ import annotations
+from __future__ import anadamtions
 
 import asyncio
 
-from nota_core.core.config import get_core_settings
-from nota_core.db.session import init_engine
-from nota_core.utils.logging import setup_logging
-from nota_worker.page_image_worker import PageImageWorker
+from adam_core.core.config import get_core_settings
+from adam_core.db.session import init_engine
+from adam_core.utils.logging import setup_logging
+from adam_worker.page_image_worker import PageImageWorker
 
 
 async def _main() -> None:

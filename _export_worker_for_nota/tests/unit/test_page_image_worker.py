@@ -1,4 +1,4 @@
-"""Tests unitaires nota_worker/page_image_worker.py"""
+"""Tests unitaires adam_worker/page_image_worker.py"""
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nota_core.enums.status import DocumentStatus
-from nota_core.utils.pdf_render import PdfRenderError
-from nota_worker import page_image_worker as worker_module
-from nota_worker.page_image_worker import PageImageWorker
+from adam_core.enums.status import DocumentStatus
+from adam_core.utils.pdf_render import PdfRenderError
+from adam_worker import page_image_worker as worker_module
+from adam_worker.page_image_worker import PageImageWorker
 
 
 def _document(

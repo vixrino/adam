@@ -1,6 +1,6 @@
 """Tests unitaires de GET /documents/{id}/pages/{n} (endpoint images de pages).
 
-Fichier autonome : a deposer tel quel dans tests/unit/ de nota (ou a fusionner
+Fichier autonome : a deposer tel quel dans tests/unit/ de adam (ou a fusionner
 dans son test_router_documents.py existant). Ne depend d'aucun schema de
 reponse — uniquement du router et de settings.pvc_mount_path.
 """
@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nota_api.routers.documents import router
+from adam_api.routers.documents import router
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def mock_db() -> AsyncMock:
 
 @pytest.fixture
 def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
-    from nota_api.dependencies.db import get_db
+    from adam_api.dependencies.db import get_db
 
     app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app, raise_server_exceptions=False)
@@ -55,7 +55,7 @@ def _make_document_with_file(file_id: int = 1, page_count: int = 3) -> MagicMock
 class TestGetDocumentPageImage:
     @pytest.fixture(autouse=True)
     def pvc_root(self, tmp_path, monkeypatch):
-        from nota_api.core.config import settings
+        from adam_api.core.config import settings
 
         monkeypatch.setattr(settings, "pvc_mount_path", str(tmp_path))
         return tmp_path

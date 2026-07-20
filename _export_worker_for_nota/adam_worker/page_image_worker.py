@@ -12,7 +12,7 @@ de rendu (PDF corrompu, page illisible) est logue avec le document_id et
 laisse le Document en RECEIVED pour un prochain essai (CA-5).
 """
 
-from __future__ import annotations
+from __future__ import anadamtions
 
 from pathlib import Path
 from typing import List, Optional
@@ -20,12 +20,12 @@ from typing import List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nota_api.core.config import settings
-from nota_core.db.session import get_async_session
-from nota_core.enums.status import DocumentStatus
-from nota_core.models import Document, File
-from nota_core.utils.pdf_render import PdfRenderError, pages_relative_dir, render_pages_to_png
-from nota_worker.base_worker import BaseWorker
+from adam_api.core.config import settings
+from adam_core.db.session import get_async_session
+from adam_core.enums.status import DocumentStatus
+from adam_core.models import Document, File
+from adam_core.utils.pdf_render import PdfRenderError, pages_relative_dir, render_pages_to_png
+from adam_worker.base_worker import BaseWorker
 
 _BATCH_SIZE = 20
 

@@ -1,11 +1,11 @@
-"""Tests unitaires nota_core/utils/pdf_render.py"""
+"""Tests unitaires adam_core/utils/pdf_render.py"""
 
 from pathlib import Path
 
 import fitz
 import pytest
 
-from nota_core.utils.pdf_render import (
+from adam_core.utils.pdf_render import (
     PdfRenderError,
     page_image_relative_path,
     pages_relative_dir,

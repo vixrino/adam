@@ -1,11 +1,11 @@
-"""SNIPPET a greffer dans le documents.py de nota — ne pas copier le fichier entier.
+"""SNIPPET a greffer dans le documents.py de adam — ne pas copier le fichier entier.
 
 1. Ajouter les imports ci-dessous a ceux deja presents dans documents.py.
 2. Coller la fonction get_document_page_image dans le router existant
    (par exemple juste apres get_document).
 
 Le reste du documents.py d'adam contient du code d'autres tickets
-(value_type / field parser, schemas divergents) qui ne compile pas sur nota.
+(value_type / field parser, schemas divergents) qui ne compile pas sur adam.
 """
 
 # --- imports a ajouter -------------------------------------------------------
@@ -15,8 +15,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException  # HTTPException en plus
 from fastapi.responses import FileResponse
 
-from nota_api.core.config import settings
-from nota_core.utils.pdf_render import page_image_relative_path
+from adam_api.core.config import settings
+from adam_core.utils.pdf_render import page_image_relative_path
 
 # --- endpoint a greffer ------------------------------------------------------
 # (suppose les memes `router`, `get_db`, `Document`, `raise_not_found`,

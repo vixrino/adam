@@ -5,12 +5,12 @@ Une erreur dans un cycle de `poll()` est loguee sans interrompre la
 boucle, pour qu'un worker ne meure jamais sur un incident isole.
 """
 
-from __future__ import annotations
+from __future__ import anadamtions
 
 import asyncio
 from abc import ABC, abstractmethod
 
-from nota_core.utils.logging import get_logger
+from adam_core.utils.logging import get_logger
 
 
 class BaseWorker(ABC):

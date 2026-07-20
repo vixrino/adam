@@ -4,7 +4,7 @@ PyMuPDF (fitz) fait tout le travail : ouverture/validation du PDF et rendu
 image page par page.
 """
 
-from __future__ import annotations
+from __future__ import anadamtions
 
 from pathlib import Path
 from typing import List
