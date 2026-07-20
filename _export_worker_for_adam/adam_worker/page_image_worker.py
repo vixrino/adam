@@ -12,7 +12,7 @@ de rendu (PDF corrompu, page illisible) est logue avec le document_id et
 laisse le Document en RECEIVED pour un prochain essai (CA-5).
 """
 
-from __future__ import anadamtions
+from __future__ import annotations
 
 from pathlib import Path
 from typing import List, Optional

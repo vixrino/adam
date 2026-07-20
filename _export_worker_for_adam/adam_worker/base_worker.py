@@ -5,7 +5,7 @@ Une erreur dans un cycle de `poll()` est loguee sans interrompre la
 boucle, pour qu'un worker ne meure jamais sur un incident isole.
 """
 
-from __future__ import anadamtions
+from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod

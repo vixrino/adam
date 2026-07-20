@@ -9,7 +9,7 @@ main.py de adam, en conservant les workers deja enregistres la-bas
 (le ConsensusWorker d'adam n'existe pas sous ce nom sur adam).
 """
 
-from __future__ import anadamtions
+from __future__ import annotations
 
 import asyncio
 
