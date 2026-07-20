@@ -22,3 +22,4 @@ git checkout develop
 ## Contact
 
 - Développeur : dev@example.com
+grep -n "@router.get\|def get_document_job_progress" src/x_api/routers/documents.py | grep -iA1 "job\|progress"
