@@ -1,7 +1,7 @@
 """Documents - GET/POST/PATCH endpoints."""
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from adam_api.core.config import settings
 from adam_api.dependencies.db import get_db
+from adam_core.enums.status import DocumentStatus, JobState
 from adam_core.models import Document, DocumentField
 from adam_core.schemas.responses import (
     DocumentFieldInPageOut,
@@ -20,6 +21,7 @@ from adam_core.schemas.responses import (
     DocumentFieldsBySectionOut,
     DocumentFullOut,
     DocumentJobOut,
+    DocumentJobProgressOut,
     DocumentOcrResultOut,
     DocumentOut,
     DocumentPageOut,
@@ -144,6 +146,47 @@ async def get_document(
         status=doc.status,
         metadata=doc.metadata_,
         page_count=doc.file.page_count if doc.file else None,
+    )
+
+
+@router.get("/{document_id}/job-progress", response_model=DocumentJobProgressOut)
+async def get_document_job_progress(
+    document_id: int, db: AsyncSession = Depends(get_db)
+) -> DocumentJobProgressOut:
+    """Etat du Job actif d'un Document, pour piloter le bouton Continuer du front.
+
+    Un Job actif est un Job non termine (state ASSIGNED ou IN_PROGRESS). CA-4 :
+    un Document sans Job actif renvoie 200 avec has_active_job=False, distinct
+    du 404 d'un Document introuvable.
+    """
+    result = await db.execute(
+        select(Document).where(Document.id == document_id).options(selectinload(Document.jobs))
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise_not_found(Document)  # CA-4 : distinct du "pas de job actif"
+
+    active_states = {JobState.ASSIGNED.value, JobState.IN_PROGRESS.value}
+    active_jobs = [j for j in doc.jobs if j.state in active_states]
+    active = max(active_jobs, key=lambda j: j.id, default=None)
+
+    # CA-3 : action exploitable par le front
+    action: Literal["CONTINUE", "REVIEW", "UNAVAILABLE"]
+    if active is not None:
+        action = "CONTINUE"
+    elif doc.status in (DocumentStatus.VALIDATED.value, DocumentStatus.EXPORTED.value) or any(
+        j.state == JobState.SUBMITTED.value for j in doc.jobs
+    ):
+        action = "REVIEW"
+    else:
+        action = "UNAVAILABLE"
+
+    return DocumentJobProgressOut(
+        document_id=doc.id,
+        has_active_job=active is not None,  # CA-1
+        active_job_id=active.id if active else None,
+        step=active.step if active else None,  # CA-2
+        action=action,
     )
 
 
