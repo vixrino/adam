@@ -166,6 +166,99 @@ class TestGetDocument:
 
 
 # ---------------------------------------------------------------------------
+# GET /documents/{document_id}/job-progress
+# ---------------------------------------------------------------------------
+
+
+def _make_job(id: int = 1, state: str = "IN_PROGRESS", step: str = "VALIDATION") -> MagicMock:
+    job = MagicMock()
+    job.id = id
+    job.state = state
+    job.step = step
+    return job
+
+
+class TestGetDocumentJobProgress:
+    def test_404_when_document_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        # CA-4 : document introuvable -> 404
+        response = client.get("/documents/99/job-progress")
+        assert response.status_code == 404
+
+    def test_active_job_returns_continue_and_step(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        # CA-1 / CA-2 / CA-3
+        doc = _make_document()
+        doc.status = "IN_PROGRESS"
+        doc.jobs = [_make_job(id=5, state="IN_PROGRESS", step="CONSENSUS")]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        response = client.get("/documents/1/job-progress")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["has_active_job"] is True
+        assert body["active_job_id"] == 5
+        assert body["step"] == "CONSENSUS"
+        assert body["action"] == "CONTINUE"
+
+    def test_assigned_job_is_active(self, client: TestClient, mock_db: AsyncMock) -> None:
+        doc = _make_document()
+        doc.jobs = [_make_job(id=3, state="ASSIGNED", step="VALIDATION")]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        body = client.get("/documents/1/job-progress").json()
+        assert body["has_active_job"] is True
+        assert body["action"] == "CONTINUE"
+
+    def test_no_active_job_but_validated_returns_review(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        # CA-3 : pas de job actif, document valide -> REVIEW
+        doc = _make_document(status="VALIDATED")
+        doc.jobs = [_make_job(state="SUBMITTED")]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        body = client.get("/documents/1/job-progress").json()
+        assert body["has_active_job"] is False
+        assert body["step"] is None
+        assert body["action"] == "REVIEW"
+
+    def test_submitted_job_returns_review(self, client: TestClient, mock_db: AsyncMock) -> None:
+        doc = _make_document(status="IN_PROGRESS")
+        doc.jobs = [_make_job(state="SUBMITTED")]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        body = client.get("/documents/1/job-progress").json()
+        assert body["action"] == "REVIEW"
+
+    def test_no_job_returns_unavailable(self, client: TestClient, mock_db: AsyncMock) -> None:
+        # CA-4 : pas de job actif -> 200 explicite (distinct du 404)
+        doc = _make_document(status="RECEIVED")
+        doc.jobs = []
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        response = client.get("/documents/1/job-progress")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["has_active_job"] is False
+        assert body["action"] == "UNAVAILABLE"
+
+    def test_cancelled_job_is_not_active(self, client: TestClient, mock_db: AsyncMock) -> None:
+        doc = _make_document(status="RECEIVED")
+        doc.jobs = [_make_job(state="CANCELLED")]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        body = client.get("/documents/1/job-progress").json()
+        assert body["has_active_job"] is False
+        assert body["action"] == "UNAVAILABLE"
+
+    def test_most_recent_active_job_wins(self, client: TestClient, mock_db: AsyncMock) -> None:
+        doc = _make_document(status="IN_PROGRESS")
+        doc.jobs = [
+            _make_job(id=1, state="IN_PROGRESS", step="VALIDATION"),
+            _make_job(id=4, state="IN_PROGRESS", step="CONSENSUS"),
+        ]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        body = client.get("/documents/1/job-progress").json()
+        assert body["active_job_id"] == 4
+        assert body["step"] == "CONSENSUS"
+
+
+# ---------------------------------------------------------------------------
 # GET /documents/{document_id}/fields
 # ---------------------------------------------------------------------------
 
