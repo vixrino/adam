@@ -43,7 +43,7 @@ Table volontairement NON scopee :
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable, Optional
+from typing import TYPE_CHECKING, Iterable, Optional, cast
 
 from sqlalchemy import event, select
 from sqlalchemy.orm import ORMExecuteState, Session, with_loader_criteria
@@ -80,7 +80,8 @@ class OrganisationScoped:
                 f"colonne organisation_id : redefinir __organisation_filter__ "
                 f"pour remonter la chaine de FK."
             )
-        return column == organisation_id
+        # getattr sur une colonne dynamique -> Any ; on retype explicitement.
+        return cast("ColumnElement[bool]", column == organisation_id)
 
 
 # ---------------------------------------------------------------------------
