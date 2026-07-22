@@ -62,10 +62,10 @@ def _fake_execute_state(
     is_select: bool = True,
     is_column_load: bool = False,
     is_relationship_load: bool = False,
-    execution_options: Optional[dict] = None,
+    execution_options: Optional[dict[str, Any]] = None,
 ) -> SimpleNamespace:
     """Imite un ORMExecuteState pour tester le listener sans base reelle."""
-    info: dict = {}
+    info: dict[str, Any] = {}
     if organisation_id is not None:
         info[SESSION_ORG_KEY] = organisation_id
     return SimpleNamespace(
@@ -229,7 +229,7 @@ class TestListener:
 
 class _FakeSession:
     def __init__(self) -> None:
-        self.info: dict = {}
+        self.info: dict[str, Any] = {}
 
     async def commit(self) -> None:
         return None
@@ -288,7 +288,7 @@ class TestGetDbCallerWiring:
         import adam_api.dependencies.db as db_module
         from adam_api.dependencies.auth import UserCaller
 
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         class _FakeCtx:
             async def __aenter__(self) -> str:
