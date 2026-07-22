@@ -8,15 +8,20 @@ Clé primaire composite sur (user_id, project_id).
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import OrganisationScoped, org_user_ids
 from adam_core.enums.roles import UserRole
 
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
-class UserProject(Base):
+
+class UserProject(OrganisationScoped, Base):
     __tablename__ = "user_project"
 
     user_id: Mapped[int] = mapped_column(
@@ -57,6 +62,11 @@ class UserProject(Base):
         back_populates="user_projects",
         lazy="noload",
     )
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # user_project -> user -> organisation
+        return cls.user_id.in_(org_user_ids(organisation_id))
 
     def __repr__(self) -> str:
         return (

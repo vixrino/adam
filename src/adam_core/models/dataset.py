@@ -6,18 +6,22 @@ un schéma de document (1:1 avec DOC_SCHEMA).
 """
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import OrganisationScoped, org_project_ids
 from adam_core.enums.ocr import OcrProvider
 from adam_core.enums.status import DatasetStatus
 
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
-class Dataset(Base):
+
+class Dataset(OrganisationScoped, Base):
     __tablename__ = "dataset"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -104,6 +108,11 @@ class Dataset(Base):
         back_populates="dataset",
         lazy="noload",
     )
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # dataset -> project -> organisation
+        return cls.project_id.in_(org_project_ids(organisation_id))
 
     def __repr__(self) -> str:
         return f"<Dataset id={self.id} name={self.name!r} status={self.status!r}>"

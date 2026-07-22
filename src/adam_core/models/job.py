@@ -1,16 +1,20 @@
 """Table JOB : tâche de labellisation par opérateur."""
 
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import OrganisationScoped, org_dataset_ids
 from adam_core.enums.status import JobState, JobStep
 
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
-class Job(Base):
+
+class Job(OrganisationScoped, Base):
     __tablename__ = "job"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -70,6 +74,11 @@ class Job(Base):
         lazy="noload",
         cascade="all, delete-orphan",
     )
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # job -> dataset -> project -> organisation
+        return cls.dataset_id.in_(org_dataset_ids(organisation_id))
 
     def __repr__(self) -> str:
         return (

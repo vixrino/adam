@@ -1,7 +1,7 @@
 """Table FIELD_SPEC : champ individuel au sein d'un DOC_SCHEMA."""
 
 from datetime import datetime
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -9,10 +9,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Float
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import OrganisationScoped, org_schema_ids
 from adam_core.enums.status import FieldValueType
 
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
-class FieldSpec(Base):
+
+class FieldSpec(OrganisationScoped, Base):
     __tablename__ = "field_spec"
 
     __table_args__ = (
@@ -95,6 +99,11 @@ class FieldSpec(Base):
         back_populates="field_spec",
         lazy="noload",
     )
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # field_spec -> doc_schema -> project -> organisation
+        return cls.schema_id.in_(org_schema_ids(organisation_id))
 
     def __repr__(self) -> str:
         polygon_info = f"{len(self.polygon)} pts" if self.polygon else "no polygon"

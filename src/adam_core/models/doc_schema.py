@@ -5,14 +5,19 @@ Un schéma est versionné et partagé entre datasets et recettes de test.
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import OrganisationScoped, org_project_ids
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
 
-class DocSchema(Base):
+class DocSchema(OrganisationScoped, Base):
     __tablename__ = "doc_schema"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -60,6 +65,11 @@ class DocSchema(Base):
         back_populates="schema",
         lazy="noload",
     )
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # doc_schema -> project -> organisation
+        return cls.project_id.in_(org_project_ids(organisation_id))
 
     def __repr__(self) -> str:
         return (

@@ -5,15 +5,19 @@ User.organisation_id. Pas de table de jointure USER_ORGANISATION.
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import OrganisationScoped
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
 
-class Organisation(Base):
+class Organisation(OrganisationScoped, Base):
     __tablename__ = "organisation"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -43,6 +47,12 @@ class Organisation(Base):
         back_populates="organisation",
         lazy="noload",
     )
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # organisation ne porte pas de colonne organisation_id : le tenant
+        # est l'organisation elle-meme, filtree via son propre id.
+        return cls.id == organisation_id
 
     def __repr__(self) -> str:
         return f"<Organisation id={self.id} name={self.name!r} slug={self.slug!r}>"

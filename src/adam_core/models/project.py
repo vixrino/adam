@@ -7,10 +7,11 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import OrganisationScoped
 from adam_core.enums.status import ProjectStatus
 
 
-class Project(Base):
+class Project(OrganisationScoped, Base):
     __tablename__ = "project"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
