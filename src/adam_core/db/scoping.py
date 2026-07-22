@@ -91,37 +91,37 @@ class OrganisationScoped:
 # ---------------------------------------------------------------------------
 
 
-def org_project_ids(organisation_id: int) -> "Select":
+def org_project_ids(organisation_id: int) -> "Select[tuple[int]]":
     from adam_core.models.project import Project
 
     return select(Project.id).where(Project.organisation_id == organisation_id)
 
 
-def org_dataset_ids(organisation_id: int) -> "Select":
+def org_dataset_ids(organisation_id: int) -> "Select[tuple[int]]":
     from adam_core.models.dataset import Dataset
 
     return select(Dataset.id).where(Dataset.project_id.in_(org_project_ids(organisation_id)))
 
 
-def org_schema_ids(organisation_id: int) -> "Select":
+def org_schema_ids(organisation_id: int) -> "Select[tuple[int]]":
     from adam_core.models.doc_schema import DocSchema
 
     return select(DocSchema.id).where(DocSchema.project_id.in_(org_project_ids(organisation_id)))
 
 
-def org_document_ids(organisation_id: int) -> "Select":
+def org_document_ids(organisation_id: int) -> "Select[tuple[int]]":
     from adam_core.models.document import Document
 
     return select(Document.id).where(Document.dataset_id.in_(org_dataset_ids(organisation_id)))
 
 
-def org_job_ids(organisation_id: int) -> "Select":
+def org_job_ids(organisation_id: int) -> "Select[tuple[int]]":
     from adam_core.models.job import Job
 
     return select(Job.id).where(Job.dataset_id.in_(org_dataset_ids(organisation_id)))
 
 
-def org_user_ids(organisation_id: int) -> "Select":
+def org_user_ids(organisation_id: int) -> "Select[tuple[int]]":
     from adam_core.models.user import User
 
     return select(User.id).where(User.organisation_id == organisation_id)
