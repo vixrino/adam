@@ -21,8 +21,17 @@ git checkout develop
 
 ## Contact
 
-- Développeur : dev@example.com
-"e9e019a6165c812904c95a35da2e6eaafa688593d488c1133984df8f3c55e621"
+import x_core.models
+from x_core.db.scoping import _iter_scoped_models
+from x_core.models import (
+    Dataset, DocSchema, Document, DocumentField, FieldProposal,
+    FieldSpec, Job, OcrResult, UserProject,
+)
 
-
-Copy-Item .\data\pvc\test\test_fixture.pdf .\data\pvc\documents\e9\e0\e9e019a6165c812904c95a35da2e6eaafa688593d488c1133984df8f3c55e621.pdf
+scoped = set(_iter_scoped_models())
+expected = {
+    Dataset, DocSchema, Document, DocumentField, FieldProposal,
+    FieldSpec, Job, OcrResult, UserProject,
+}
+print("MANQUANTS :", sorted(m.__name__ for m in expected - scoped))
+print("SCOPES    :", sorted(m.__name__ for m in scoped))
