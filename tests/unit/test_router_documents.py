@@ -298,6 +298,7 @@ class TestGetDocumentPageImage:
         response = client.get("/documents/1/pages/2")
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/png"
+        assert response.headers["X-Image-Dpi"] == "300"
         assert response.content == _PNG_BYTES
 
     def test_404_when_document_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:

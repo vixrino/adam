@@ -11,7 +11,7 @@ from typing import List
 
 import fitz  # PyMuPDF
 
-_PAGE_IMAGE_DPI = 300
+PAGE_IMAGE_DPI = 300
 
 
 class PdfRenderError(Exception):
@@ -49,7 +49,7 @@ def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
                 raise PdfRenderError(f"PDF sans page ({pdf_path})")
             for page_number in range(1, doc.page_count + 1):
                 page = doc.load_page(page_number - 1)
-                pixmap = page.get_pixmap(dpi=_PAGE_IMAGE_DPI)
+                pixmap = page.get_pixmap(dpi=PAGE_IMAGE_DPI)
                 image_path = output_dir / page_image_filename(page_number)
                 pixmap.save(str(image_path))
                 written.append(image_path)

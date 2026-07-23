@@ -31,7 +31,7 @@ from adam_core.schemas.responses import (
     FileRefOut,
 )
 from adam_core.utils.exceptions import raise_conflict, raise_not_found
-from adam_core.utils.pdf_render import page_image_relative_path
+from adam_core.utils.pdf_render import PAGE_IMAGE_DPI, page_image_relative_path
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -226,7 +226,13 @@ async def get_document_page_image(
             Document,
             f"Image de la page {page_number} absente du PVC (images non generees)",
         )
-    return FileResponse(image_path, media_type="image/png", filename=image_path.name)
+    # X-Image-Dpi : le front a besoin du DPI de rendu pour l'affichage
+    return FileResponse(
+        image_path,
+        media_type="image/png",
+        filename=image_path.name,
+        headers={"X-Image-Dpi": str(PAGE_IMAGE_DPI)},
+    )
 
 
 @router.get("/{document_id}/fields", response_model=List[DocumentFieldOut])
