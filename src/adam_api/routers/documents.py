@@ -3,7 +3,8 @@
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from anyio import Path as AsyncPath
+from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -208,21 +209,22 @@ async def get_document_page_image(
     if not doc:
         raise_not_found(Document)
     if doc.file is None:
-        raise HTTPException(status_code=404, detail="Aucun fichier associe a ce document")
+        raise_not_found(Document, "Aucun fichier associe a ce document")
 
     # CA-4 : page 1-indexee, bornee par le page_count renseigne par le worker
     if page_number < 1 or page_number > doc.file.page_count:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Page {page_number} hors bornes (document de {doc.file.page_count} page(s))",
+        raise_not_found(
+            Document,
+            f"Page {page_number} hors bornes (document de {doc.file.page_count} page(s))",
         )
 
     image_path = Path(settings.pvc_mount_path) / page_image_relative_path(doc.file.id, page_number)
-    if not image_path.is_file():
+    async_image_path = AsyncPath(image_path)
+    if not await async_image_path.is_file():
         # CA-3 : le worker n'a pas (encore) genere les images de ce document
-        raise HTTPException(
-            status_code=404,
-            detail=f"Image de la page {page_number} absente du PVC (images non generees)",
+        raise_not_found(
+            Document,
+            f"Image de la page {page_number} absente du PVC (images non generees)",
         )
     return FileResponse(image_path, media_type="image/png", filename=image_path.name)
 
