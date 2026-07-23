@@ -10,7 +10,8 @@ PATCH: mise a jour en cas de deplacement du fichier
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from anyio import Path as AsyncPath
+from fastapi import APIRouter, Depends, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -89,8 +90,8 @@ async def get_file_content(file_id: int, db: AsyncSession = Depends(get_db)) -> 
     if not file:
         raise_not_found(File)
     abs_path = Path(settings.pvc_mount_path) / file.file_path
-    if not abs_path.exists():
-        raise HTTPException(status_code=404, detail="Fichier absent du PVC")
+    if not await AsyncPath(abs_path).is_file():
+        raise_not_found(File, "Fichier absent du PVC")
     return FileResponse(abs_path, media_type=file.mime_type, filename=abs_path.name)
 
 

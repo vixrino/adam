@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Tuple, cast
 
 import pymupdf
+from anyio import Path as AsyncPath
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,15 +83,15 @@ async def _get_or_create_file(
     ).scalar_one_or_none()
 
     if file_row is not None:
-        abs_path = pvc_root / file_row.file_path
-        if not abs_path.exists():  # robustesse : re-materialise le contenu si manquant
-            abs_path.parent.mkdir(parents=True, exist_ok=True)
-            abs_path.write_bytes(content)
+        async_abs_path = AsyncPath(pvc_root / file_row.file_path)
+        if not await async_abs_path.exists():  # robustesse : re-materialise le contenu si manquant
+            await async_abs_path.parent.mkdir(parents=True, exist_ok=True)
+            await async_abs_path.write_bytes(content)
         return file_row, False
 
-    abs_path = pvc_root / relative_path
-    abs_path.parent.mkdir(parents=True, exist_ok=True)
-    abs_path.write_bytes(content)
+    async_abs_path = AsyncPath(pvc_root / relative_path)
+    await async_abs_path.parent.mkdir(parents=True, exist_ok=True)
+    await async_abs_path.write_bytes(content)
 
     stmt = (
         pg_insert(File)
