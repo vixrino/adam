@@ -20,3 +20,11 @@ git checkout develop
 | `fix/*` | Corrections de bugs |
 
 
+from x_worker.base_worker import BaseWorker
+
+
+class ConsensusWorker(BaseWorker):
+    """Relance la resolution du consensus sur les documents en attente."""
+
+    async def poll(self) -> None:
+        await run_pending_consensus()
