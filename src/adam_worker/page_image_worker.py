@@ -8,12 +8,15 @@ Chaque Document est traite dans sa propre transaction, verrouillee avec
 `FOR UPDATE SKIP LOCKED` : si plusieurs instances du worker tournent en
 parallele (ou si deux cycles de polling se chevauchent), un seul worker
 obtient la ligne et les autres l'ignorent silencieusement (CA-6). Un echec
-de rendu (PDF corrompu, page illisible) est logue avec le document_id et
-laisse le Document en RECEIVED pour un prochain essai (CA-5).
+de rendu (PDF corrompu, page illisible) fait passer le Document en ERROR
+(poison pill) : on le sort de la file au lieu de le laisser en RECEIVED,
+sinon un document illisible serait repolle indefiniment et bloquerait le
+batch (CA-5).
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import List, Optional
 
@@ -82,13 +85,19 @@ class PageImageWorker(BaseWorker):
             pdf_path = self.pvc_root / file_row.file_path
             output_dir = self.pvc_root / pages_relative_dir(file_row.id)
             try:
-                written = render_pages_to_png(pdf_path, output_dir)
+                # rendu PDF -> PNG deporte dans un thread : c'est du CPU/I-O
+                # bloquant (PyMuPDF), on ne veut pas figer l'event loop.
+                written = await asyncio.to_thread(render_pages_to_png, pdf_path, output_dir)
             except PdfRenderError:
-                self.logger.exception(
-                    "PDF illisible, document laisse en RECEIVED [document_id=%s file_id=%s]",
+                # CA-5 : poison pill. On sort le document de la file (ERROR)
+                # au lieu de le laisser en RECEIVED, sinon il est repolle a
+                # l'infini et bloque le batch.
+                self.logger.warning(
+                    "PDF illisible, document passe en ERROR [document_id=%s file_id=%s]",
                     document_id,
                     file_row.id,
                 )
+                document.status = DocumentStatus.ERROR.value
                 return
 
             file_row.page_count = len(written)

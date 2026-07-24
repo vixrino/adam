@@ -67,3 +67,28 @@ async def test_run_forever_survives_poll_exception(monkeypatch: pytest.MonkeyPat
 def test_base_worker_is_abstract() -> None:
     with pytest.raises(TypeError):
         BaseWorker()  # type: ignore[abstract]
+
+
+@pytest.mark.asyncio
+async def test_stop_ends_run_forever(monkeypatch: pytest.MonkeyPatch) -> None:
+    """stop() sort proprement de run_forever a la fin du cycle en cours."""
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("adam_worker.base_worker.asyncio.sleep", fake_sleep)
+
+    worker = _RecordingWorker([None, None, None])
+
+    # au 2e cycle, on demande l'arret : la boucle doit s'arreter apres
+    async def poll_then_stop() -> None:
+        worker.calls += 1
+        if worker.calls == 2:
+            worker.stop()
+
+    monkeypatch.setattr(worker, "poll", poll_then_stop)
+
+    await worker.run_forever()
+
+    assert worker.calls == 2
+    assert worker._is_running is False

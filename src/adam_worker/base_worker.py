@@ -20,6 +20,7 @@ class BaseWorker(ABC):
 
     def __init__(self) -> None:
         self.logger = get_logger(self.__class__.__module__)
+        self._is_running = True
 
     @abstractmethod
     async def poll(self) -> None:
@@ -29,9 +30,20 @@ class BaseWorker(ABC):
         self.logger.info(
             "%s demarre (poll_interval=%ss)", self.__class__.__name__, self.poll_interval_seconds
         )
-        while True:
+        while self._is_running:
             try:
                 await self.poll()
             except Exception:
                 self.logger.exception("%s: echec du cycle de polling", self.__class__.__name__)
-            await asyncio.sleep(self.poll_interval_seconds)
+            # on ne dort pas si un arret a ete demande pendant le cycle
+            if self._is_running:
+                await asyncio.sleep(self.poll_interval_seconds)
+        self.logger.info("%s arrete proprement", self.__class__.__name__)
+
+    def stop(self) -> None:
+        """Demande l'arret du worker a la fin de son cycle actuel (graceful shutdown)."""
+        self.logger.info(
+            "Signal d'arret recu, %s s'arretera apres le traitement en cours...",
+            self.__class__.__name__,
+        )
+        self._is_running = False
