@@ -476,11 +476,31 @@ async def get_caller(
 
 
 def _extract_matricule(context: dict) -> str:
-    matricule = context.get("preferred_username") or context.get("sub")
+    """Lit le claim portant le matricule. Son nom depend de l'IdP, pas d'exa-pie."""
+    matricule = context.get(settings.pie_matricule_claim)
     if not matricule:
+        logger.error(
+            "Claim %r absent du token. Claims disponibles : %s",
+            settings.pie_matricule_claim,
+            sorted(context),
+        )
         raise HTTPException(status_code=401, detail="Matricule absent du token")
     return matricule
 ```
+
+Avec, dans `nota_api/core/config.py` :
+
+```python
+class Settings(CoreSettings):
+    ...
+    pie_matricule_claim: str = "preferred_username"
+```
+
+Le nom du claim est en configuration parce qu'on ne le connaît pas encore (voir plus bas)
+et qu'il diffère entre Keycloak et FBI. Le log d'erreur liste les claims réellement
+présents : au premier token de recette qui échoue, le nom exact apparaît dans les logs et
+il n'y a qu'à poser `PIE_MATRICULE_CLAIM` dans le `.env`. Pas besoin de le deviner
+maintenant pour avancer.
 
 ### Pourquoi `_get_pie_client()` et pas un `PIEClient()` au niveau module
 
@@ -490,6 +510,48 @@ fixture, donc *après* la collecte pytest qui a déjà importé le module : le c
 construit avec la mauvaise configuration, ou l'import échouerait faute de fichier. Le
 `@lru_cache` repousse la construction au premier appel, tout en gardant un seul client pour
 le process — même idiome que `get_settings()` / `get_core_settings()` ailleurs dans NOTA.
+
+### Pourquoi l'identité de l'appelant n'est pas optionnelle
+
+C'est le point qui justifie tout le reste. Aujourd'hui `POST /jobs` prend l'auteur du
+travail **dans le corps de la requête** :
+
+```python
+class JobIn(BaseModel):
+    dataset_id: int
+    document_id: int
+    agent_id: int      # <- l'appelant declare qui a annote
+```
+
+Or `Job.agent_id` est une clé étrangère vers `user.id`, et le consensus
+(`nota_api/services/consensus.py`) compte les jobs `SUBMITTED` d'un document pour les
+comparer à `dataset.required_operators` : tout le principe est que N opérateurs
+**distincts** annotent indépendamment avant validation.
+
+Tant que `agent_id` vient du corps de la requête, n'importe quel appelant peut attribuer
+une annotation à un autre opérateur, et le consensus repose sur une donnée déclarative.
+C'est précisément ce que le claim d'identité corrige :
+
+```python
+@router.post("", response_model=Dict[str, Any], status_code=201)
+async def create_job(
+    body: JobIn,                                    # sans agent_id
+    caller: UserCaller = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    user = await _resolve_user(db, caller.matricule)
+    row = Job(**body.model_dump(), agent_id=user.id)
+    ...
+```
+
+Donc oui, le claim est nécessaire — sans lui, `agent_id` reste auto-déclaré et
+l'authentification ne protège que l'accès aux routes, pas l'intégrité des données qui y
+transitent.
+
+> Au passage, indépendamment d'exa-pie : `submitted_count` compte les jobs sans
+> dédupliquer par `agent_id`. Un même opérateur qui soumet N jobs sur un document satisfait
+> `required_operators` à lui seul. Un `.distinct(Job.agent_id)` dans le comptage semble
+> nécessaire, mais c'est un sujet séparé — à confirmer avec la logique métier.
 
 ### `organisation_id` vient de la base, pas du token
 
@@ -654,11 +716,17 @@ def fake_token(roles: list[str], matricule: str = "MAT00003") -> str:
 
     header = seg({"alg": "RS256", "typ": "JWT"})
     payload = seg({
-        "preferred_username": matricule,
+        # Meme claim que settings.pie_matricule_claim, sinon les tests passent
+        # avec un nom que la production n'utilisera pas.
+        settings.pie_matricule_claim: matricule,
         "realm_access": {"roles": roles},
     })
     return f"{header}.{payload}.signature-bidon"
 ```
+
+Le helper lit le nom du claim dans les settings plutôt que de le coder en dur : le jour où
+`PIE_MATRICULE_CLAIM` change, les tests suivent au lieu de continuer à valider un format
+obsolète.
 
 ### Fixture de configuration
 
@@ -738,19 +806,41 @@ décision d'ordonnancement invisible à la lecture) et
 
 ## 13. Hypothèses à confirmer
 
-Ces points n'ont pas pu être vérifiés sans le code source d'`exa_pie/client.py`. Ils
-n'empêchent pas d'avancer, mais il faut les valider au premier test d'intégration.
+Trois des quatre hypothèses de départ ont été vérifiées contre le source d'exa-pie :
 
-| Hypothèse | Comment vérifier |
-|-----------|------------------|
-| `verify()` renvoie `401` sur token invalide et `403` sur rôle insuffisant | Lancer en `NO-VERIFIER` + `log-level: DEBUG`, appeler avec un mauvais rôle, lire le status |
-| `get_user_roles()` lit `realm_access.roles` en mode `KEYCLOAK` | Logger le retour de `get_user_roles()` sur un vrai token |
-| Le matricule est dans `preferred_username` | Logger les claims complets de `get_context()` sur un vrai token |
-| `get_token()` attend `Authorization: Bearer <jwt>` | Lire `exa_pie/utils.py` |
+| Hypothèse | Statut |
+|-----------|--------|
+| `verify()` renvoie `401` sur token invalide et `403` sur rôle insuffisant | ✅ confirmé |
+| `get_user_roles()` lit `realm_access.roles` en mode `KEYCLOAK` | ✅ confirmé |
+| `get_token()` attend `Authorization: Bearer <jwt>` | ✅ confirmé |
+| Le matricule est dans `preferred_username` | ⏳ ouvert — voir ci-dessous |
 
-Le plus rapide pour tout lever d'un coup : monter l'API en `NO-VERIFIER` avec
-`log-level: DEBUG`, appeler une route protégée avec un vrai token de recette, et lire les
-claims dans les logs.
+### Le nom du claim de matricule
+
+`preferred_username` n'apparaît nulle part dans le code d'exa-pie, et c'est **attendu** :
+`get_context()` se contente de décoder le JWT et de renvoyer sa charge utile. Les noms de
+claims viennent de l'IdP qui a émis le token, pas du connecteur — exa-pie ne les nomme que
+pour les rôles, parce que c'est la seule chose qu'il doit lui-même savoir extraire. Chercher
+`preferred_username` dans le source ne peut donc rien donner, quel que soit le nom réel.
+
+`preferred_username` reste le candidat le plus probable : c'est la convention Keycloak, et
+`pie.yaml` est en `mode: KEYCLOAK`. Mais si l'IdP est en fait FBI, ou si le realm Keycloak
+a été configuré avec un mapper spécifique, ce sera autre chose (`uid`, `matricule`,
+`employeeNumber`, `sub`…).
+
+La seule façon de trancher est de regarder un vrai token. Deux chemins, cinq minutes
+chacun :
+
+1. **Sans rien coder** — coller un token de recette dans un décodeur JWT hors ligne
+   (`python -c "import jwt; print(jwt.decode(t, options={'verify_signature': False}))"`)
+   et lire la charge utile.
+2. **Par les logs** — le `_extract_matricule()` de la section 8 logge déjà
+   `sorted(context)` quand le claim configuré est absent. Premier appel authentifié, le
+   nom exact apparaît, il n'y a plus qu'à poser `PIE_MATRICULE_CLAIM`.
+
+C'est pour ça que le nom est en configuration plutôt qu'en dur : l'intégration peut
+démarrer sans connaître la réponse, et le jour où elle arrive c'est une ligne de `.env`,
+pas une modification de code.
 
 ---
 
@@ -772,7 +862,8 @@ claims dans les logs.
 - [ ] `api_disable_jwt_validation` supprimé de `Settings`, du `.env` et du `.env.template`
 - [ ] `require_user` / `require_roles` appliqués router par router
 - [ ] `internal_auth_enabled=true` en prod
-- [ ] Hypothèses de la section 13 confirmées sur un vrai token
+- [ ] Nom du claim de matricule identifié sur un vrai token, `PIE_MATRICULE_CLAIM` posé
+- [ ] `agent_id` retiré de `JobIn`, déduit du caller authentifié
 - [ ] Tests : 400 sans token, 403 rôle insuffisant, 403 matricule inconnu, préflight CORS
 - [ ] Bug `setattr` remonté à l'équipe EXA PYTHON
 
