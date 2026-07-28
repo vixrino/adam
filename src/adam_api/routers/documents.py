@@ -191,7 +191,7 @@ async def get_document_job_progress(
     )
 
 
-@router.get("/{document_id}/pages/{page_number}")
+@router.get("/{document_id}/pages/{page_number}/image")
 async def get_document_page_image(
     document_id: int,
     page_number: int,
