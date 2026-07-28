@@ -94,12 +94,40 @@ if jwt is not None:
 ```
 
 Deux comportements sont donc possibles : un contournement qui renvoie un utilisateur
-codé en dur, ou une erreur 501. exa-pie vient combler ce manque.
+codé en dur, ou une erreur 501.
 
 Second constat : les dépendances `require_user()` et `require_service()` sont définies
 mais ne sont référencées par aucun router. Toutes les routes de NOTA sont donc ouvertes
-en l'état. La configuration d'exa-pie traite ce point globalement, sans avoir à ajouter
-une dépendance sur chaque route.
+en l'état.
+
+### Ce qu'exa-pie règle, et ce qu'il ne règle pas
+
+Ces deux constats correspondent à deux problèmes distincts, et il est utile de ne pas les
+confondre avant d'entamer l'intégration.
+
+Le premier est l'absence de validation du token. Sa correction suppose nécessairement un
+composant capable de vérifier une signature et de lire les claims. exa-pie est le moyen
+retenu ici parce qu'il est le standard interne, mais ce n'est pas la seule voie
+techniquement envisageable : une validation écrite à la main avec PyJWT, accompagnée de la
+récupération de la clé publique, produirait le même résultat. Elle reviendrait toutefois à
+réimplémenter le connecteur et à s'écarter de ce que font les autres projets de l'équipe.
+
+Le second est l'ouverture des routes. Sa correction consiste à appliquer les dépendances
+sur les routers, ce qui ne dépend pas d'exa-pie sur le principe. En pratique cette
+correction reste bloquée par la première : une dépendance appliquée aujourd'hui appellerait
+`get_caller()`, qui renvoie 501 dès qu'un JWT est présent.
+
+Le middleware d'exa-pie apporte par ailleurs une réponse partielle au second problème. Il
+refuse par défaut toute requête dépourvue de token valide sur les routes non déclarées
+publiques, ce qui referme l'accès de façon globale sans intervention sur chaque route. Ce
+contrôle s'exerce cependant au seul niveau de l'URL. Il ne se substitue pas aux dépendances
+FastAPI, pour trois raisons développées plus loin : il ne distingue pas la méthode HTTP
+(section 9), il ignore le cloisonnement par organisation (section 11), et il ne fournit pas
+d'objet `UserCaller` typé permettant de déduire `agent_id` de l'appelant (section 8).
+
+exa-pie est donc nécessaire mais pas suffisant. La mise en place suit trois étapes : mettre
+en place le connecteur et sa configuration, réécrire `get_caller()`, puis appliquer les
+dépendances router par router.
 
 ---
 
