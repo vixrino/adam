@@ -2,86 +2,88 @@
 
 ## Table des matières
 
-1. [Ce qu'est exa-pie](#1-ce-quest-exa-pie)
-2. [Pourquoi NOTA en a besoin](#2-pourquoi-nota-en-a-besoin)
+1. [Présentation d'exa-pie](#1-présentation-dexa-pie)
+2. [Situation actuelle de NOTA](#2-situation-actuelle-de-nota)
 3. [Décisions prises](#3-décisions-prises)
 4. [Installation](#4-installation)
-5. [Configuration : `conf/pie.yaml`](#5-configuration--confpieyaml)
+5. [Configuration du fichier pie.yaml](#5-configuration-du-fichier-pieyaml)
 6. [Branchement du middleware](#6-branchement-du-middleware)
 7. [Récupération du contexte utilisateur](#7-récupération-du-contexte-utilisateur)
-8. [Réécriture de `get_caller()`](#8-réécriture-de-get_caller)
+8. [Réécriture de get_caller](#8-réécriture-de-get_caller)
 9. [Contrôle fin des droits](#9-contrôle-fin-des-droits)
 10. [Appels machine](#10-appels-machine)
-11. [Limites à connaître](#11-limites-à-connaître)
+11. [Limites du connecteur](#11-limites-du-connecteur)
 12. [Tests](#12-tests)
-13. [Hypothèses à confirmer](#13-hypothèses-à-confirmer)
+13. [Point ouvert sur le claim de matricule](#13-point-ouvert-sur-le-claim-de-matricule)
 14. [Checklist de mise en place](#14-checklist-de-mise-en-place)
 
 ---
 
-## 1. Ce qu'est exa-pie
+## 1. Présentation d'exa-pie
 
-`exa-pie` est un module Python interne (Pypi Sofact) qui fait **une seule chose** :
-valider le JWT d'un utilisateur et vérifier qu'il a le droit d'appeler l'URL qu'il
-demande. Ce n'est pas un serveur d'authentification — c'est le côté *consommateur*.
+`exa-pie` est un module Python interne, disponible sur le Pypi Sofact. Son rôle est de
+valider le JWT d'un utilisateur et de vérifier qu'il a le droit d'appeler l'URL demandée.
+Il ne délivre pas de token et ne remplace pas l'IdP : il se place du côté consommateur.
 
-Deux modes, selon l'IdP en face :
+Deux modes sont proposés selon le fournisseur d'identité utilisé.
 
 | Mode | Fournisseur d'identité |
 |------|------------------------|
 | `KEYCLOAK` | Keycloak |
-| `FBI` | FBI (SSO interne) |
+| `FBI` | FBI, le SSO interne |
 
-Le mode ne change que la façon de lire les rôles dans le token ; le reste est identique.
+Le mode ne modifie que la façon de lire les rôles dans le token. Le reste du
+fonctionnement est identique.
 
 ### Les verifiers
 
-Pour valider la signature d'un JWT il faut la clé publique de l'IdP. Le `verifier` dit
-**où** exa-pie va la chercher :
+La validation de signature d'un JWT nécessite la clé publique de l'IdP. Le `verifier`
+indique où exa-pie doit aller la chercher.
 
-| Verifier | `value` attendue |
-|----------|------------------|
-| `NO-VERIFIER` | — (signature non vérifiée, **dev uniquement**) |
-| `KEY-VALUE` | la clé publique en clair dans le YAML |
-| `KEY-FILE` | chemin vers un fichier contenant la clé publique |
-| `CERT-VALUE` | le certificat X509 en clair dans le YAML |
-| `CERT-FILE` | chemin vers un `.pem` |
-| `CERT-URI` | URL exposant le certificat (nécessite `ssl-verify`) |
+| Verifier | Valeur attendue dans `value` |
+|----------|------------------------------|
+| `NO-VERIFIER` | Aucune. La signature n'est pas vérifiée. Réservé au développement |
+| `KEY-VALUE` | La clé publique en clair dans le YAML |
+| `KEY-FILE` | Chemin vers un fichier contenant la clé publique |
+| `CERT-VALUE` | Le certificat X509 en clair dans le YAML |
+| `CERT-FILE` | Chemin vers un fichier `.pem` |
+| `CERT-URI` | URL exposant le certificat. Impose de renseigner `ssl-verify` |
 
-### Ce qu'exa-pie expose
+### Interface exposée
 
 ```python
 from exa_pie.client import PIEClient
 
 pie_client = PIEClient()                                   # lit conf/pie.yaml
 
-pie_client.is_public_uri('/health')                         # -> bool
-message, status = pie_client.verify(token, '/documents')    # -> (str, int)
-context = pie_client.get_context(token)                     # -> claims du token
-pie_client.get_user_roles(pie_context=context)              # -> liste de rôles
+pie_client.is_public_uri('/health')                         # bool
+message, status = pie_client.verify(token, '/documents')    # (str, int)
+context = pie_client.get_context(token)                     # claims du token
+pie_client.get_user_roles(pie_context=context)              # liste de roles
 ```
 
-Et un middleware par framework :
+Un middleware est fourni pour chacun des frameworks supportés.
 
 | Classe | Framework |
 |--------|-----------|
 | `PIEDjangoMiddleware` | Django |
 | `PIEFalconMiddleware` | Falcon |
-| `PIEFastAPIMiddleware` | FastAPI ← celui qui nous intéresse |
+| `PIEFastAPIMiddleware` | FastAPI |
 
-Le middleware FastAPI (`exa_pie/middleware/fastapi.py`) est un `BaseHTTPMiddleware` qui,
-sur chaque requête :
+Le middleware FastAPI, défini dans `exa_pie/middleware/fastapi.py`, dérive de
+`BaseHTTPMiddleware`. Sur chaque requête il applique le traitement suivant.
 
-1. si l'URI est publique → laisse passer sans rien faire ;
-2. sinon extrait le token des headers (`get_token`) → `400` si absent/malformé ;
-3. appelle `verify(token, path)` → renvoie le status tel quel s'il n'est pas `200` ;
-4. attache le token et le contexte à la requête, puis appelle la route.
+1. Si l'URI est publique, la requête passe sans aucun contrôle.
+2. Sinon le token est extrait des en-têtes par `get_token`, qui renvoie une erreur 400
+   si l'en-tête est absent ou malformé.
+3. `verify(token, path)` est appelé. Tout statut différent de 200 est renvoyé tel quel.
+4. Le token et le contexte sont attachés à la requête, puis la route est appelée.
 
 ---
 
-## 2. Pourquoi NOTA en a besoin
+## 2. Situation actuelle de NOTA
 
-Aujourd'hui dans `src/nota_api/dependencies/auth.py` :
+Le fichier `src/nota_api/dependencies/auth.py` contient aujourd'hui le code suivant.
 
 ```python
 if jwt is not None:
@@ -91,34 +93,33 @@ if jwt is not None:
     raise HTTPException(status_code=501, detail="Auth JWT non implementee")
 ```
 
-Exactement deux comportements possibles : un bypass qui renvoie un utilisateur en dur, ou
-un `501`. **exa-pie remplit ce trou.**
+Deux comportements sont donc possibles : un contournement qui renvoie un utilisateur
+codé en dur, ou une erreur 501. exa-pie vient combler ce manque.
 
-À noter aussi : `require_user()` et `require_service()` sont définis mais **utilisés par
-aucun router**. Toutes les routes de NOTA sont donc ouvertes aujourd'hui. exa-pie règle ça
-globalement via `pie.yaml`, sans ajouter un `Depends` partout.
+Second constat : les dépendances `require_user()` et `require_service()` sont définies
+mais ne sont référencées par aucun router. Toutes les routes de NOTA sont donc ouvertes
+en l'état. La configuration d'exa-pie traite ce point globalement, sans avoir à ajouter
+une dépendance sur chaque route.
 
 ---
 
 ## 3. Décisions prises
 
-Résumé des choix, avec leur justification. Le détail est dans les sections qui suivent.
-
-| Sujet | Décision | Pourquoi |
-|-------|----------|----------|
-| Ordre des middlewares | exa-pie ajouté **avant** `CORSMiddleware` | Starlette met le dernier ajouté en position la plus externe ; CORS doit rester externe sinon exa-pie rejette les préflights `OPTIONS` en `400` |
-| Verifier en prod | `CERT-FILE`, certificat fourni par un secret | Pas d'appel HTTP sortant par requête entrante, pas de dépendance runtime à la dispo du SSO |
-| Verifier en dev | `NO-VERIFIER` | Permet de forger un token pour tester les rôles sans monter un Keycloak |
-| Un `pie.yaml` par env ou un seul ? | Un fichier par env + `PIE_CONFIG_FILE` pour choisir | Les deux YAML ne contiennent aucun secret (juste un chemin de certificat), donc versionnables |
-| Flag `PIE_ENABLED` | **Non** | Un troisième interrupteur d'auth désactivable est un risque prod. Les tests pointent `PIE_CONFIG_FILE` vers un YAML `NO-VERIFIER`, ça suffit |
-| `api_disable_jwt_validation` | **À supprimer** | Devient redondant : `NO-VERIFIER` + token forgé couvre le besoin dev, sans utilisateur en dur dans le code |
-| `organisation_id` | Résolu **en base** depuis le matricule | Le token ne doit pas décider du cloisonnement des données ; `User.organisation_id` est la source de vérité |
-| Granularité des droits | exa-pie = zones, dépendances FastAPI = actions | `uris-by-roles` ne matche pas la méthode HTTP, il ne peut pas exprimer « GET pour tous, DELETE pour ADMIN » |
-| Dépendance d'auth | Router par router, pas globale | Une dépendance globale renverrait `401` sur `/health`, que les health-checks appellent sans credentials |
-| Instanciation du `PIEClient` | Paresseuse, via `@lru_cache` | Un `PIEClient()` au niveau module exigerait `pie.yaml` à l'import, ce qui casse la configuration des tests (section 8) |
-| `/db-check` | Protégée `ADMIN`, pas publique | Son message d'erreur expose des détails de connexion Postgres |
-| Appels machine | Rien à faire | Le worker attaque Postgres directement, il ne traverse jamais le middleware (section 10) |
-| Contexte dans les routes | `request.state` + fallback `getattr` | Contourne un bug du middleware exa-pie (section 7) |
+| Sujet | Décision | Justification |
+|-------|----------|---------------|
+| Ordre des middlewares | exa-pie déclaré avant `CORSMiddleware` | Starlette place le dernier middleware ajouté en position la plus externe. CORS doit rester externe, sinon exa-pie rejette les préflights `OPTIONS` en 400 |
+| Verifier en production | `CERT-FILE`, certificat fourni par un secret | Aucun appel HTTP sortant par requête entrante, et pas de dépendance à la disponibilité du SSO |
+| Verifier en développement | `NO-VERIFIER` | Permet de forger un token pour tester les rôles sans monter un Keycloak |
+| Nombre de fichiers de configuration | Un fichier par environnement, sélectionné par `PIE_CONFIG_FILE` | Aucun des deux fichiers ne contient de secret, seulement un chemin de certificat. Ils restent versionnables |
+| Indicateur `PIE_ENABLED` | Non retenu | Un interrupteur supplémentaire capable de désactiver l'authentification représente un risque en production. La configuration de test suffit |
+| `api_disable_jwt_validation` | À supprimer | Devient redondant. `NO-VERIFIER` associé à un token forgé couvre le besoin, sans utilisateur codé en dur |
+| `organisation_id` | Résolu en base depuis le matricule | Le token ne doit pas déterminer le cloisonnement des données. `User.organisation_id` fait référence |
+| Granularité des droits | exa-pie pour les zones, dépendances FastAPI pour les actions | `uris-by-roles` ne discrimine pas la méthode HTTP |
+| Portée des dépendances | Déclarées router par router | Une dépendance globale renverrait 401 sur `/health`, que les sondes appellent sans identifiants |
+| Instanciation du `PIEClient` | Paresseuse, via `@lru_cache` | Une instanciation au niveau module exigerait `pie.yaml` dès l'import, ce qui complique la configuration des tests |
+| Route `/db-check` | Réservée au rôle ADMIN | Son message d'erreur expose des informations sur la connexion Postgres |
+| Appels machine | Aucune action requise | Le worker accède directement à Postgres et ne traverse jamais le middleware |
+| Contexte dans les routes | `request.state` avec repli par `getattr` | Contourne une anomalie du middleware décrite en section 7 |
 
 ---
 
@@ -138,44 +139,46 @@ dependencies = [
 ]
 ```
 
-> Le module est sur le Pypi interne Sofact, pas sur le Pypi public — l'index configuré
-> (`pip.conf` / `PIP_INDEX_URL`) doit pointer dessus, sinon `No matching distribution
-> found`.
+Le module est publié sur le Pypi interne Sofact et non sur le Pypi public. L'index
+configuré, via `pip.conf` ou `PIP_INDEX_URL`, doit pointer dessus, faute de quoi
+l'installation échoue sur un message `No matching distribution found`.
 
 ---
 
-## 5. Configuration : `conf/pie.yaml`
+## 5. Configuration du fichier pie.yaml
 
-exa-pie cherche `conf/pie.yaml` à la racine du projet, ou le chemin absolu donné par
-`PIE_CONFIG_FILE`.
+exa-pie recherche le fichier `conf/pie.yaml` à la racine du projet. La variable
+d'environnement `PIE_CONFIG_FILE` permet de désigner un autre chemin absolu.
 
-### Les options
+### Options disponibles
 
 | Option | Obligatoire | Défaut | Description |
 |--------|-------------|--------|-------------|
-| `pie.security.mode` | ⭐ | — | `FBI` ou `KEYCLOAK` |
-| `pie.security.verifier` | ⭐ | — | voir le tableau des verifiers |
-| `pie.security.value` | ⭐ | — | dépend du verifier |
-| `pie.security.algorithms` | ⭐ | — | ex. `RS256`, `RS512` |
-| `pie.security.log-level` | | `INFO` | logs du connecteur (détaillés en `DEBUG`) |
-| `pie.security.ssl-verify` | | `False` | bundle CA pour le verifier `CERT-URI` |
-| `pie.security.public-uris` | | — | patterns REGEX accessibles sans auth |
-| `pie.security.uris-by-roles` | | — | mapping REGEX → rôles autorisés |
+| `pie.security.mode` | Oui | | `FBI` ou `KEYCLOAK` |
+| `pie.security.verifier` | Oui | | Voir le tableau des verifiers |
+| `pie.security.value` | Oui | | Dépend du verifier retenu |
+| `pie.security.algorithms` | Oui | | Algorithmes de décodage, par exemple `RS256` |
+| `pie.security.log-level` | Non | `INFO` | Niveau de log du connecteur |
+| `pie.security.ssl-verify` | Non | `False` | Bundle de certificats utilisé par le verifier `CERT-URI` |
+| `pie.security.public-uris` | Non | | Patterns REGEX des URI accessibles sans authentification |
+| `pie.security.uris-by-roles` | Non | | Association entre patterns REGEX et rôles autorisés |
 
-Trois règles sur le matching :
+Trois règles régissent la résolution des patterns.
 
-- les patterns sont testés **dans l'ordre de déclaration**, le premier qui matche gagne ;
-- une route qui ne matche **ni** `public-uris` **ni** `uris-by-roles` reste accessible,
-  mais seulement avec un token valide (aucun contrôle de rôle) ;
-- sans token du tout, la requête est rejetée.
+1. Les patterns sont évalués dans leur ordre de déclaration. Le premier qui correspond
+   l'emporte et les suivants ne sont pas testés.
+2. Une route qui ne correspond ni à `public-uris` ni à `uris-by-roles` reste accessible,
+   mais uniquement avec un token valide, sans contrôle de rôle.
+3. En l'absence de token, la requête est rejetée.
 
-L'ordre n'est donc pas cosmétique : `^\/?documents(.*)?$` placé avant
-`^\/?documents\/admin(.*)?$` rend le second inatteignable.
+L'ordre de déclaration a donc une portée fonctionnelle. Le pattern
+`^\/?documents(.*)?$` placé avant `^\/?documents\/admin(.*)?$` rend le second
+inatteignable.
 
-### `conf/pie.yaml` — dev
+### Configuration de développement
 
-Les rôles reprennent l'enum `UserRole` de `nota_core/enums/roles.py` (`OPERATOR`,
-`SUPERVISOR`, `ADMIN`).
+Les rôles reprennent l'énumération `UserRole` définie dans `nota_core/enums/roles.py`,
+soit `OPERATOR`, `SUPERVISOR` et `ADMIN`.
 
 ```yaml
 ---
@@ -187,7 +190,7 @@ pie:
       - RS256
     log-level: DEBUG
 
-    # Routes techniques : ni token ni role.
+    # Routes techniques, ni token ni role.
     public-uris:
       - ^\/?health$
       - ^\/?docs(.*)?$
@@ -209,20 +212,21 @@ pie:
       ^\/?files(.*)?$: ADMIN|SUPERVISOR|OPERATOR
 ```
 
-`/docs` et `/openapi.json` **doivent** être publics : le navigateur charge `/openapi.json`
-depuis la page Swagger sans header `Authorization`. Sans ça, la doc s'affiche vide.
+Les routes `/docs` et `/openapi.json` doivent rester publiques. Le navigateur charge
+`/openapi.json` depuis la page Swagger sans en-tête `Authorization`, la documentation
+s'afficherait vide dans le cas contraire.
 
-`/static` est listé par anticipation. En l'état, `nota_api/static/` contient
-`swagger-ui-bundle.js` et `swagger-ui.css` mais **aucun code ne les branche** : `main.py`
-monte bien `/static`, sans configurer `docs_url` / `swagger_ui_parameters`, donc `/docs`
-sert le HTML FastAPI par défaut qui tire ses assets d'un CDN. Le jour où le Swagger
-offline sera câblé (c'est visiblement l'intention derrière ces fichiers), `/static` devra
-être public — autant que ce soit déjà le cas.
+`/static` est déclaré par anticipation. Le répertoire `nota_api/static/` contient
+`swagger-ui-bundle.js` et `swagger-ui.css`, et `main.py` monte bien `/static`, mais aucun
+`docs_url` ni `swagger_ui_parameters` ne les utilise. La route `/docs` sert donc
+aujourd'hui la page FastAPI par défaut, qui charge ses ressources depuis un CDN. Le jour
+où le Swagger hors ligne sera câblé, ce qui semble être l'intention derrière ces fichiers,
+`/static` devra être public.
 
-`/db-check` est en `ADMIN` et non en public, même en dev : autant que le comportement dev
-et prod soient identiques sur ce point, ça évite une surprise au déploiement.
+`/db-check` est protégée par le rôle ADMIN plutôt que déclarée publique, y compris en
+développement, de façon que le comportement soit identique dans les deux environnements.
 
-### `conf/pie.prod.yaml`
+### Configuration de production
 
 ```yaml
 ---
@@ -241,21 +245,21 @@ pie:
       - ^\/?openapi\.json$
       - ^\/?static(.*)?$
     uris-by-roles:
-      # identique au dev
+      # identique au developpement
 ```
 
-`CERT-FILE` plutôt que `CERT-URI` pour deux raisons : pas d'appel HTTP sortant sur le
-chemin critique de chaque requête, et l'API ne tombe pas si le endpoint de certificat du
-SSO est indisponible. La contrepartie est qu'il faut penser à faire tourner le fichier à
-l'expiration du certificat — à inscrire dans les procédures d'exploitation.
+`CERT-FILE` est préféré à `CERT-URI` pour deux raisons. Il évite un appel HTTP sortant sur
+le chemin critique de chaque requête, et l'API reste disponible si le point d'accès au
+certificat du SSO ne répond plus. En contrepartie, le fichier devra être renouvelé à
+l'expiration du certificat, ce qui doit figurer dans les procédures d'exploitation.
 
-Le chemin `/etc/nota/pie/sso.pem` est une proposition : le dépôt ne contient aujourd'hui
-ni `Dockerfile`, ni `docker-compose`, ni manifeste k8s, donc le mode de déploiement n'est
-pas encore fixé. Ce qui compte quel que soit le support : le certificat doit être fourni
-au conteneur par un secret et non versionné, et le `pie.yaml` doit pointer sur son chemin
-de montage.
+Le chemin `/etc/nota/pie/sso.pem` est une proposition. Le dépôt ne contient à ce jour ni
+`Dockerfile`, ni fichier `docker-compose`, ni manifeste Kubernetes : le mode de
+déploiement n'est pas encore arrêté. Deux exigences restent valables quel que soit le
+support retenu. Le certificat doit être fourni par un secret et ne jamais être versionné,
+et le fichier `pie.yaml` doit pointer sur son chemin de montage.
 
-Sélection du fichier par environnement, dans le déploiement :
+La sélection du fichier se fait par variable d'environnement.
 
 ```ini
 PIE_CONFIG_FILE=/app/conf/pie.prod.yaml
@@ -264,7 +268,7 @@ PIE_CONFIG_FILE=/app/conf/pie.prod.yaml
 À ajouter au `.env.template` :
 
 ```ini
-# Chemin absolu du fichier de conf exa-pie (defaut : conf/pie.yaml)
+# Chemin absolu du fichier de configuration exa-pie (defaut : conf/pie.yaml)
 PIE_CONFIG_FILE=
 ```
 
@@ -282,7 +286,7 @@ app.add_exception_handler(Exception, http_exception_handler)
 
 # ORDRE CRITIQUE : Starlette place le dernier middleware ajoute en position la plus
 # externe. CORS doit rester externe, sinon exa-pie rejette les preflights OPTIONS
-# (sans header Authorization) en 400 et le front ne peut plus appeler l'API.
+# (depourvus d'en-tete Authorization) en 400 et le front ne peut plus appeler l'API.
 # Ne pas inverser ces deux blocs.
 app.add_middleware(PIEFastAPIMiddleware)
 
@@ -295,39 +299,38 @@ app.add_middleware(
 )
 ```
 
-### ⚠️ Pourquoi cet ordre
+### Justification de l'ordre
 
-Starlette **insère** chaque middleware en tête de pile : le **dernier** `add_middleware`
-appelé est le plus **externe**, donc celui qui voit la requête en premier.
+Starlette insère chaque middleware en tête de pile. Le dernier `add_middleware` appelé se
+retrouve donc en position la plus externe et traite la requête en premier.
 
-Si exa-pie est ajouté après CORS, il devient externe et traite les requêtes `OPTIONS` de
-préflight — qui ne portent jamais de header `Authorization`. Il les rejette en `400` avant
-que CORS ne puisse y répondre. Résultat : le front n'arrive plus à appeler l'API, avec une
-erreur CORS opaque dans la console qui ne dit rien sur la vraie cause.
+Si exa-pie est déclaré après CORS, il devient externe et intercepte les requêtes `OPTIONS`
+de préflight, qui ne portent jamais d'en-tête `Authorization`. Il les rejette en 400 avant
+que CORS ait pu y répondre. Le front ne parvient alors plus à appeler l'API, et la console
+du navigateur n'affiche qu'une erreur CORS générique qui ne renseigne pas sur la cause
+réelle.
 
-`uris-by-roles` ne permet pas de filtrer par méthode HTTP, donc on ne peut pas
-« excepter les OPTIONS » dans le YAML. **Le seul levier est l'ordre des middlewares.**
-D'où le commentaire dans le code : c'est le genre de ligne qu'un refactoring déplace sans
-réfléchir. Le test de préflight en section 12 verrouille ce comportement.
+Comme `uris-by-roles` ne permet pas de filtrer sur la méthode HTTP, il n'est pas possible
+d'exclure les requêtes `OPTIONS` par la configuration. L'ordre des middlewares constitue
+le seul levier disponible. C'est la raison du commentaire dans le code : cette contrainte
+n'est pas visible à la lecture et un remaniement ultérieur pourrait la casser sans s'en
+apercevoir. Le test de préflight décrit en section 12 sécurise ce comportement.
 
-### Le client est instancié au démarrage
+### Instanciation au démarrage
 
-`PIEFastAPIMiddleware.__init__` fait `self.pie_client = PIEClient()` : la config est lue
-au montage de l'app, pas à la première requête. Si le `pie.yaml` est absent ou invalide,
-**l'app ne démarre pas**. C'est le bon comportement (fail fast), mais le fichier doit être
-livré avec l'application **et** disponible dans l'environnement de test — c'est ce qui
-dicte la fixture de la section 12.
+La méthode `PIEFastAPIMiddleware.__init__` exécute `self.pie_client = PIEClient()`. La
+configuration est donc lue au montage de l'application et non à la première requête. Si le
+fichier `pie.yaml` est absent ou invalide, l'application ne démarre pas. Ce comportement
+est souhaitable, mais il implique que le fichier soit livré avec l'application et
+disponible dans l'environnement de test. C'est ce qui conditionne la fixture décrite en
+section 12.
 
 ---
 
 ## 7. Récupération du contexte utilisateur
 
-Le middleware pose deux informations sur la requête :
-
-- `pie_token` — le JWT brut ;
-- `pie_context` — les claims décodés.
-
-Dans un router :
+Le middleware attache deux informations à la requête : `pie_token`, le JWT brut, et
+`pie_context`, les claims décodés.
 
 ```python
 from fastapi import APIRouter, Request
@@ -342,41 +345,45 @@ async def list_documents(request: Request):
     ...
 ```
 
-En pratique tu passeras plutôt par la dépendance `require_user` (section 8), qui renvoie un
-`UserCaller` typé — lire `request.state` directement ne sert que pour les claims bruts.
+En pratique, la dépendance `require_user` présentée en section 8 est préférable puisqu'elle
+renvoie un objet typé. La lecture directe de `request.state` ne sert que pour accéder aux
+claims bruts.
 
-### ⚠️ `request.state`, pas `request` directement
+### Accès par request.state
 
-Contrairement à Django (`request.pie_context`) et Falcon (`req.pie_context`), en FastAPI
-il faut passer par `request.state`. Raison technique : avec `BaseHTTPMiddleware`, l'objet
-`Request` du middleware et celui injecté dans la route sont **deux instances
-différentes**, reconstruites depuis le même `scope` ASGI. Seul `request.state` (stocké
-dans `scope['state']`) est partagé.
+Sous Django l'information est disponible sur `request.pie_context`, et sous Falcon sur
+`req.pie_context`. Sous FastAPI il faut passer par `request.state`.
 
-Or le code actuel du middleware exa-pie fait :
+L'explication tient au fonctionnement de `BaseHTTPMiddleware` : l'objet `Request` manipulé
+par le middleware et celui injecté dans la route sont deux instances distinctes,
+reconstruites à partir du même `scope` ASGI. Seul `request.state`, stocké dans
+`scope['state']`, est partagé entre les deux.
+
+Or le middleware procède actuellement ainsi :
 
 ```python
 setattr(request, 'pie_token', token)
 setattr(request, 'pie_context', self.pie_client.get_context(token))
 ```
 
-Ça pose les attributs sur l'instance du middleware, jetée juste après → la route récupère
-un `AttributeError`. **Correctif à remonter à l'équipe EXA PYTHON** :
+Les attributs sont posés sur l'instance du middleware, qui est abandonnée juste après. La
+route lève donc une `AttributeError`. Le correctif à remonter à l'équipe EXA PYTHON
+consiste à écrire :
 
 ```python
 request.state.pie_token = token
 request.state.pie_context = self.pie_client.get_context(token)
 ```
 
-En attendant, NOTA ne dépend pas du middleware pour le contexte : la dépendance
-`get_caller()` le recalcule en fallback (section suivante). Ce code fonctionne avec ou
-sans le correctif upstream, donc rien à changer le jour où il arrive.
+En attendant, NOTA ne dépend pas du middleware pour obtenir le contexte : la dépendance
+`get_caller()` le recalcule si nécessaire. Le code proposé fonctionne dans les deux cas et
+n'aura pas à évoluer lorsque le correctif sera livré.
 
-### Routes publiques
+### Cas des routes publiques
 
-Sur une route listée dans `public-uris`, le middleware ne pose rien.
-`request.state.pie_context` lève un `AttributeError`. Si une route peut être appelée avec
-ou sans auth :
+Sur une route déclarée dans `public-uris`, le middleware n'attache rien et
+`request.state.pie_context` lève une `AttributeError`. Pour une route susceptible d'être
+appelée avec ou sans authentification :
 
 ```python
 context = getattr(request.state, "pie_context", None)
@@ -384,10 +391,11 @@ context = getattr(request.state, "pie_context", None)
 
 ---
 
-## 8. Réécriture de `get_caller()`
+## 8. Réécriture de get_caller
 
-Objectif : garder l'interface `Caller` / `UserCaller` / `ServiceCaller` — les routers n'ont
-rien à changer — mais remplacer le `501` par une vraie lecture du token.
+L'objectif est de conserver l'interface existante, composée de `Caller`, `UserCaller` et
+`ServiceCaller`, de façon que les routers n'aient rien à modifier, tout en remplaçant
+l'erreur 501 par une lecture effective du token.
 
 ```python
 """
@@ -453,7 +461,7 @@ async def get_caller(
         pie = _get_pie_client()
 
         # Le middleware exa-pie a deja valide signature et roles : on ne fait que lire.
-        # Le fallback couvre le bug setattr du middleware (cf. docs/securite-exa-pie.md).
+        # Le repli couvre l'anomalie setattr du middleware (cf. section 7).
         context = getattr(request.state, "pie_context", None)
         if context is None:
             context = pie.get_context(token=jwt.credentials)
@@ -488,7 +496,7 @@ def _extract_matricule(context: dict) -> str:
     return matricule
 ```
 
-Avec, dans `nota_api/core/config.py` :
+Le nom du claim est déclaré dans `nota_api/core/config.py` :
 
 ```python
 class Settings(CoreSettings):
@@ -496,41 +504,39 @@ class Settings(CoreSettings):
     pie_matricule_claim: str = "preferred_username"
 ```
 
-Le nom du claim est en configuration parce qu'on ne le connaît pas encore (voir plus bas)
-et qu'il diffère entre Keycloak et FBI. Le log d'erreur liste les claims réellement
-présents : au premier token de recette qui échoue, le nom exact apparaît dans les logs et
-il n'y a qu'à poser `PIE_MATRICULE_CLAIM` dans le `.env`. Pas besoin de le deviner
-maintenant pour avancer.
+Ce nom est configurable parce qu'il n'est pas encore connu et qu'il diffère entre Keycloak
+et FBI. Ce point est développé en section 13.
 
-### Pourquoi `_get_pie_client()` et pas un `PIEClient()` au niveau module
+### Instanciation paresseuse du client
 
-Un `_pie_client = PIEClient()` posé directement à la racine du module lit `pie.yaml` **à
-l'import**. En test, `monkeypatch.setenv("PIE_CONFIG_FILE", ...)` s'exécute au moment de la
-fixture, donc *après* la collecte pytest qui a déjà importé le module : le client serait
-construit avec la mauvaise configuration, ou l'import échouerait faute de fichier. Le
-`@lru_cache` repousse la construction au premier appel, tout en gardant un seul client pour
-le process — même idiome que `get_settings()` / `get_core_settings()` ailleurs dans NOTA.
+Une instruction `_pie_client = PIEClient()` placée directement au niveau du module lirait
+`pie.yaml` dès l'import. En test, l'appel `monkeypatch.setenv("PIE_CONFIG_FILE", ...)`
+intervient au moment de la fixture, donc après la collecte pytest qui a déjà importé le
+module. Le client serait construit avec une configuration erronée, ou l'import échouerait
+faute de fichier. Le décorateur `@lru_cache` reporte la construction au premier appel tout
+en conservant un client unique pour le processus. C'est également l'usage retenu pour
+`get_settings()` et `get_core_settings()` ailleurs dans NOTA.
 
-### Pourquoi l'identité de l'appelant n'est pas optionnelle
+### Nécessité de l'identité de l'appelant
 
-C'est le point qui justifie tout le reste. Aujourd'hui `POST /jobs` prend l'auteur du
-travail **dans le corps de la requête** :
+Ce point justifie l'ensemble de la démarche. La route `POST /jobs` reçoit actuellement
+l'auteur du travail dans le corps de la requête.
 
 ```python
 class JobIn(BaseModel):
     dataset_id: int
     document_id: int
-    agent_id: int      # <- l'appelant declare qui a annote
+    agent_id: int      # l'appelant declare qui a annote
 ```
 
-Or `Job.agent_id` est une clé étrangère vers `user.id`, et le consensus
-(`nota_api/services/consensus.py`) compte les jobs `SUBMITTED` d'un document pour les
-comparer à `dataset.required_operators` : tout le principe est que N opérateurs
-**distincts** annotent indépendamment avant validation.
+`Job.agent_id` est une clé étrangère vers `user.id`, et le service de consensus
+(`nota_api/services/consensus.py`) compte les jobs à l'état `SUBMITTED` pour un document
+afin de les comparer à `dataset.required_operators`. Le principe retenu veut que plusieurs
+opérateurs distincts annotent un même document de façon indépendante avant validation.
 
-Tant que `agent_id` vient du corps de la requête, n'importe quel appelant peut attribuer
-une annotation à un autre opérateur, et le consensus repose sur une donnée déclarative.
-C'est précisément ce que le claim d'identité corrige :
+Tant que `agent_id` provient du corps de la requête, un appelant peut attribuer une
+annotation à un autre opérateur, et le consensus s'appuie sur une donnée déclarative. Le
+claim d'identité permet de corriger ce fonctionnement.
 
 ```python
 @router.post("", response_model=Dict[str, Any], status_code=201)
@@ -544,46 +550,49 @@ async def create_job(
     ...
 ```
 
-Donc oui, le claim est nécessaire — sans lui, `agent_id` reste auto-déclaré et
-l'authentification ne protège que l'accès aux routes, pas l'intégrité des données qui y
-transitent.
+Sans identité de confiance, l'authentification protège l'accès aux routes mais pas
+l'intégrité des données qui y transitent.
 
-> Au passage, indépendamment d'exa-pie : `submitted_count` compte les jobs sans
-> dédupliquer par `agent_id`. Un même opérateur qui soumet N jobs sur un document satisfait
-> `required_operators` à lui seul. Un `.distinct(Job.agent_id)` dans le comptage semble
-> nécessaire, mais c'est un sujet séparé — à confirmer avec la logique métier.
+Remarque annexe, sans lien avec exa-pie : le comptage `submitted_count` ne déduplique pas
+par `agent_id`. Un même opérateur qui soumet plusieurs jobs sur un document satisfait donc
+`required_operators` à lui seul. L'ajout d'un `distinct` sur `Job.agent_id` semble
+nécessaire, mais le sujet mérite d'être confirmé avec la logique métier avant toute
+modification.
 
-### `organisation_id` vient de la base, pas du token
+### Origine de organisation_id
 
-C'est le point le plus important de cette dépendance. `organisation_id` détermine quelles
-données l'utilisateur voit ; le laisser venir du token signifierait que quiconque peut
-influencer le contenu du token peut changer de périmètre. `User.organisation_id` en base
-est la source de vérité, et le token ne sert qu'à établir *qui* appelle.
+`organisation_id` détermine les données visibles par l'utilisateur. Le faire provenir du
+token reviendrait à laisser le périmètre de visibilité dépendre du contenu de ce token. La
+colonne `User.organisation_id` fait référence, et le token sert uniquement à établir
+l'identité de l'appelant.
 
-Effet de bord assumé : un utilisateur authentifié chez l'IdP mais absent de la table
-`User` reçoit un `403`. C'est volontaire — il faut un provisionnement explicite dans NOTA.
+Conséquence assumée : un utilisateur authentifié auprès de l'IdP mais absent de la table
+`User` reçoit une erreur 403. Un provisionnement explicite dans NOTA reste donc requis.
 
-### Suppression de `api_disable_jwt_validation`
+### Suppression de api_disable_jwt_validation
 
-Le bypass devient inutile : en dev, `NO-VERIFIER` accepte n'importe quel token forgé
-(section 12), ce qui donne le même confort sans utilisateur en dur dans le code de prod.
-Concrètement :
+Le contournement devient inutile. En développement, `NO-VERIFIER` accepte tout token
+forgé, ce qui offre le même confort sans utilisateur codé en dur dans le code de
+production. Trois modifications sont nécessaires.
 
-- retirer `api_disable_jwt_validation` de `Settings` dans `nota_api/core/config.py` ;
-- retirer la ligne du `.env` et du `.env.template` ;
-- supprimer la branche correspondante de `get_caller()` (déjà fait ci-dessus).
+1. Retirer `api_disable_jwt_validation` de la classe `Settings` dans
+   `nota_api/core/config.py`.
+2. Retirer la ligne correspondante du `.env` et du `.env.template`.
+3. Supprimer la branche associée dans `get_caller()`, ce qui est déjà le cas dans le code
+   ci-dessus.
 
-Reste `internal_auth_enabled`, qui garde sa raison d'être pour le chemin service.
+Le réglage `internal_auth_enabled` conserve en revanche son utilité pour le chemin
+service.
 
 ---
 
 ## 9. Contrôle fin des droits
 
-exa-pie donne le filtre grossier (qui peut toucher à quelle zone). Le filtre fin (qui peut
-faire quoi dessus) reste en dépendances FastAPI, parce que `uris-by-roles` ne matche pas la
-méthode HTTP.
+exa-pie assure le filtrage grossier, c'est-à-dire les zones accessibles à chaque rôle. Le
+filtrage fin, qui détermine les actions autorisées sur ces zones, reste porté par des
+dépendances FastAPI puisque `uris-by-roles` ne discrimine pas la méthode HTTP.
 
-Dans `nota_api/dependencies/auth.py` :
+À ajouter dans `nota_api/dependencies/auth.py` :
 
 ```python
 from nota_core.enums.roles import UserRole
@@ -604,7 +613,7 @@ def require_roles(*roles: UserRole):
     return _check
 ```
 
-Usage :
+Utilisation :
 
 ```python
 # Lecture : tous les roles autorises par pie.yaml sur /projects
@@ -621,10 +630,10 @@ async def delete_project(
     ...
 ```
 
-### Appliquer effectivement les dépendances
+### Application des dépendances
 
-`require_user` n'est référencé par aucun router aujourd'hui. À déclarer **router par
-router**, pas globalement :
+`require_user` n'est référencé par aucun router à ce jour. La déclaration se fait au
+niveau de chaque router.
 
 ```python
 router = APIRouter(
@@ -634,35 +643,38 @@ router = APIRouter(
 )
 ```
 
-La tentation est d'écrire `FastAPI(..., dependencies=[Depends(get_caller)])` pour couvrir
-tout d'un coup, mais ça s'appliquerait aussi aux routes techniques (`/health`, `/docs`),
-qui n'ont pas de token → `401`. Or `/health` est exactement l'endpoint qu'un
-orchestrateur ou un load balancer interroge sans credentials : le passer en `401` fait
-déclarer l'application morte alors qu'elle fonctionne. La déclaration par router est plus
-verbeuse mais explicite, et laisse `/health` et `/db-check` en dehors.
+La formulation `FastAPI(..., dependencies=[Depends(get_caller)])` couvrirait l'ensemble
+des routes en une seule instruction, mais elle s'appliquerait aussi aux routes techniques
+telles que `/health` et `/docs`, qui ne portent pas de token et renverraient donc une
+erreur 401. Or `/health` est précisément le point d'entrée interrogé sans identifiants par
+les sondes applicatives et les répartiteurs de charge : le passer en 401 conduirait à
+déclarer l'application indisponible alors qu'elle fonctionne. La déclaration router par
+router est plus verbeuse mais explicite, et laisse `/health` et `/db-check` en dehors du
+dispositif.
 
 ---
 
 ## 10. Appels machine
 
-**Aucune action nécessaire aujourd'hui.**
+Aucune action n'est nécessaire à ce stade.
 
-Le worker (`nota_worker/`) ne passe pas par l'API : il ouvre directement une session
-Postgres (`nota_core.db.session.get_async_session`) et manipule les modèles SQLAlchemy.
-Vérifié — aucun `httpx` / `requests` / `aiohttp` dans `src/` ni `scripts/` ; `httpx` n'est
-présent que comme dépendance de dev pour le `TestClient`. Le worker ne traverse donc jamais
-le middleware exa-pie et n'est pas affecté par sa mise en place.
+Le worker, situé dans `nota_worker/`, ne passe pas par l'API. Il ouvre directement une
+session Postgres via `nota_core.db.session.get_async_session` et manipule les modèles
+SQLAlchemy. Vérification faite, aucune bibliothèque `httpx`, `requests` ou `aiohttp` n'est
+utilisée dans `src/` ni dans `scripts/` ; `httpx` n'est présent qu'en dépendance de
+développement pour le `TestClient`. Le worker ne traverse donc jamais le middleware et
+n'est pas concerné par sa mise en place.
 
-Le chemin `X-Internal-Token` / `require_service` existe dans `auth.py` mais n'a pas
-d'appelant. Le garder ne coûte rien ; il faut juste savoir qu'il n'est pas exercé, donc pas
-testé en conditions réelles.
+Le chemin d'authentification par `X-Internal-Token` et `require_service` existe dans
+`auth.py` mais n'a aucun appelant. Le conserver ne présente pas d'inconvénient, à condition
+de savoir qu'il n'est pas exercé et donc pas éprouvé en conditions réelles.
 
-### Le jour où un appelant machine apparaît
+### Si un appelant machine apparaît
 
-Un service qui appellerait l'API avec `X-Internal-Token` se ferait rejeter en `400` par
-exa-pie *avant* d'atteindre `get_caller()` : le middleware ne lit que le header
-`Authorization`. Plan retenu ce jour-là : préfixer les routes machine en `/internal/` et
-les déclarer publiques côté exa-pie, l'authentification y restant assurée par
+Un service appelant l'API avec `X-Internal-Token` serait rejeté en 400 par exa-pie avant
+d'atteindre `get_caller()`, le middleware ne lisant que l'en-tête `Authorization`.
+L'approche retenue consisterait alors à préfixer les routes machine par `/internal/` et à
+les déclarer publiques auprès d'exa-pie, l'authentification restant assurée par
 `require_service`.
 
 ```yaml
@@ -670,39 +682,49 @@ public-uris:
   - ^\/?internal(.*)?$
 ```
 
-À plus long terme, la solution propre est un compte de service Keycloak en
-`client_credentials` avec un rôle `SERVICE` dans `uris-by-roles`, ce qui fait disparaître
-`X-Internal-Token` et unifie l'authentification sur un seul mécanisme.
+À plus longue échéance, la solution la plus propre reste un compte de service Keycloak en
+`client_credentials`, associé à un rôle `SERVICE` déclaré dans `uris-by-roles`. Elle
+supprime `X-Internal-Token` et unifie l'authentification sur un mécanisme unique.
 
 ---
 
-## 11. Limites à connaître
+## 11. Limites du connecteur
 
-**Pas de filtrage par méthode HTTP.** Traité en section 9.
+### Absence de filtrage par méthode HTTP
 
-**Pas de contrôle sur les ressources.** exa-pie ne sait rien de `User.organisation_id` :
-un `ADMIN` de l'organisation 1 passe le middleware pour `/documents/42` même si ce document
-appartient à l'organisation 2. Le cloisonnement par organisation reste **entièrement** à la
-charge de NOTA, dans les requêtes des routers. C'est la faille la plus probable à
-l'usage — exa-pie donne un faux sentiment de complétude sur ce point.
+Traité en section 9.
 
-**Code synchrone dans un middleware async.** `verify()` et `get_context()` sont des appels
-bloquants dans un `async def dispatch`, exécutés à chaque requête. Le choix de `CERT-FILE`
-évite le pire cas (un appel HTTP sortant par requête), mais la vérification de signature
-RSA reste dans la boucle d'événements. À mesurer avant la prod ; si ça pèse, l'option est
-d'envelopper l'appel dans `run_in_threadpool`.
+### Absence de contrôle sur les ressources
 
-**`BaseHTTPMiddleware` et le streaming.** `BaseHTTPMiddleware` a des limitations connues
-avec les réponses en streaming. NOTA sert des fichiers via `/files` — à vérifier si des
-routes utilisent `StreamingResponse` ou `FileResponse`.
+exa-pie ne connaît pas `User.organisation_id`. Un utilisateur ADMIN rattaché à
+l'organisation 1 franchit le middleware sur `/documents/42` même si ce document appartient
+à l'organisation 2. Le cloisonnement par organisation reste intégralement à la charge de
+NOTA, dans les requêtes des routers. Il s'agit du risque le plus probable à l'usage, le
+connecteur pouvant donner l'impression d'une couverture plus large qu'elle ne l'est.
+
+### Code synchrone dans un middleware asynchrone
+
+`verify()` et `get_context()` sont des appels bloquants exécutés dans une méthode
+`async def dispatch`, à chaque requête. Le choix de `CERT-FILE` écarte le cas le plus
+défavorable, celui d'un appel HTTP sortant par requête entrante, mais la vérification de
+signature RSA reste dans la boucle d'événements. Une mesure est à prévoir avant la mise en
+production. Si l'impact se confirme, l'appel peut être encapsulé dans
+`run_in_threadpool`.
+
+### BaseHTTPMiddleware et les réponses en flux
+
+`BaseHTTPMiddleware` présente des limitations connues avec les réponses en streaming. NOTA
+servant des fichiers via `/files`, il convient de vérifier si certaines routes utilisent
+`StreamingResponse` ou `FileResponse`.
 
 ---
 
 ## 12. Tests
 
-### Forger un token en dev
+### Génération d'un token de test
 
-Avec `NO-VERIFIER`, la signature n'est pas vérifiée : n'importe quel JWT bien formé passe.
+Avec `NO-VERIFIER` la signature n'est pas contrôlée : tout JWT correctement formé est
+accepté.
 
 ```python
 import base64
@@ -716,27 +738,23 @@ def fake_token(roles: list[str], matricule: str = "MAT00003") -> str:
 
     header = seg({"alg": "RS256", "typ": "JWT"})
     payload = seg({
-        # Meme claim que settings.pie_matricule_claim, sinon les tests passent
-        # avec un nom que la production n'utilisera pas.
+        # Meme claim que settings.pie_matricule_claim, sinon les tests valident
+        # un format que la production n'utilisera pas.
         settings.pie_matricule_claim: matricule,
         "realm_access": {"roles": roles},
     })
     return f"{header}.{payload}.signature-bidon"
 ```
 
-Le helper lit le nom du claim dans les settings plutôt que de le coder en dur : le jour où
-`PIE_MATRICULE_CLAIM` change, les tests suivent au lieu de continuer à valider un format
-obsolète.
+### Configuration des tests
 
-### Fixture de configuration
-
-Le `PIEClient` du middleware est construit au montage de l'app : les tests ont besoin d'un
-`pie.yaml` lisible **avant** que `nota_api.main` ne soit importé. Une fixture classique
-arrive trop tard — l'import a lieu à la collecte. Il faut donc poser la variable au niveau
-module de `conftest.py` :
+Le `PIEClient` du middleware est construit au montage de l'application. Les tests ont donc
+besoin d'un `pie.yaml` lisible avant l'import de `nota_api.main`. Une fixture classique
+intervient trop tard, l'import ayant lieu à la collecte. La variable doit être posée au
+niveau module du `conftest.py`.
 
 ```python
-# tests/conftest.py — AVANT tout import de nota_api.
+# tests/conftest.py, avant tout import de nota_api.
 import os
 from pathlib import Path
 
@@ -747,9 +765,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from nota_api.main import app              # noqa: E402
 ```
 
-Le fichier `tests/fixtures/pie.test.yaml` reprend le YAML de dev (`NO-VERIFIER`, mêmes
-patterns) et est versionné avec les tests. Un `tmp_path` ne convient pas ici puisqu'il
-faut le chemin avant toute fixture.
+Le fichier `tests/fixtures/pie.test.yaml` reprend la configuration de développement, avec
+`NO-VERIFIER` et les mêmes patterns, et il est versionné avec les tests. Un répertoire
+`tmp_path` ne convient pas puisque le chemin doit être connu avant toute fixture.
 
 ### Cas à couvrir
 
@@ -759,7 +777,7 @@ def test_route_publique_sans_token(client):
 
 
 def test_route_protegee_sans_token(client):
-    # get_token leve PIETokenError -> le middleware renvoie 400
+    # get_token leve PIETokenError, le middleware renvoie 400
     assert client.get("/documents").status_code == 400
 
 
@@ -780,7 +798,7 @@ def test_matricule_inconnu_en_base(client):
 
 
 def test_organisation_vient_de_la_base_pas_du_token(client, user_en_base):
-    # user_en_base appartient a l'organisation 1 ; le token pretend l'organisation 99.
+    # user_en_base appartient a l'organisation 1, le token pretend l'organisation 99.
     # Le UserCaller resultant doit porter 1.
     ...
 
@@ -798,74 +816,79 @@ def test_preflight_cors_non_bloque(client):
     assert r.status_code == 200  # echoue si exa-pie est monte apres CORS
 ```
 
-Les deux tests les plus utiles de la liste sont le préflight CORS (il verrouille une
-décision d'ordonnancement invisible à la lecture) et
-`test_organisation_vient_de_la_base_pas_du_token` (il verrouille la frontière de confiance).
+Deux de ces tests méritent une attention particulière. Le test de préflight sécurise une
+décision d'ordonnancement invisible à la lecture du code. Le test
+`test_organisation_vient_de_la_base_pas_du_token` sécurise la frontière de confiance entre
+le token et la base.
 
 ---
 
-## 13. Hypothèses à confirmer
+## 13. Point ouvert sur le claim de matricule
 
-Trois des quatre hypothèses de départ ont été vérifiées contre le source d'exa-pie :
+Les hypothèses formulées lors de la rédaction ont été confrontées au source d'exa-pie.
 
 | Hypothèse | Statut |
 |-----------|--------|
-| `verify()` renvoie `401` sur token invalide et `403` sur rôle insuffisant | ✅ confirmé |
-| `get_user_roles()` lit `realm_access.roles` en mode `KEYCLOAK` | ✅ confirmé |
-| `get_token()` attend `Authorization: Bearer <jwt>` | ✅ confirmé |
-| Le matricule est dans `preferred_username` | ⏳ ouvert — voir ci-dessous |
+| `verify()` renvoie 401 sur token invalide et 403 sur rôle insuffisant | Confirmée |
+| `get_user_roles()` lit `realm_access.roles` en mode `KEYCLOAK` | Confirmée |
+| `get_token()` attend un en-tête `Authorization: Bearer <jwt>` | Confirmée |
+| Le matricule est porté par le claim `preferred_username` | Ouverte |
 
-### Le nom du claim de matricule
+### Pourquoi le nom du claim est introuvable dans le code
 
-`preferred_username` n'apparaît nulle part dans le code d'exa-pie, et c'est **attendu** :
-`get_context()` se contente de décoder le JWT et de renvoyer sa charge utile. Les noms de
-claims viennent de l'IdP qui a émis le token, pas du connecteur — exa-pie ne les nomme que
-pour les rôles, parce que c'est la seule chose qu'il doit lui-même savoir extraire. Chercher
-`preferred_username` dans le source ne peut donc rien donner, quel que soit le nom réel.
+`preferred_username` n'apparaît nulle part dans le source d'exa-pie, ce qui est attendu.
+La méthode `get_context()` se contente de décoder le JWT et d'en renvoyer la charge utile.
+Les noms de claims proviennent de l'IdP qui a émis le token, et non du connecteur. exa-pie
+ne nomme explicitement que les claims de rôles, seule information qu'il doit extraire
+lui-même. Rechercher le nom du claim de matricule dans le source ne peut donc rien donner,
+quel que soit ce nom.
 
-`preferred_username` reste le candidat le plus probable : c'est la convention Keycloak, et
-`pie.yaml` est en `mode: KEYCLOAK`. Mais si l'IdP est en fait FBI, ou si le realm Keycloak
-a été configuré avec un mapper spécifique, ce sera autre chose (`uid`, `matricule`,
-`employeeNumber`, `sub`…).
+`preferred_username` reste le candidat le plus probable puisqu'il s'agit de la convention
+Keycloak et que `pie.yaml` déclare `mode: KEYCLOAK`. Si l'IdP retenu est FBI, ou si le
+realm Keycloak a été configuré avec un mapper spécifique, le nom sera différent : `uid`,
+`matricule`, `employeeNumber` ou `sub` par exemple.
 
-La seule façon de trancher est de regarder un vrai token. Deux chemins, cinq minutes
-chacun :
+### Comment trancher
 
-1. **Sans rien coder** — coller un token de recette dans un décodeur JWT hors ligne
-   (`python -c "import jwt; print(jwt.decode(t, options={'verify_signature': False}))"`)
+Seule l'inspection d'un token réel permet de conclure. Deux méthodes équivalentes sont
+possibles.
+
+1. Décoder hors ligne un token de recette, par exemple avec
+   `python -c "import jwt; print(jwt.decode(t, options={'verify_signature': False}))"`,
    et lire la charge utile.
-2. **Par les logs** — le `_extract_matricule()` de la section 8 logge déjà
-   `sorted(context)` quand le claim configuré est absent. Premier appel authentifié, le
-   nom exact apparaît, il n'y a plus qu'à poser `PIE_MATRICULE_CLAIM`.
+2. S'appuyer sur les logs. La fonction `_extract_matricule()` présentée en section 8
+   journalise déjà `sorted(context)` lorsque le claim configuré est absent. Le nom exact
+   apparaît donc au premier appel authentifié.
 
-C'est pour ça que le nom est en configuration plutôt qu'en dur : l'intégration peut
-démarrer sans connaître la réponse, et le jour où elle arrive c'est une ligne de `.env`,
-pas une modification de code.
+Le nom est déclaré en configuration plutôt qu'en dur pour cette raison précise :
+l'intégration peut démarrer sans connaître la réponse, et le jour où elle est établie, la
+correction se limite à une ligne dans le `.env` au lieu d'une modification de code.
 
 ---
 
 ## 14. Checklist de mise en place
 
-- [ ] `exa-pie` installé et ajouté à `pyproject.toml`
-- [ ] `conf/pie.yaml` (dev, `NO-VERIFIER`) et `conf/pie.prod.yaml` (`CERT-FILE`) créés
-- [ ] `PIE_CONFIG_FILE` ajouté au `.env.template`
-- [ ] `tests/fixtures/pie.test.yaml` créé et `PIE_CONFIG_FILE` posé dans `conftest.py`
-- [ ] `conf/` livré avec l'application (au moment où le packaging sera défini)
-- [ ] Certificat SSO fourni par un secret, jamais versionné
-- [ ] Rotation du certificat inscrite dans les procédures d'exploitation
-- [ ] `PIEFastAPIMiddleware` ajouté **avant** `CORSMiddleware`, avec le commentaire
-- [ ] `/health`, `/docs`, `/openapi.json`, `/static` déclarés publics
-- [ ] `/db-check` en `ADMIN`, pas en public
-- [ ] `get_caller()` réécrit, `501` supprimé
-- [ ] `PIEClient` instancié paresseusement via `@lru_cache`
-- [ ] `organisation_id` résolu en base via le matricule
-- [ ] `api_disable_jwt_validation` supprimé de `Settings`, du `.env` et du `.env.template`
-- [ ] `require_user` / `require_roles` appliqués router par router
-- [ ] `internal_auth_enabled=true` en prod
-- [ ] Nom du claim de matricule identifié sur un vrai token, `PIE_MATRICULE_CLAIM` posé
-- [ ] `agent_id` retiré de `JobIn`, déduit du caller authentifié
-- [ ] Tests : 400 sans token, 403 rôle insuffisant, 403 matricule inconnu, préflight CORS
-- [ ] Bug `setattr` remonté à l'équipe EXA PYTHON
+1. [ ] `exa-pie` installé et déclaré dans `pyproject.toml`
+2. [ ] `conf/pie.yaml` et `conf/pie.prod.yaml` créés
+3. [ ] `PIE_CONFIG_FILE` ajouté au `.env.template`
+4. [ ] `tests/fixtures/pie.test.yaml` créé et `PIE_CONFIG_FILE` posé dans `conftest.py`
+5. [ ] `conf/` livré avec l'application, une fois le packaging défini
+6. [ ] Certificat SSO fourni par un secret, jamais versionné
+7. [ ] Renouvellement du certificat inscrit dans les procédures d'exploitation
+8. [ ] `PIEFastAPIMiddleware` déclaré avant `CORSMiddleware`, commentaire inclus
+9. [ ] `/health`, `/docs`, `/openapi.json` et `/static` déclarés publics
+10. [ ] `/db-check` réservée au rôle ADMIN
+11. [ ] `get_caller()` réécrit et erreur 501 supprimée
+12. [ ] `PIEClient` instancié paresseusement via `@lru_cache`
+13. [ ] `organisation_id` résolu en base à partir du matricule
+14. [ ] Nom du claim de matricule identifié, `PIE_MATRICULE_CLAIM` renseigné
+15. [ ] `agent_id` retiré de `JobIn` et déduit de l'appelant authentifié
+16. [ ] `api_disable_jwt_validation` supprimé de `Settings`, du `.env` et du `.env.template`
+17. [ ] `require_user` et `require_roles` appliqués router par router
+18. [ ] `internal_auth_enabled` positionné à `true` en production
+19. [ ] Tests écrits : 400 sans token, 403 rôle insuffisant, 403 matricule inconnu,
+    préflight CORS
+20. [ ] Anomalie `setattr` remontée à l'équipe EXA PYTHON
 
 ---
 
