@@ -129,14 +129,20 @@ def test_cors_reste_le_middleware_le_plus_externe(
     assert _middleware_classes(app) == [CORSMiddleware, FakePIEMiddleware]
 
 
-def test_middleware_absent_sans_exa_pie_installe(
+def test_echec_explicite_si_le_connecteur_est_absent(
     app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Sans le connecteur et sans bypass, l'echec est immediat et explicite."""
-    _set_bypass(monkeypatch, False)
-    for name in [m for m in sys.modules if m.startswith("exa_pie")]:
-        monkeypatch.delitem(sys.modules, name, raising=False)
-    monkeypatch.setattr(sys, "path", [p for p in sys.path])
+    """Sans bypass et sans connecteur, l'echec est immediat plutot que silencieux.
 
-    with pytest.raises(ModuleNotFoundError, match="exa_pie"):
+    L'absence est simulee en neutralisant l'entree sys.modules : importer un
+    module associe a None leve ImportError. Le test vaut donc que exa-pie soit
+    installe ou non dans l'environnement, ce qui n'etait pas le cas en se
+    reposant sur son absence reelle.
+    """
+    _set_bypass(monkeypatch, False)
+    monkeypatch.setitem(sys.modules, "exa_pie.middleware.fastapi", None)
+
+    with pytest.raises(ImportError):
         install_jwt_middleware(app)
+
+    assert app.user_middleware == []
