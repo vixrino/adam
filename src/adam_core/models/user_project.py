@@ -15,7 +15,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
 from adam_core.db.scoping import OrganisationScoped, org_user_ids
-from adam_core.enums.roles import UserRole
+from adam_core.enums.roles import ProjectRole
 
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
@@ -37,7 +37,7 @@ class UserProject(OrganisationScoped, Base):
     role: Mapped[str] = mapped_column(
         String,
         nullable=False,
-        default=UserRole.OPERATOR.value,
+        default=ProjectRole.OPERATOR.value,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

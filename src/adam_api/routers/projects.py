@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from adam_api.dependencies.db import get_db
-from adam_core.enums.roles import UserRole
+from adam_core.enums.roles import ProjectRole
 from adam_core.enums.status import ProjectStatus
 from adam_core.models import Project, UserProject
 from adam_core.schemas.responses import (
@@ -37,7 +37,7 @@ class ProjectPatch(BaseModel):
 
 class UserProjectIn(BaseModel):
     user_id: int
-    role: str = UserRole.OPERATOR.value
+    role: str = ProjectRole.OPERATOR.value
 
 
 class UserRolePatch(BaseModel):
@@ -118,7 +118,7 @@ async def update_user_role(
     ).scalar_one_or_none()
     if not up:
         raise_not_found(UserProject, f"User {user_id} n'est pas assigne au projet {project_id}")
-    allowed = [r.value for r in UserRole]
+    allowed = [r.value for r in ProjectRole]
     if body.role not in allowed:
         raise_unprocessable(f"Role invalide. Valeurs acceptees : {allowed}")
     up.role = body.role

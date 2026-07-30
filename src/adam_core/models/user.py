@@ -1,6 +1,8 @@
 """Table USER : utilisateur de la plateforme ADAM.
 
-L'accès aux projets et les rôles associés sont gérés via USER_PROJECT.
+L'accès aux projets et les rôles métier associés sont gérés via USER_PROJECT.
+La colonne ``platform_role`` porte, elle, le rôle transverse éventuel
+(Superviseur NOTA, Administrateur NOTA), qui ne dépend d'aucun projet.
 """
 
 from datetime import datetime
@@ -27,6 +29,14 @@ class User(OrganisationScoped, Base):
     email: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String, nullable=False)
     matricule: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    # Role transverse (PlatformRole), NULL pour un utilisateur purement metier.
+    # Renseigne, il fait franchir la frontiere d'organisation : cf. la docstring
+    # de adam_api.dependencies.db.
+    platform_role: Mapped[Optional[str]] = mapped_column(
+        String,
+        nullable=True,
+        index=True,
+    )
     status: Mapped[str] = mapped_column(
         String,
         nullable=False,

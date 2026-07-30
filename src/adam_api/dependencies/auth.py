@@ -20,6 +20,9 @@ _api_key_header = APIKeyHeader(name="X-Internal-Token", auto_error=False)
 class UserCaller(BaseModel):
     matricule: str
     organisation_id: int
+    # Role transverse (PlatformRole) ou None pour un utilisateur purement metier.
+    # Renseigne, il neutralise le filtrage par organisation : cf. dependencies.db.
+    platform_role: Optional[str] = None
 
 
 class ServiceCaller(BaseModel):
