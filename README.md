@@ -28,3 +28,4 @@ class ConsensusWorker(BaseWorker):
 
     async def poll(self) -> None:
         await run_pending_consensus()
+python -c "from alembic.config import Config; from alembic.script import ScriptDirectory; c = Config(r'src\nota_core\alembic.ini'); s = ScriptDirectory.from_config(c); print('DOSSIERS SCANNES :', s.version_locations); print('REVISIONS TROUVEES :', [(r.revision, r.down_revision) for r in s.walk_revisions()])"
