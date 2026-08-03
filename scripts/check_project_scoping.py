@@ -11,8 +11,8 @@ comptant ce que chaque acteur voit.
 Il complete le seed avec un second projet auquel l'operateur n'appartient pas,
 puis interroge la base sous quatre identites :
 
-    MAT00001  Operateur Metier      -> son projet seul
-    MAT00002  Administrateur Metier -> les deux (lecture transverse)
+    MAT00002  Operateur Metier      -> son projet seul
+    MAT00001  Administrateur Metier -> les deux (lecture transverse)
     MAT00003  Administrateur NOTA   -> tout, session non scopee
     (aucune)  service machine       -> tout, session non scopee
 
@@ -42,8 +42,12 @@ from adam_core.utils.hashing import sha256_bytes
 SECOND_PROJECT = "Projet Temoin Hors Perimetre"
 SEPARATOR = "-" * 60
 
-OPERATOR = "MAT00001"
-BUSINESS_ADMIN = "MAT00002"
+# Matricules du seed. Attention a l'ordre : dans scripts/seed.py, MAT00001 est
+# la variable `admin`, inscrite en BUSINESS_ADMIN, et MAT00002 la variable
+# `operator`, inscrite en OPERATOR. Les intervertir inverse le verdict sans que
+# rien n'echoue. A adapter si ton seed pose d'autres matricules.
+BUSINESS_ADMIN = "MAT00001"
+OPERATOR = "MAT00002"
 NOTA_ADMIN = "MAT00003"
 
 
@@ -147,16 +151,16 @@ async def main() -> int:
     print(SEPARATOR)
 
     results = {
-        "Operateur Metier    (MAT00001)": await counts(organisation_id, OPERATOR),
-        "Admin Metier        (MAT00002)": await counts(organisation_id, BUSINESS_ADMIN),
+        "Operateur Metier    (MAT00002)": await counts(organisation_id, OPERATOR),
+        "Admin Metier        (MAT00001)": await counts(organisation_id, BUSINESS_ADMIN),
         "Admin NOTA          (MAT00003)": await counts(None, None),
         "Service machine               ": await counts(None, None),
     }
     for label, (projects, documents) in results.items():
         print(f"  {label} : {projects} projet(s), {documents} document(s)")
 
-    op_projects, op_documents = results["Operateur Metier    (MAT00001)"]
-    ba_projects, ba_documents = results["Admin Metier        (MAT00002)"]
+    op_projects, op_documents = results["Operateur Metier    (MAT00002)"]
+    ba_projects, ba_documents = results["Admin Metier        (MAT00001)"]
     all_projects, all_documents = results["Service machine               "]
 
     print()
