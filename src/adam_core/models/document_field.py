@@ -11,14 +11,19 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
-from adam_core.db.scoping import OrganisationScoped, org_document_ids
+from adam_core.db.scoping import (
+    OrganisationScoped,
+    ProjectScoped,
+    member_document_ids,
+    org_document_ids,
+)
 from adam_core.enums.status import DocumentFieldStatus
 
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
 
 
-class DocumentField(OrganisationScoped, Base):
+class DocumentField(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "document_field"
 
     __table_args__ = (
@@ -117,6 +122,11 @@ class DocumentField(OrganisationScoped, Base):
     def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
         # document_field -> document -> dataset -> project -> organisation
         return cls.document_id.in_(org_document_ids(organisation_id))
+
+    @classmethod
+    def __project_filter__(cls, matricule: str) -> "ColumnElement[bool]":
+        # document_field -> document -> dataset -> project (adhesions)
+        return cls.document_id.in_(member_document_ids(matricule))
 
     def __repr__(self) -> str:
         polygon_info = f"{len(self.ocr_polygon)} pts" if self.ocr_polygon else "no polygon"

@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
-from adam_core.db.scoping import OrganisationScoped, org_project_ids
+from adam_core.db.scoping import OrganisationScoped, ProjectScoped, org_project_ids
 from adam_core.enums.ocr import OcrProvider
 from adam_core.enums.status import DatasetStatus
 
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
 
 
-class Dataset(OrganisationScoped, Base):
+class Dataset(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "dataset"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

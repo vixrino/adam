@@ -25,6 +25,19 @@ qui relevent de l'administration. Le cloisonnement de ces comptes repose donc
 entierement sur le controle d'acces en amont, cote routes, et sur le caractere
 restrictif de leur attribution. Un role plateforme accorde a tort donne acces a
 l'integralite de la plateforme.
+
+Second etage : restriction aux projets de l'appelant
+-----------------------------------------------------
+Le matricule est pose en session en plus de l'organisation, ce qui restreint les
+tables ProjectScoped aux projets de l'appelant (cf. docstring de
+adam_core.db.scoping). Les deux etages se neutralisent ensemble : un role
+plateforme ou un service machine n'ouvre ni l'un ni l'autre.
+
+Le matricule est pose pour tout utilisateur metier, Administrateur Metier
+compris. Ce n'est pas ici qu'est accordee la lecture transverse que le tableau
+de controle d'acces lui reconnait, mais dans member_project_ids, qui elargit le
+perimetre en SQL. La raison est que le ProjectRole est porte par l'adhesion et
+non par l'utilisateur : il n'est pas connu du caller, seulement de la base.
 """
 
 from collections.abc import AsyncGenerator
@@ -52,8 +65,26 @@ def _organisation_id_of(caller: Caller) -> Optional[int]:
     return None
 
 
+def _matricule_of(caller: Caller) -> Optional[str]:
+    """Matricule a scoper par projet, ou None quand aucun filtre ne s'applique.
+
+    Meme logique de neutralisation que ``_organisation_id_of`` et pour les memes
+    raisons : un role de plateforme traverse les projets comme il traverse les
+    organisations, et un service machine n'a pas d'adhesion. Un utilisateur
+    metier, lui, est restreint a ses projets quel que soit son ProjectRole.
+    """
+    if isinstance(caller, UserCaller):
+        if caller.platform_role in PLATFORM_ROLE_VALUES:
+            return None
+        return caller.matricule
+    return None
+
+
 async def get_db(
     caller: Caller = Depends(get_caller),
 ) -> AsyncGenerator[AsyncSession, None]:
-    async with get_async_session(organisation_id=_organisation_id_of(caller)) as session:
+    async with get_async_session(
+        organisation_id=_organisation_id_of(caller),
+        matricule=_matricule_of(caller),
+    ) as session:
         yield session

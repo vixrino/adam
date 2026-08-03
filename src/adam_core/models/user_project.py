@@ -14,14 +14,14 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
-from adam_core.db.scoping import OrganisationScoped, org_user_ids
+from adam_core.db.scoping import OrganisationScoped, ProjectScoped, org_user_ids
 from adam_core.enums.roles import ProjectRole
 
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
 
 
-class UserProject(OrganisationScoped, Base):
+class UserProject(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "user_project"
 
     user_id: Mapped[int] = mapped_column(

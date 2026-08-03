@@ -11,14 +11,19 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
-from adam_core.db.scoping import OrganisationScoped, org_dataset_ids
+from adam_core.db.scoping import (
+    OrganisationScoped,
+    ProjectScoped,
+    member_dataset_ids,
+    org_dataset_ids,
+)
 from adam_core.enums.status import DocumentStatus
 
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
 
 
-class Document(OrganisationScoped, Base):
+class Document(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "document"
 
     __table_args__ = (
@@ -110,6 +115,11 @@ class Document(OrganisationScoped, Base):
     def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
         # document -> dataset -> project -> organisation
         return cls.dataset_id.in_(org_dataset_ids(organisation_id))
+
+    @classmethod
+    def __project_filter__(cls, matricule: str) -> "ColumnElement[bool]":
+        # document -> dataset -> project (adhesions de l'appelant)
+        return cls.dataset_id.in_(member_dataset_ids(matricule))
 
     def __repr__(self) -> str:
         return f"<Document id={self.id} file_name={self.file_name!r} status={self.status!r}>"

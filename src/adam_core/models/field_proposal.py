@@ -10,14 +10,19 @@ from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
-from adam_core.db.scoping import OrganisationScoped, org_job_ids
+from adam_core.db.scoping import (
+    OrganisationScoped,
+    ProjectScoped,
+    member_job_ids,
+    org_job_ids,
+)
 from adam_core.enums.status import FieldValueType, JobStep
 
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
 
 
-class FieldProposal(OrganisationScoped, Base):
+class FieldProposal(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "field_proposal"
 
     __table_args__ = (Index("ix_field_proposal_field_step", "document_field_id", "step"),)
@@ -79,6 +84,11 @@ class FieldProposal(OrganisationScoped, Base):
     def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
         # field_proposal -> job -> dataset -> project -> organisation
         return cls.job_id.in_(org_job_ids(organisation_id))
+
+    @classmethod
+    def __project_filter__(cls, matricule: str) -> "ColumnElement[bool]":
+        # field_proposal -> job -> dataset -> project (adhesions de l'appelant)
+        return cls.job_id.in_(member_job_ids(matricule))
 
     def __repr__(self) -> str:
         return (

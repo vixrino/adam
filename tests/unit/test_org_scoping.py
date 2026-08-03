@@ -303,7 +303,11 @@ class TestGetDbCallerWiring:
             async def __aexit__(self, *exc: Any) -> None:
                 return None
 
-        def fake_get_async_session(organisation_id: Optional[int] = None) -> _FakeCtx:
+        def fake_get_async_session(
+            organisation_id: Optional[int] = None, matricule: Optional[str] = None
+        ) -> _FakeCtx:
+            # matricule : second etage de filtrage, couvert par
+            # tests/unit/test_project_scoping.py.
             captured["organisation_id"] = organisation_id
             return _FakeCtx()
 

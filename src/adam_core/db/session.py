@@ -11,7 +11,10 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from adam_core.db.scoping import SESSION_ORG_KEY  # enregistre le listener do_orm_execute
+from adam_core.db.scoping import (  # enregistre le listener do_orm_execute
+    SESSION_MATRICULE_KEY,
+    SESSION_ORG_KEY,
+)
 from adam_core.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -45,6 +48,7 @@ async def create_tables() -> None:
 @asynccontextmanager
 async def get_async_session(
     organisation_id: Optional[int] = None,
+    matricule: Optional[str] = None,
 ) -> AsyncIterator[AsyncSession]:
     """Ouvre une session ORM, optionnellement scopee a une organisation.
 
@@ -53,12 +57,17 @@ async def get_async_session(
     global ``do_orm_execute`` filtre alors automatiquement toutes les tables
     ``OrganisationScoped``. Sans organisation_id (services machine, workers,
     taches de fond), aucun filtre n'est applique.
+
+    ``matricule`` active le second etage, independant du premier : les tables
+    ``ProjectScoped`` sont restreintes aux projets ou ce matricule est inscrit.
     """
     if _async_session_factory is None:
         raise RuntimeError("Session factory non initialisee.")
     async with _async_session_factory() as session:
         if organisation_id is not None:
             session.info[SESSION_ORG_KEY] = organisation_id
+        if matricule is not None:
+            session.info[SESSION_MATRICULE_KEY] = matricule
         try:
             yield session
             await session.commit()
