@@ -100,6 +100,16 @@ class Document(OrganisationScoped, ProjectScoped, Base):
         back_populates="document",
         lazy="noload",
     )
+    # Avancement constate, recalcule par DocumentProgressWorker. uselist=False :
+    # la cle primaire de document_progress est document_id, donc au plus une
+    # ligne. Supprime avec le document, ce n'est qu'un cache.
+    progress: Mapped[Optional["DocumentProgress"]] = relationship(  # type: ignore[name-defined]
+        "DocumentProgress",
+        back_populates="document",
+        lazy="noload",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
     @property
     def page_count(self) -> Optional[int]:
