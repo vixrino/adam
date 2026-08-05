@@ -18,7 +18,11 @@ import pytest
 
 from adam_core.enums.status import DocumentStage
 from adam_worker import document_progress_worker as worker_module
-from adam_worker.document_progress_worker import DocumentProgressWorker, derive_stage
+from adam_worker.document_progress_worker import (
+    DocumentProgressWorker,
+    ProgressSnapshot,
+    derive_stage,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +40,7 @@ _BASE = {
 
 
 def _stage(**overrides: Any) -> DocumentStage:
-    return derive_stage(**{**_BASE, **overrides})
+    return derive_stage(ProgressSnapshot(**{**_BASE, **overrides}))
 
 
 class TestDeriveStage:
@@ -81,9 +85,7 @@ class TestDeriveStage:
     def test_pdf_received_ne_figure_pas_dans_la_regle(self) -> None:
         # Un document sans FILE reste INGESTED, qui est deja le plancher : le
         # constat est conserve en colonne mais n'entre pas dans derive_stage.
-        import inspect
-
-        assert "pdf_received" not in inspect.signature(derive_stage).parameters
+        assert not hasattr(ProgressSnapshot(**_BASE), "pdf_received")
 
     @pytest.mark.parametrize("stage", list(DocumentStage))
     def test_toutes_les_etapes_sont_atteignables(self, stage: DocumentStage) -> None:

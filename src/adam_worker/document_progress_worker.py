@@ -32,6 +32,7 @@ assume : le worker n'est pas evenementiel, sa fraicheur vaut son intervalle.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Dict, List, Sequence
 
@@ -185,16 +186,17 @@ class DocumentProgressWorker(BaseWorker):
         return [self._to_values(row) for row in rows]
 
     def _to_values(self, row: "Row[Any]") -> Dict[str, Any]:
+        snapshot = ProgressSnapshot(
+            pages_rendered=bool(row.pages_rendered),
+            ocr_available=bool(row.ocr_available),
+            fields_total=row.fields_total,
+            fields_filled=row.fields_filled,
+            jobs_submitted=row.jobs_submitted,
+            jobs_required=row.jobs_required,
+        )
         return {
             "document_id": row.document_id,
-            "stage": derive_stage(
-                pages_rendered=row.pages_rendered,
-                ocr_available=row.ocr_available,
-                fields_total=row.fields_total,
-                fields_filled=row.fields_filled,
-                jobs_submitted=row.jobs_submitted,
-                jobs_required=row.jobs_required,
-            ).value,
+            "stage": derive_stage(snapshot).value,
             "pdf_received": bool(row.pdf_received),
             "pages_rendered": bool(row.pages_rendered),
             "ocr_available": bool(row.ocr_available),
@@ -230,22 +232,31 @@ class DocumentProgressWorker(BaseWorker):
         )
 
 
-def derive_stage(
-    *,
-    pages_rendered: bool,
-    ocr_available: bool,
-    fields_total: int,
-    fields_filled: int,
-    jobs_submitted: int,
-    jobs_required: int,
-) -> DocumentStage:
+@dataclass(frozen=True)
+class ProgressSnapshot:
+    """Les constats d'un document, tels que lus en base.
+
+    Regroupes en un objet plutot que passes un par un : ils voyagent toujours
+    ensemble, et une signature a six parametres depassait le seuil pylint. Le
+    gel evite qu'une etape de calcul ne les modifie en passant.
+    """
+
+    pages_rendered: bool
+    ocr_available: bool
+    fields_total: int
+    fields_filled: int
+    jobs_submitted: int
+    jobs_required: int
+
+
+def derive_stage(snapshot: ProgressSnapshot) -> DocumentStage:
     """Traduit les constats en une etape unique.
 
     Fonction pure, deliberement separee du worker : c'est la seule regle metier
     du module, et elle se teste sans base. L'ordre des tests suit l'ordre des
     etapes, chacune supposant les precedentes acquises.
 
-    `pdf_received` ne figure pas parmi les parametres : un document sans ligne
+    `pdf_received` ne figure pas dans ProgressSnapshot : un document sans ligne
     FILE reste INGESTED, qui est deja le plancher, le constat n'aurait donc
     aucun effet sur l'etape. Il est conserve comme colonne de document_progress,
     ou il distingue le document sans fichier de celui dont les pages ne sont pas
@@ -256,14 +267,14 @@ def derive_stage(
     `jobs_submitted >= jobs_required` vraie des le depart, et tout document
     fraichement ingere serait annonce comme valide.
     """
-    if 0 < jobs_required <= jobs_submitted:
+    if 0 < snapshot.jobs_required <= snapshot.jobs_submitted:
         return DocumentStage.CONSENSUS_REACHED
-    if jobs_submitted > 0:
+    if snapshot.jobs_submitted > 0:
         return DocumentStage.ANNOTATION
-    if fields_total > 0 and fields_filled > 0:
+    if snapshot.fields_total > 0 and snapshot.fields_filled > 0:
         return DocumentStage.FIELDS_PREFILLED
-    if ocr_available:
+    if snapshot.ocr_available:
         return DocumentStage.OCR_AVAILABLE
-    if pages_rendered:
+    if snapshot.pages_rendered:
         return DocumentStage.PAGES_RENDERED
     return DocumentStage.INGESTED
