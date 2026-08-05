@@ -32,6 +32,7 @@ assume : le worker n'est pas evenementiel, sa fraicheur vaut son intervalle.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Dict, List, Sequence
@@ -84,9 +85,10 @@ class DocumentProgressWorker(BaseWorker):
             await self._upsert(db, rows)
 
         self.logger.info(
-            "avancement recalcule [documents=%s duree=%.2fs]",
+            "%s document(s) recalcule(s) en %.0f ms | %s",
             len(rows),
-            perf_counter() - cycle_started,
+            (perf_counter() - cycle_started) * 1000,
+            _format_stages(rows),
         )
 
     # -- Selection des candidats -------------------------------------------
@@ -230,6 +232,20 @@ class DocumentProgressWorker(BaseWorker):
                 | {"computed_at": func.now()},
             )
         )
+
+
+def _format_stages(rows: List[Dict[str, Any]]) -> str:
+    """Repartition par etape, dans l'ordre de la chaine et sans les zeros.
+
+    Une ligne de log doit se lire d'un coup d'oeil : afficher les six etapes
+    dont quatre a zero noierait celle qui bouge. Les etapes sont donnees dans
+    l'ordre de DocumentStage, pour que l'avancement se lise de gauche a droite.
+    """
+    counts = Counter(row["stage"] for row in rows)
+    parts = [
+        f"{stage.value}={counts[stage.value]}" for stage in DocumentStage if counts[stage.value]
+    ]
+    return " ".join(parts) if parts else "aucune etape"
 
 
 @dataclass(frozen=True)

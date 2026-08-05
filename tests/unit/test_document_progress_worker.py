@@ -21,6 +21,7 @@ from adam_worker import document_progress_worker as worker_module
 from adam_worker.document_progress_worker import (
     DocumentProgressWorker,
     ProgressSnapshot,
+    _format_stages,
     derive_stage,
 )
 
@@ -184,6 +185,28 @@ class TestCandidateSelection:
         _patch_session(monkeypatch, db)
         await DocumentProgressWorker().poll()
         assert len(db.statements) == 1  # la selection seule, pas d'upsert
+
+
+class TestLogSummary:
+    """La ligne de log est ce qu'on lit en exploitation, elle doit tenir seule."""
+
+    def test_compte_par_etape_dans_l_ordre_de_la_chaine(self) -> None:
+        summary = _format_stages(
+            [
+                {"stage": DocumentStage.FIELDS_PREFILLED.value},
+                {"stage": DocumentStage.PAGES_RENDERED.value},
+                {"stage": DocumentStage.FIELDS_PREFILLED.value},
+            ]
+        )
+        # L'avancement se lit de gauche a droite, pas dans l'ordre de rencontre.
+        assert summary == "PAGES_RENDERED=1 FIELDS_PREFILLED=2"
+
+    def test_les_etapes_vides_sont_omises(self) -> None:
+        summary = _format_stages([{"stage": DocumentStage.INGESTED.value}])
+        assert summary == "INGESTED=1"
+
+    def test_lot_vide(self) -> None:
+        assert _format_stages([]) == "aucune etape"
 
 
 class TestProgressQuery:
