@@ -32,6 +32,7 @@ donc un critere pose uniquement sur Project ne se declencherait pas.
     ocr_result      -> dataset -> project
     document_field  -> document -> dataset -> project
     field_proposal  -> job -> dataset -> project
+    document_progress -> document -> dataset -> project
     user_project    -> user (direct)
 
 Table volontairement NON scopee :
@@ -57,6 +58,7 @@ sont en plus restreintes aux adhesions de l'appelant, lues dans user_project.
     field_spec      -> doc_schema -> project
     document_field  -> document -> dataset -> project
     field_proposal  -> job -> dataset -> project
+    document_progress -> document -> dataset -> project
 
 Tables volontairement hors du second etage :
     - organisation : l'appelant doit pouvoir lire la sienne, qui n'appartient
@@ -326,8 +328,10 @@ def org_user_ids(organisation_id: int) -> "Select[tuple[int]]":
     return select(user.c.id).where(user.c.organisation_id == organisation_id)
 
 
-_scoped_models_cache: Optional[list[type[OrganisationScoped]]] = None
-_project_scoped_models_cache: Optional[list[type[ProjectScoped]]] = None
+# Caches de module, reaffectes a la premiere resolution : ce ne sont pas des
+# constantes, d'ou la convention de nommage en minuscules.
+_scoped_models_cache: Optional[list[type[OrganisationScoped]]] = None  # pylint: disable=invalid-name
+_project_scoped_models_cache: Optional[list[type[ProjectScoped]]] = None  # pylint: disable=invalid-name
 
 
 def _iter_scoped_models() -> Iterable[type[OrganisationScoped]]:
@@ -338,7 +342,10 @@ def _iter_scoped_models() -> Iterable[type[OrganisationScoped]]:
     """
     global _scoped_models_cache
     if _scoped_models_cache is None:
-        import adam_core.models  # noqa: F401 - garantit que tous les modeles sont mappes
+        # pylint: disable=import-outside-toplevel,unused-import
+        # Import pour effet de bord : mappe tous les modeles avant de lire le
+        # registre. Local pour eviter le cycle, les modeles important ce module.
+        import adam_core.models  # noqa: F401
         from adam_core.db.base import Base
 
         _scoped_models_cache = [
@@ -353,7 +360,10 @@ def _iter_project_scoped_models() -> Iterable[type[ProjectScoped]]:
     """Retourne toutes les classes mappees heritant de ProjectScoped."""
     global _project_scoped_models_cache
     if _project_scoped_models_cache is None:
-        import adam_core.models  # noqa: F401 - garantit que tous les modeles sont mappes
+        # pylint: disable=import-outside-toplevel,unused-import
+        # Import pour effet de bord : mappe tous les modeles avant de lire le
+        # registre. Local pour eviter le cycle, les modeles important ce module.
+        import adam_core.models  # noqa: F401
         from adam_core.db.base import Base
 
         _project_scoped_models_cache = [

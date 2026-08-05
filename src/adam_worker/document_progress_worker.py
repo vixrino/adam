@@ -24,6 +24,12 @@ cout du polling sans avoir a tracer les modifications. C'est un compromis
 assume : le worker n'est pas evenementiel, sa fraicheur vaut son intervalle.
 """
 
+# pylint: disable=not-callable
+# sqlalchemy.func fabrique ses fonctions SQL dynamiquement (func.now, func.count,
+# func.coalesce, func.make_interval) : pylint n'y voit qu'un attribut de module et
+# les croit non appelables. Le faux positif porte sur huit lignes du fichier, une
+# desactivation au niveau module evite de le repeter a chacune.
+
 from __future__ import annotations
 
 from time import perf_counter
@@ -182,7 +188,6 @@ class DocumentProgressWorker(BaseWorker):
         return {
             "document_id": row.document_id,
             "stage": derive_stage(
-                pdf_received=row.pdf_received,
                 pages_rendered=row.pages_rendered,
                 ocr_available=row.ocr_available,
                 fields_total=row.fields_total,
@@ -227,7 +232,6 @@ class DocumentProgressWorker(BaseWorker):
 
 def derive_stage(
     *,
-    pdf_received: bool,
     pages_rendered: bool,
     ocr_available: bool,
     fields_total: int,
@@ -241,12 +245,18 @@ def derive_stage(
     du module, et elle se teste sans base. L'ordre des tests suit l'ordre des
     etapes, chacune supposant les precedentes acquises.
 
+    `pdf_received` ne figure pas parmi les parametres : un document sans ligne
+    FILE reste INGESTED, qui est deja le plancher, le constat n'aurait donc
+    aucun effet sur l'etape. Il est conserve comme colonne de document_progress,
+    ou il distingue le document sans fichier de celui dont les pages ne sont pas
+    encore rendues.
+
     Le consensus n'est considere atteint que si le dataset exige au moins un
     operateur : `required_operators` a zero rendrait la condition
     `jobs_submitted >= jobs_required` vraie des le depart, et tout document
     fraichement ingere serait annonce comme valide.
     """
-    if jobs_required > 0 and jobs_submitted >= jobs_required:
+    if 0 < jobs_required <= jobs_submitted:
         return DocumentStage.CONSENSUS_REACHED
     if jobs_submitted > 0:
         return DocumentStage.ANNOTATION
