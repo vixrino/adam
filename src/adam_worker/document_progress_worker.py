@@ -103,7 +103,7 @@ class DocumentProgressWorker(BaseWorker):
 
     # -- Calcul -------------------------------------------------------------
 
-    def _progress_query(self, document_ids: Sequence[int]) -> "Select[tuple]":
+    def _progress_query(self, document_ids: Sequence[int]) -> "Select[tuple[Any, ...]]":
         """Les quatre agregats en une requete, groupes par document.
 
         Les comptages passent par des sous-requetes correlees plutot que par des
@@ -178,7 +178,7 @@ class DocumentProgressWorker(BaseWorker):
         rows = (await db.execute(self._progress_query(document_ids))).all()
         return [self._to_values(row) for row in rows]
 
-    def _to_values(self, row: Row) -> Dict[str, Any]:
+    def _to_values(self, row: "Row[Any]") -> Dict[str, Any]:
         return {
             "document_id": row.document_id,
             "stage": derive_stage(
