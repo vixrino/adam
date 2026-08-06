@@ -101,6 +101,24 @@ class Fixture:
 # ---------------------------------------------------------------------------
 
 
+def detect_api_prefix() -> str:
+    """Prefixe sous lequel l'application monte ses routeurs.
+
+    Les projets ne s'accordent pas : certains servent a la racine, d'autres sous
+    /api/v1. Le deviner evite un reglage a maintenir dans deux depots — et une
+    erreur silencieuse, puisqu'un mauvais prefixe donne des 404 que le worker
+    traduit en documents ERROR sans que rien ne signale la vraie cause.
+
+    On repere la route de creation en lot, dont le chemin est connu, et on en
+    retire le suffixe pour obtenir ce qui la precede.
+    """
+    suffix = "/documents/{document_id}/fields/bulk"
+    for path in app.openapi()["paths"]:
+        if path.endswith(suffix):
+            return path[: -len(suffix)]
+    return ""
+
+
 def build_api_client() -> ApiClient:
     """Client HTTP branche directement sur l'app FastAPI.
 
@@ -109,9 +127,12 @@ def build_api_client() -> ApiClient:
     facon ce qu'un appel machine doit obtenir.
     """
     app.dependency_overrides[get_caller] = lambda: ServiceCaller(service_name=MARKER)
+    prefix = detect_api_prefix()
+    base_url = f"http://memoire{prefix}"
+    print(f"  API en memoire, prefixe detecte : {prefix or '(racine)'}")
     transport = httpx.ASGITransport(app=app)
     return ApiClient(
-        base_url="http://memoire",
+        base_url=base_url,
         client=httpx.AsyncClient(transport=transport, base_url="http://memoire"),
     )
 
@@ -247,6 +268,7 @@ async def read_result(document_id: int) -> Tuple[str, List[DocumentField]]:
 
 
 def check(label: str, condition: bool, detail: str = "") -> int:
+    """Affiche le verdict d'une verification et rend 1 si elle echoue."""
     marker = "OK " if condition else "ECHEC"
     suffix = f"  {detail}" if detail else ""
     print(f"  [{marker}] {label}{suffix}")
@@ -285,18 +307,19 @@ async def _case_ocr_complet(fixture: Fixture, api: ApiClient) -> int:
     failures += check("4 champs crees", len(fields) == 4, f"{len(fields)} champ(s)")
     failures += check(
         "toutes les valeurs viennent de l'OCR",
-        all(f.ocr_value == "Dupont" for f in fields),
+        bool(fields) and all(f.ocr_value == "Dupont" for f in fields),
     )
     failures += check(
         "resolved_value initialisee a la valeur OCR",
-        all(f.resolved_value == "Dupont" for f in fields),
+        bool(fields) and all(f.resolved_value == "Dupont" for f in fields),
     )
     failures += check(
-        "resolved_by = ocr_system", all(f.resolved_by == "ocr_system" for f in fields)
+        "resolved_by = ocr_system",
+        bool(fields) and all(f.resolved_by == "ocr_system" for f in fields),
     )
     failures += check(
         "polygone et confiance de l'OCR",
-        all(f.ocr_confidence == 0.95 and f.ocr_polygon for f in fields),
+        bool(fields) and all(f.ocr_confidence == 0.95 and f.ocr_polygon for f in fields),
     )
 
     return failures
@@ -321,11 +344,11 @@ async def _case_ocr_partiel(fixture: Fixture, api: ApiClient) -> int:
     failures += check("2 champs renseignes", len(detected) == 2)
     failures += check(
         "les 2 autres sont vides, sans resolveur",
-        all(f.resolved_by is None and f.resolved_value is None for f in empty),
+        len(empty) == 2 and all(f.resolved_by is None and f.resolved_value is None for f in empty),
     )
     failures += check(
         "polygone du schema en repli sur les champs vides",
-        all(f.ocr_polygon is not None for f in empty),
+        len(empty) == 2 and all(f.ocr_polygon is not None for f in empty),
     )
 
     return failures
@@ -348,7 +371,8 @@ async def _case_ocr_indisponible(fixture: Fixture, api: ApiClient) -> int:
     )
     failures += check("les 4 champs existent, vides", len(fields) == 4)
     failures += check(
-        "aucun resolveur pose", all(f.resolved_by is None for f in fields)
+        "aucun resolveur pose",
+        len(fields) == 4 and all(f.resolved_by is None for f in fields),
     )
 
     return failures
