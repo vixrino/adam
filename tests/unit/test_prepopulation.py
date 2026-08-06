@@ -34,7 +34,11 @@ from adam_worker.prepopulation.merger import (
     merge,
     semantic_key,
 )
-from adam_worker.prepopulation.poller import PrepopulationError, PrepopulationWorker
+from adam_worker.prepopulation.poller import (
+    PrepopulationError,
+    PrepopulationWorker,
+    default_pages_dir,
+)
 
 # Le seed stocke la cle complete dans field_key ; on couvre les deux conventions.
 SPECS: List[Dict[str, Any]] = [
@@ -514,9 +518,7 @@ class TestPageImages:
         assert worker._page_images(1) == []
 
     def test_les_png_sont_tries(self, tmp_path: Path) -> None:
-        from adam_core.utils.pdf_render import pages_relative_dir
-
-        directory = tmp_path / pages_relative_dir(1)
+        directory = tmp_path / default_pages_dir(1)
         directory.mkdir(parents=True)
         for name in ("page_2.png", "page_1.png"):
             (directory / name).touch()

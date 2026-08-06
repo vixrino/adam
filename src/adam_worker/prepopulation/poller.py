@@ -32,7 +32,7 @@ des comptages, dont le nombre de champs detectes, qui suffit au diagnostic.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import select, update
 
@@ -41,7 +41,6 @@ from adam_core.db.session import get_async_session
 from adam_core.enums.status import DocumentStatus
 from adam_core.models import Document
 from adam_core.schemas.interface_contract import SmartdocDocument
-from adam_core.utils.pdf_render import pages_relative_dir
 from adam_worker.base_worker import BaseWorker
 from adam_worker.connectors.base import BaseOcrConnector, OcrConnectorError
 from adam_worker.connectors.mock import MockOcrConnector
@@ -50,6 +49,21 @@ from adam_worker.prepopulation.merger import count_detected, merge
 
 _BATCH_SIZE = 20
 _DEFAULT_POLL_INTERVAL = 30.0
+
+
+def default_pages_dir(file_id: int) -> Path:
+    """Repertoire des images de page, relatif a la racine du PVC.
+
+    La convention est celle du pipeline d'ingestion : file_id/pages/. Elle est
+    redefinie ici plutot qu'importee de utils.pdf_render, ou elle vit aussi :
+    ce module la importe PyMuPDF, et faire dependre la pre-alimentation d'un
+    moteur de rendu PDF pour une concatenation de chemin serait une dette
+    gratuite — le worker ne rend aucune image, il les lit.
+
+    Le resolveur est injectable via `pages_dir` : si la convention change, ou
+    differe entre deux deploiements, elle se surcharge sans toucher au worker.
+    """
+    return Path(str(file_id)) / "pages"
 
 
 class PrepopulationError(Exception):
@@ -69,6 +83,7 @@ class PrepopulationWorker(BaseWorker):
         batch_size: int = _BATCH_SIZE,
         pvc_root: Optional[Path] = None,
         poll_interval_seconds: Optional[float] = None,
+        pages_dir: Callable[[int], Path] = default_pages_dir,
     ) -> None:
         super().__init__()
         self.connector = connector or MockOcrConnector()
@@ -78,6 +93,7 @@ class PrepopulationWorker(BaseWorker):
         )
         self.batch_size = batch_size
         self.pvc_root = pvc_root or Path(settings.pvc_mount_path)
+        self.pages_dir = pages_dir
         if poll_interval_seconds is not None:
             self.poll_interval_seconds = poll_interval_seconds
 
@@ -175,7 +191,7 @@ class PrepopulationWorker(BaseWorker):
         et ne detectera rien, ce qui produit un document a champs vides. C'est
         preferable a un ERROR, l'operateur pouvant tout saisir a la main.
         """
-        directory = self.pvc_root / pages_relative_dir(file_id)
+        directory = self.pvc_root / self.pages_dir(file_id)
         if not directory.is_dir():
             return []
         return sorted(directory.glob("*.png"))
