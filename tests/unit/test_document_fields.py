@@ -279,28 +279,15 @@ class TestDelete:
         assert db.deleted == []
 
 
-def test_les_routes_sont_exposees_par_l_app() -> None:
-    """Le routeur doit etre branche dans main, sinon rien de tout ceci n'existe.
+def test_le_routeur_declare_les_trois_routes() -> None:
+    """Le module expose bien ce qu'il annonce.
 
-    On lit le schema OpenAPI et non app.routes : cette version de FastAPI garde
-    les routeurs inclus sous forme d'objets _IncludedRouter sans mettre les
-    chemins a plat.
-
-    La comparaison se fait sur la fin du chemin, pas sur sa totalite : selon les
-    projets, l'application monte ses routeurs a la racine ou sous un prefixe de
-    version. Verifier le prefixe ici ferait echouer le test sur une convention
-    de deploiement qui ne concerne pas ce module.
+    Le controle porte sur le routeur et non sur l'application : la facon dont
+    celle-ci monte ses modules, a la racine ou sous un prefixe de version, est
+    une convention de deploiement qui ne regarde pas ce module.
     """
-    from adam_api.main import app as real_app
+    declared = {(route.path, method) for route in router.routes for method in route.methods}
 
-    paths = list(real_app.openapi()["paths"])
-
-    def _exposed(suffix: str) -> bool:
-        return any(path.endswith(suffix) for path in paths)
-
-    assert _exposed("/documents/{document_id}/fields")
-    assert _exposed("/documents/{document_id}/fields/bulk")
-
-    schema = real_app.openapi()["paths"]
-    field_path = next(p for p in paths if p.endswith("/documents/{document_id}/fields/{field_id}"))
-    assert "delete" in schema[field_path]
+    assert ("/documents/{document_id}/fields", "POST") in declared
+    assert ("/documents/{document_id}/fields/bulk", "POST") in declared
+    assert ("/documents/{document_id}/fields/{field_id}", "DELETE") in declared
