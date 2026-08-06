@@ -285,10 +285,22 @@ def test_les_routes_sont_exposees_par_l_app() -> None:
     On lit le schema OpenAPI et non app.routes : cette version de FastAPI garde
     les routeurs inclus sous forme d'objets _IncludedRouter sans mettre les
     chemins a plat.
+
+    La comparaison se fait sur la fin du chemin, pas sur sa totalite : selon les
+    projets, l'application monte ses routeurs a la racine ou sous un prefixe de
+    version. Verifier le prefixe ici ferait echouer le test sur une convention
+    de deploiement qui ne concerne pas ce module.
     """
     from adam_api.main import app as real_app
 
-    paths = real_app.openapi()["paths"]
-    assert "/documents/{document_id}/fields" in paths
-    assert "/documents/{document_id}/fields/bulk" in paths
-    assert "delete" in paths["/documents/{document_id}/fields/{field_id}"]
+    paths = list(real_app.openapi()["paths"])
+
+    def _exposed(suffix: str) -> bool:
+        return any(path.endswith(suffix) for path in paths)
+
+    assert _exposed("/documents/{document_id}/fields")
+    assert _exposed("/documents/{document_id}/fields/bulk")
+
+    schema = real_app.openapi()["paths"]
+    field_path = next(p for p in paths if p.endswith("/documents/{document_id}/fields/{field_id}"))
+    assert "delete" in schema[field_path]
