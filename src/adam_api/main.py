@@ -14,6 +14,7 @@ from adam_api.core.config import settings
 from adam_api.routers import (
     admin,
     datasets,
+    document_fields,
     documents,
     files,
     jobs,
@@ -55,6 +56,7 @@ if STATIC_DIR.exists():
 
 app.include_router(admin.router)
 app.include_router(datasets.router)
+app.include_router(document_fields.router)
 app.include_router(documents.router)
 app.include_router(files.router)
 app.include_router(jobs.router)

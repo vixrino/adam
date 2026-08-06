@@ -13,6 +13,7 @@ from adam_core.db.session import init_engine
 from adam_core.utils.logging import setup_logging
 from adam_worker.consensus_worker import ConsensusWorker
 from adam_worker.page_image_worker import PageImageWorker
+from adam_worker.prepopulation.poller import PrepopulationWorker
 
 
 async def _main() -> None:
@@ -20,7 +21,7 @@ async def _main() -> None:
     setup_logging(core)
     init_engine(core.async_database_url, echo=core.is_dev)
 
-    workers = [PageImageWorker(), ConsensusWorker()]
+    workers = [PageImageWorker(), PrepopulationWorker(), ConsensusWorker()]
     await asyncio.gather(*(worker.run_forever() for worker in workers))
 
 

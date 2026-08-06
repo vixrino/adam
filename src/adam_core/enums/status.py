@@ -20,13 +20,27 @@ class DatasetStatus(str, Enum):
 
 
 class DocumentStatus(str, Enum):
+    """Etapes du pipeline documentaire, dans l'ordre de progression.
+
+    INGESTED s'intercale entre RECEIVED et IN_PROGRESS : il marque le moment ou
+    les images du document ont ete generees et ou la pre-alimentation OCR peut
+    commencer. C'est la file d'attente de PrepopulationWorker, qui n'a aucun
+    moyen de distinguer un document tout juste recu d'un document dont les
+    pages sont pretes si les deux portent RECEIVED.
+
+    ERROR sort un document de la chaine plutot que de le laisser dans un statut
+    qui le ferait repoller indefiniment.
+    """
+
     RECEIVED = "RECEIVED"
+    INGESTED = "INGESTED"
     IN_PROGRESS = "IN_PROGRESS"
     PENDING_CONSENSUS = "PENDING_CONSENSUS"
     VALIDATED = "VALIDATED"
     DISPUTED = "DISPUTED"
     EXPORTED = "EXPORTED"
     ARCHIVED = "ARCHIVED"
+    ERROR = "ERROR"
 
 
 class DocumentFieldStatus(str, Enum):
