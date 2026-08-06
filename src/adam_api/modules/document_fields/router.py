@@ -23,7 +23,7 @@ d'unicite, au lieu de les dupliquer dans chaque service qui creerait des champs.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,13 +51,20 @@ async def _load_document(db: AsyncSession, document_id: int) -> Document:
     return document
 
 
-def _to_out(row: DocumentField, value_type: Optional[str] = None) -> DocumentFieldOut:
+def _to_out(row: DocumentField) -> DocumentFieldOut:
+    """Serialise une ligne fraichement creee.
+
+    value_type n'est pas renseigne : il se lit sur le FieldSpec, que la creation
+    n'a pas charge, et le remplir couterait une requete par champ pour une
+    information dont l'appelant dispose deja — c'est lui qui a fourni les
+    field_spec_id. Les endpoints de lecture, eux, le portent, ayant deja la
+    jointure.
+    """
     return DocumentFieldOut(
         id=row.id,
         document_id=row.document_id,
         field_spec_id=row.field_spec_id,
         group_id=row.group_id,
-        value_type=value_type,
         ocr_value=row.ocr_value,
         resolved_value=row.resolved_value,
         status=row.status,
