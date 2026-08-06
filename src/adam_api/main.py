@@ -11,10 +11,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from adam_api.core.config import settings
+from adam_api.modules import document_fields
 from adam_api.routers import (
     admin,
     datasets,
-    document_fields,
     documents,
     files,
     jobs,

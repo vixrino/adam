@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from adam_api.modules.document_fields.exceptions import DuplicateField, FieldSpecMismatch
 from adam_core.enums.status import DocumentFieldStatus
 from adam_core.models import Dataset, DocSchema, Document, DocumentField, FieldSpec
 
@@ -30,33 +31,6 @@ class BulkOutcome:
 
     created: List[DocumentField] = field(default_factory=list)
     skipped: List[Tuple[int, Optional[str]]] = field(default_factory=list)
-
-
-class FieldSpecMismatch(Exception):
-    """Un field_spec_id n'appartient pas au schema du document.
-
-    Remontee en 422 par le routeur : la demande est syntaxiquement valide mais
-    incoherente, ce n'est ni une ressource absente ni un conflit.
-    """
-
-    def __init__(self, field_spec_ids: Sequence[int], schema_id: int) -> None:
-        self.field_spec_ids = list(field_spec_ids)
-        self.schema_id = schema_id
-        super().__init__(
-            f"field_spec_id {self.field_spec_ids} n'appartiennent pas au schema {schema_id}"
-        )
-
-
-class DuplicateField(Exception):
-    """Le triplet (document_id, field_spec_id, group_id) existe deja."""
-
-    def __init__(self, field_spec_id: int, group_id: Optional[str]) -> None:
-        self.field_spec_id = field_spec_id
-        self.group_id = group_id
-        super().__init__(
-            f"Le champ field_spec_id={field_spec_id} group_id={group_id!r} existe deja "
-            f"pour ce document"
-        )
 
 
 async def resolve_schema_id(db: AsyncSession, document: Document) -> int:

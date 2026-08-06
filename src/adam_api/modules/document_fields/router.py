@@ -1,8 +1,12 @@
-"""Ecriture des DOCUMENT_FIELD : creation unitaire, creation en lot, suppression.
+"""Routes d'ecriture des DOCUMENT_FIELD.
+
+Le routeur ne porte aucune regle : il charge le document, delegue au service, et
+traduit ses erreurs en codes HTTP. Toute la coherence metier vit dans service.py,
+ce qui la rend testable sans requete et reutilisable hors contexte HTTP.
 
 La lecture (`GET /documents/{id}/fields`) et la mise a jour partielle
 (`PATCH /documents/{id}/fields/{field_id}`) restent dans routers/documents.py,
-ou elles existaient deja. Ce module ajoute ce qui manquait, sans deplacer
+ou elles existaient deja. Ce module ajoute ce qui manquait sans deplacer
 l'existant : un renommage de route casserait les appelants pour un gain nul.
 
 Le prefixe est le meme que celui de documents.py, les deux routeurs se partagent
@@ -19,60 +23,25 @@ d'unicite, au lieu de les dupliquer dans chaque service qui creerait des champs.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from adam_api.dependencies.db import get_db
-from adam_api.services import document_fields as service
-from adam_core.enums.status import DocumentFieldStatus
+from adam_api.modules.document_fields import service
+from adam_api.modules.document_fields.exceptions import DuplicateField, FieldSpecMismatch
+from adam_api.modules.document_fields.schemas import (
+    DocumentFieldBulkCreate,
+    DocumentFieldBulkOut,
+    DocumentFieldCreate,
+    DocumentFieldOut,
+    SkippedFieldOut,
+)
 from adam_core.models import Document, DocumentField
-from adam_core.schemas.responses import DocumentFieldOut
 from adam_core.utils.exceptions import raise_conflict, raise_not_found, raise_unprocessable
 
 router = APIRouter(prefix="/documents", tags=["DocumentFields"])
-
-
-class DocumentFieldCreate(BaseModel):
-    """Un champ a creer.
-
-    resolved_by est accepte mais ignore si resolved_value est absent : le
-    service refuse de designer un resolveur pour une valeur qui n'existe pas.
-    """
-
-    field_spec_id: int
-    group_id: Optional[str] = None
-    ocr_value: Optional[str] = None
-    resolved_value: Optional[str] = None
-    status: str = DocumentFieldStatus.PENDING.value
-    ocr_confidence: Optional[float] = None
-    ocr_polygon: Optional[List[float]] = None
-    resolved_by: Optional[str] = None
-
-
-class DocumentFieldBulkCreate(BaseModel):
-    fields: List[DocumentFieldCreate] = Field(default_factory=list)
-
-
-class SkippedFieldOut(BaseModel):
-    """Champ ignore par le lot parce qu'il existait deja."""
-
-    field_spec_id: int
-    group_id: Optional[str] = None
-
-
-class DocumentFieldBulkOut(BaseModel):
-    """Reponse du lot : ce qui a ete cree, ce qui existait deja.
-
-    Distinguer les deux permet a l'appelant de rejouer un document sans se
-    demander si son retry a duplique quoi que ce soit.
-    """
-
-    document_id: int
-    created: List[DocumentFieldOut] = Field(default_factory=list)
-    skipped: List[SkippedFieldOut] = Field(default_factory=list)
 
 
 async def _load_document(db: AsyncSession, document_id: int) -> Document:
@@ -108,9 +77,9 @@ async def create_document_field(
     document = await _load_document(db, document_id)
     try:
         row = await service.create_one(db, document, body.model_dump())
-    except service.FieldSpecMismatch as exc:
+    except FieldSpecMismatch as exc:
         raise_unprocessable(str(exc))
-    except service.DuplicateField as exc:
+    except DuplicateField as exc:
         raise_conflict(DocumentField, str(exc))
     return _to_out(row)
 
@@ -134,7 +103,7 @@ async def create_document_fields_bulk(
     payloads = [item.model_dump() for item in body.fields]
     try:
         outcome = await service.create_bulk(db, document, payloads)
-    except service.FieldSpecMismatch as exc:
+    except FieldSpecMismatch as exc:
         raise_unprocessable(str(exc))
     return DocumentFieldBulkOut(
         document_id=document_id,
