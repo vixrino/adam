@@ -43,7 +43,7 @@ import asyncio
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -94,6 +94,7 @@ class Fixture:
     dataset_id: int
     empty_dataset_id: int
     schema_id: int
+    field_spec_ids: List[int]
 
 
 # ---------------------------------------------------------------------------
@@ -172,23 +173,23 @@ async def build_fixture() -> Fixture:
         db.add_all([schema, empty_schema])
         await db.flush()
 
-        db.add_all(
-            [
-                FieldSpec(
-                    schema_id=schema.id,
-                    page=1,
-                    section_id=key.split(".", 1)[0],
-                    section_label=key.split(".", 1)[0].capitalize(),
-                    field_key=key,
-                    display_label=key,
-                    value_type=FieldValueType.TEXT.value,
-                    required=False,
-                    display_order=index,
-                    polygon=[float(index), 1.0, 2.0, 3.0],
-                )
-                for index, key in enumerate(FIELD_KEYS)
-            ]
-        )
+        field_specs = [
+            FieldSpec(
+                schema_id=schema.id,
+                page=1,
+                section_id=key.split(".", 1)[0],
+                section_label=key.split(".", 1)[0].capitalize(),
+                field_key=key,
+                display_label=key,
+                value_type=FieldValueType.TEXT.value,
+                required=False,
+                display_order=index,
+                polygon=[float(index), 1.0, 2.0, 3.0],
+            )
+            for index, key in enumerate(FIELD_KEYS)
+        ]
+        db.add_all(field_specs)
+        await db.flush()
 
         dataset = Dataset(
             project_id=project.id,
@@ -214,6 +215,7 @@ async def build_fixture() -> Fixture:
             dataset_id=dataset.id,
             empty_dataset_id=empty_dataset.id,
             schema_id=schema.id,
+            field_spec_ids=[int(spec.id) for spec in field_specs],
         )
 
 
@@ -427,7 +429,39 @@ async def _case_idempotence(fixture: Fixture, api: ApiClient) -> int:
         status == DocumentStatus.IN_PROGRESS.value,
     )
 
+    # Le compte de lignes ne suffit pas : il serait aussi satisfait par un
+    # second lot qui echouerait silencieusement. On interroge donc l'API
+    # directement, pour verifier qu'elle rapporte bien des champs ignores et
+    # non des champs crees — c'est ce mecanisme qui porte l'idempotence, la
+    # contrainte unique ne protegeant pas les lignes a group_id nul.
+    replay = await api.create_fields_bulk(document_id, merge_payloads(fixture))
+    print(
+        f"       reponse du lot rejoue : crees={len(replay.get('created', []))} "
+        f"ignores={len(replay.get('skipped', []))}"
+    )
+    failures += check("le lot rejoue ne cree rien", not replay.get("created"))
+    failures += check(
+        "le lot rejoue rapporte 4 champs ignores",
+        len(replay.get("skipped", [])) == 4,
+    )
+
+    _status, third = await read_result(document_id)
+    failures += check("toujours 4 champs en base", len(third) == 4)
+
     return failures
+
+
+def merge_payloads(fixture: Fixture) -> List[Dict[str, Any]]:
+    """Les quatre champs du schema, tels que le worker les enverrait.
+
+    Reconstruits ici plutot que relus depuis le worker : ce scenario teste
+    l'endpoint, pas la fusion, et le lot doit etre identique au precedent pour
+    que le conflit soit reel.
+    """
+    return [
+        {"field_spec_id": spec_id, "ocr_value": "x", "resolved_value": "x"}
+        for spec_id in fixture.field_spec_ids
+    ]
 
 
 async def _case_isolation(fixture: Fixture, api: ApiClient) -> int:
