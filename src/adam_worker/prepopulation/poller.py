@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import select, update
 
-from adam_api.core.config import settings
+from adam_api.core.config import API_PREFIX, settings
 from adam_core.db.session import get_async_session
 from adam_core.enums.status import DocumentStatus
 from adam_core.models import Document
@@ -88,7 +88,10 @@ class PrepopulationWorker(BaseWorker):
         super().__init__()
         self.connector = connector or MockOcrConnector()
         self.api_client = api_client or ApiClient(
-            base_url=f"http://{settings.api_host}:{settings.api_port}",
+            # API_PREFIX est celui que main.py monte : sans lui, chaque appel
+            # part en 404, que le worker traduirait en documents ERROR sans
+            # que la vraie cause apparaisse nulle part.
+            base_url=f"http://{settings.api_host}:{settings.api_port}{API_PREFIX}",
             timeout_seconds=float(settings.ocr_timeout_seconds),
         )
         self.batch_size = batch_size

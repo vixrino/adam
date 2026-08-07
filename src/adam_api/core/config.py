@@ -7,6 +7,11 @@ from typing import List
 
 from adam_core.core.config import CoreSettings
 
+#: Prefixe commun a toutes les routes metier, monte par main.py.
+#: Declare ici et non dans main.py : le worker en a besoin pour construire ses
+#: URL, et importer main.py depuis un worker chargerait toute l'application.
+API_PREFIX = "/api/v1"
+
 
 class Settings(CoreSettings):
     api_host: str
