@@ -1,17 +1,10 @@
 # ADAM - Annotation et Données Automatisées
 
+Dans src/nota_worker/page_image_worker.py, méthode _process_one, juste après l'affectation du nombre de pages :
 
-Pré-alimentation OCR des champs d'un document `INGESTED` : nouveau worker
-`nota_worker/prepopulation/`, endpoints `POST /fields`, `POST /fields/bulk`,
-`DELETE /fields/{id}`, migrations `d4e5f6a7b8c9` et `e5f6a7b8c9d0`.
+            file_row.page_count = len(written)
+            document.status = DocumentStatus.IN_PROGRESS.value   # <- devient INGESTED
 
-**Prérequis non couvert** : rien ne fait passer un document de `RECEIVED` à
-`INGESTED`. `PageImageWorker` pose `IN_PROGRESS` directement, ce qui laisse la
-file du worker vide. Une ligne à changer dans `page_image_worker.py` :
+Une seule ligne à changer :
 
-```python
-document.status = DocumentStatus.INGESTED.value
-
-Impossible ici : ce fichier est sur develop et INGESTED n'existe qu'avec la
-migration de cette MR. À faire juste après le merge.
-```
+            document.status = DocumentStatus.INGESTED.value
