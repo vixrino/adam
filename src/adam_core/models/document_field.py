@@ -6,7 +6,18 @@ Contrainte unique sur (document_id, field_spec_id, group_id)
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -32,6 +43,17 @@ class DocumentField(OrganisationScoped, ProjectScoped, Base):
             "field_spec_id",
             "group_id",
             name="uq_document_field_doc_spec_group",
+        ),
+        # PostgreSQL considere deux NULL comme distincts dans une contrainte
+        # d'unicite : la precedente ne protege donc que les champs repetables,
+        # et laisse passer autant de doublons qu'on veut sur les autres, qui
+        # sont le cas courant. Cet index partiel couvre ce cas-la.
+        Index(
+            "uq_document_field_doc_spec_no_group",
+            "document_id",
+            "field_spec_id",
+            unique=True,
+            postgresql_where=text("group_id IS NULL"),
         ),
     )
 

@@ -2,7 +2,12 @@
 
 Polling sur DOCUMENT.status == RECEIVED : convertit chaque page du PDF
 source (lu depuis le PVC via FILE) en PNG ecrit dans file_id/pages/,
-renseigne FILE.page_count, puis passe le Document a IN_PROGRESS.
+renseigne FILE.page_count, puis passe le Document a INGESTED.
+
+INGESTED et non IN_PROGRESS : les images sont pretes, mais le document n'a
+encore aucun champ. C'est PrepopulationWorker qui prend la suite, pre-alimente
+les DOCUMENT_FIELD depuis l'OCR, et le fait alors passer a IN_PROGRESS. Sauter
+cette etape laisserait sa file vide en permanence.
 
 Chaque Document est traite dans sa propre transaction, verrouillee avec
 `FOR UPDATE SKIP LOCKED` : si plusieurs instances du worker tournent en
@@ -93,7 +98,7 @@ class PageImageWorker(BaseWorker):
                 return
 
             file_row.page_count = len(written)
-            document.status = DocumentStatus.IN_PROGRESS.value
+            document.status = DocumentStatus.INGESTED.value
             self.logger.info(
                 "Images generees [document_id=%s file_id=%s pages=%s]",
                 document_id,
