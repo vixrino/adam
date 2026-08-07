@@ -1,7 +1,4 @@
 # ADAM - Annotation et Données Automatisées
 
 
-SELECT document_id, field_spec_id, group_id, count(*)
-FROM document_field
-GROUP BY document_id, field_spec_id, group_id
-HAVING count(*) > 1;
+uv run alembic -c src/nota_core/alembic.ini revision -m "unique document field without group" --rev-id e5f6a7b8c9d0
