@@ -87,7 +87,7 @@ SEPARATOR = "-" * 60
 # Une variable d'environnement force un matricule precis quand la resolution
 # automatique ne convient pas :
 #
-#     CHECK_OPERATOR=V654646 CHECK_BUSINESS_ADMIN=I659418 \
+#     CHECK_OPERATOR=V654846 CHECK_BUSINESS_ADMIN=I659418 \
 #         python scripts/check_project_scoping.py
 
 #: Matricule du Client NOTA cree par ce script (cf. ensure_nota_client).
