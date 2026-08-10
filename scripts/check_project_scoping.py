@@ -12,11 +12,16 @@ Il complete le seed avec un second projet auquel l'operateur n'appartient pas,
 un projet dans une autre organisation, et un Client NOTA, puis interroge la base
 sous cinq identites :
 
-    MAT00002  Operateur Metier      -> son projet seul
-    MAT00001  Administrateur Metier -> les deux de son org (lecture transverse)
-    MAT00004  Client NOTA           -> son organisation seule, jamais l'autre
-    MAT00003  Administrateur NOTA   -> tout, session non scopee
-    (aucune)  service machine       -> tout, session non scopee
+    Operateur Metier      -> son projet seul
+    Administrateur Metier -> les deux de son org (lecture transverse)
+    Client NOTA           -> son organisation seule, jamais l'autre
+    Administrateur NOTA   -> tout, session non scopee
+    service machine       -> tout, session non scopee
+
+Les matricules ne sont pas ecrits ici : chaque acteur est resolu par son role,
+ce qui rend le script portable d'un environnement a l'autre (cf. le bloc de
+commentaire au-dessus de NOTA_CLIENT). Les matricules retenus sont affiches en
+preparation, pour qu'une resolution surprenante se voie tout de suite.
 
 Le perimetre n'est pas ecrit en dur
 ------------------------------------
@@ -35,6 +40,7 @@ Usage :
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -48,25 +54,93 @@ from adam_api.dependencies.db import _matricule_of, _organisation_id_of
 from adam_core.core.config import get_core_settings
 from adam_core.db.session import get_async_session, init_engine
 from adam_core.enums.ocr import OcrProvider
-from adam_core.enums.roles import PlatformRole
+from adam_core.enums.roles import PlatformRole, ProjectRole
 from adam_core.enums.status import DatasetStatus, DocumentStatus, ProjectStatus, UserStatus
-from adam_core.models import Dataset, DocSchema, Document, File, Organisation, Project, User
+from adam_core.models import (
+    Dataset,
+    DocSchema,
+    Document,
+    File,
+    Organisation,
+    Project,
+    User,
+    UserProject,
+)
 from adam_core.utils.hashing import sha256_bytes
 
 SECOND_PROJECT = "Projet Temoin Hors Perimetre"
 OTHER_ORG_PROJECT = "Projet Temoin Autre Organisation"
 SEPARATOR = "-" * 60
 
-# Matricules du seed. Attention a l'ordre : dans scripts/seed.py, MAT00001 est
-# la variable `admin`, inscrite en BUSINESS_ADMIN, et MAT00002 la variable
-# `operator`, inscrite en OPERATOR. Les intervertir inverse le verdict sans que
-# rien n'echoue. A adapter si ton seed pose d'autres matricules.
-BUSINESS_ADMIN = "MAT00001"
-OPERATOR = "MAT00002"
-NOTA_ADMIN = "MAT00003"
+# Les acteurs sont resolus par leur role, pas par leur matricule
+# ---------------------------------------------------------------
+# Ce fichier tournait sur des matricules ecrits en dur, valables pour le seul
+# seed de ce depot : ailleurs, MAT00001 n'existe pas et le script s'arrete, ou
+# pire, designe quelqu'un d'autre. Les intervertir inversait le verdict sans que
+# rien n'echoue.
+#
+# Chaque acteur est donc cherche par ce qui le definit — un ProjectRole pour les
+# deux acteurs metier, un PlatformRole pour les deux acteurs NOTA — en prenant
+# le plus petit id pour rester deterministe s'il y a plusieurs candidats. Le
+# script devient portable d'un environnement a l'autre sans edition.
+#
+# Une variable d'environnement force un matricule precis quand la resolution
+# automatique ne convient pas :
+#
+#     CHECK_OPERATOR=V654646 CHECK_BUSINESS_ADMIN=I659418 \
+#         python scripts/check_project_scoping.py
 
-#: Le seed ne pose pas de Client NOTA, ce script le cree (cf. ensure_nota_client).
-NOTA_CLIENT = "MAT00004"
+#: Matricule du Client NOTA cree par ce script (cf. ensure_nota_client).
+NOTA_CLIENT = os.environ.get("CHECK_NOTA_CLIENT", "MAT00004")
+
+
+class ActorNotFound(Exception):
+    """Aucun utilisateur ne porte le role cherche : la base n'est pas seedee."""
+
+
+async def matricule_with_project_role(role: str, env_var: str) -> str:
+    """Matricule d'un utilisateur inscrit a un projet avec ce ProjectRole."""
+    override = os.environ.get(env_var)
+    if override:
+        return override
+    async with get_async_session() as session:
+        found = (
+            await session.execute(
+                select(User.matricule)
+                .join(UserProject, UserProject.user_id == User.id)
+                .where(UserProject.role == role)
+                .order_by(User.id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if found is None:
+        raise ActorNotFound(
+            f"aucun utilisateur inscrit a un projet en {role}. "
+            f"Lancer scripts/seed.py, ou forcer un matricule avec {env_var}=..."
+        )
+    return str(found)
+
+
+async def matricule_with_platform_role(role: str, env_var: str) -> str:
+    """Matricule d'un utilisateur portant ce PlatformRole."""
+    override = os.environ.get(env_var)
+    if override:
+        return override
+    async with get_async_session() as session:
+        found = (
+            await session.execute(
+                select(User.matricule)
+                .where(User.platform_role == role)
+                .order_by(User.id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if found is None:
+        raise ActorNotFound(
+            f"aucun utilisateur en {role}. "
+            f"Lancer scripts/seed.py, ou forcer un matricule avec {env_var}=..."
+        )
+    return str(found)
 
 
 async def ensure_second_project(organisation_id: int) -> None:
@@ -253,7 +327,18 @@ async def main() -> int:
     print(SEPARATOR)
     print(" Preparation")
     print(SEPARATOR)
-    organisation_id = await org_of(OPERATOR)
+    operator = await matricule_with_project_role(ProjectRole.OPERATOR.value, "CHECK_OPERATOR")
+    business_admin = await matricule_with_project_role(
+        ProjectRole.BUSINESS_ADMIN.value, "CHECK_BUSINESS_ADMIN"
+    )
+    nota_admin = await matricule_with_platform_role(
+        PlatformRole.NOTA_ADMIN.value, "CHECK_NOTA_ADMIN"
+    )
+    print(f"  Operateur Metier      : {operator}")
+    print(f"  Administrateur Metier : {business_admin}")
+    print(f"  Administrateur NOTA   : {nota_admin}")
+
+    organisation_id = await org_of(operator)
     await ensure_second_project(organisation_id)
     await ensure_nota_client(organisation_id)
     await ensure_other_org_project(organisation_id)
@@ -263,21 +348,28 @@ async def main() -> int:
     print(" Perimetre visible par identite")
     print(SEPARATOR)
 
-    results = {
-        "Operateur Metier    (MAT00002)": await counts_as(await caller_for(OPERATOR)),
-        "Admin Metier        (MAT00001)": await counts_as(await caller_for(BUSINESS_ADMIN)),
-        "Client NOTA         (MAT00004)": await counts_as(await caller_for(NOTA_CLIENT)),
-        "Admin NOTA          (MAT00003)": await counts_as(await caller_for(NOTA_ADMIN)),
-        "Service machine               ": await counts(None, None),
-    }
-    for label, (projects, documents) in results.items():
-        print(f"  {label} : {projects} projet(s), {documents} document(s)")
+    identities = [
+        ("operateur", "Operateur Metier", operator),
+        ("admin_metier", "Administrateur Metier", business_admin),
+        ("client", "Client NOTA", NOTA_CLIENT),
+        ("admin_nota", "Administrateur NOTA", nota_admin),
+    ]
+    results = {key: await counts_as(await caller_for(mat)) for key, _label, mat in identities}
+    results["service"] = await counts(None, None)
 
-    op_projects, op_documents = results["Operateur Metier    (MAT00002)"]
-    ba_projects, ba_documents = results["Admin Metier        (MAT00001)"]
-    cl_projects, _cl_documents = results["Client NOTA         (MAT00004)"]
-    na_projects, na_documents = results["Admin NOTA          (MAT00003)"]
-    all_projects, all_documents = results["Service machine               "]
+    for key, label, mat in identities:
+        projects, documents = results[key]
+        print(f"  {label:<22} ({mat:<9}) : {projects} projet(s), {documents} document(s)")
+    print(
+        f"  {'Service machine':<22} ({'-':<9}) : "
+        f"{results['service'][0]} projet(s), {results['service'][1]} document(s)"
+    )
+
+    op_projects, op_documents = results["operateur"]
+    ba_projects, ba_documents = results["admin_metier"]
+    cl_projects, _cl_documents = results["client"]
+    na_projects, na_documents = results["admin_nota"]
+    all_projects, all_documents = results["service"]
 
     print()
     print(SEPARATOR)
