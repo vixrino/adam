@@ -369,6 +369,25 @@ class TestPlatformRoleCrossesOrganisations:
         )
         assert _organisation_id_of(caller) == TEST_ORG_ID
 
+    def test_nota_client_reste_scope(self) -> None:
+        """Le Client NOTA porte un role de plateforme sans traverser les orgs.
+
+        C'est la distinction que CROSS_ORGANISATION_ROLE_VALUES materialise.
+        Deriver le set de PlatformRole entiere ferait de ce test un echec, et de
+        chaque client un lecteur de toutes les organisations.
+        """
+        from adam_api.dependencies.auth import UserCaller
+        from adam_api.dependencies.db import _matricule_of, _organisation_id_of
+        from adam_core.enums.roles import PlatformRole
+
+        caller = UserCaller(
+            matricule="MATCLIENT",
+            organisation_id=TEST_ORG_ID,
+            platform_role=PlatformRole.NOTA_CLIENT.value,
+        )
+        assert _organisation_id_of(caller) == TEST_ORG_ID
+        assert _matricule_of(caller) == "MATCLIENT"
+
     def test_valeur_inconnue_ne_neutralise_pas_le_filtre(self) -> None:
         """Fail closed : une valeur non reconnue laisse le filtre en place."""
         from adam_api.dependencies.auth import UserCaller

@@ -164,8 +164,18 @@ class TestCreateProject:
 class TestCreateProjectForbidden:
     @pytest.mark.parametrize(
         "platform_role",
-        [None, PlatformRole.NOTA_SUPERVISOR.value, ProjectRole.BUSINESS_ADMIN.value],
-        ids=["operateur-ou-admin-metier", "superviseur-nota", "role-projet-egare"],
+        [
+            None,
+            PlatformRole.NOTA_SUPERVISOR.value,
+            PlatformRole.NOTA_CLIENT.value,
+            ProjectRole.BUSINESS_ADMIN.value,
+        ],
+        ids=[
+            "operateur-ou-admin-metier",
+            "superviseur-nota",
+            "client-nota",
+            "role-projet-egare",
+        ],
     )
     def test_403_for_non_nota_admin(
         self, app: FastAPI, mock_db: AsyncMock, platform_role: Optional[str]

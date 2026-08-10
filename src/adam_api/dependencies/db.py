@@ -19,8 +19,12 @@ listener. C'est volontairement le meme mecanisme que pour les services machine :
 aucune exception n'est ajoutee au filtrage lui-meme, qui reste fail-closed par
 defaut pour tout le monde.
 
+Le troisieme role de plateforme, NOTA_CLIENT, n'est pas concerne : il designe le
+commanditaire au sein d'une organisation, et lui ouvrir les autres serait une
+fuite entre clients. Il reste donc filtre comme un utilisateur metier.
+
 La portee de cette neutralisation est totale : pour un porteur de role
-plateforme, AUCUNE requete de l'appel HTTP n'est filtree, pas seulement celles
+transverse, AUCUNE requete de l'appel HTTP n'est filtree, pas seulement celles
 qui relevent de l'administration. Le cloisonnement de ces comptes repose donc
 entierement sur le controle d'acces en amont, cote routes, et sur le caractere
 restrictif de leur attribution. Un role plateforme accorde a tort donne acces a
@@ -48,18 +52,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from adam_api.dependencies.auth import Caller, UserCaller, get_caller
 from adam_core.db.session import get_async_session
-from adam_core.enums.roles import PLATFORM_ROLE_VALUES
+from adam_core.enums.roles import CROSS_ORGANISATION_ROLE_VALUES
 
 
 def _organisation_id_of(caller: Caller) -> Optional[int]:
     """Organisation a scoper, ou None quand aucun filtre ne doit s'appliquer.
 
     None est renvoye dans deux cas : un appelant non-utilisateur (service
-    machine, worker), et un utilisateur porteur d'un role de plateforme, qui
+    machine, worker), et un utilisateur porteur d'un role transverse, qui
     traverse les organisations par construction (cf. docstring du module).
+
+    Le test porte sur CROSS_ORGANISATION_ROLE_VALUES et non sur l'ensemble des
+    roles de plateforme : NOTA_CLIENT en est un sans franchir la frontiere, son
+    organisation etant exactement son perimetre.
     """
     if isinstance(caller, UserCaller):
-        if caller.platform_role in PLATFORM_ROLE_VALUES:
+        if caller.platform_role in CROSS_ORGANISATION_ROLE_VALUES:
             return None
         return caller.organisation_id
     return None
@@ -69,12 +77,18 @@ def _matricule_of(caller: Caller) -> Optional[str]:
     """Matricule a scoper par projet, ou None quand aucun filtre ne s'applique.
 
     Meme logique de neutralisation que ``_organisation_id_of`` et pour les memes
-    raisons : un role de plateforme traverse les projets comme il traverse les
+    raisons : un role transverse traverse les projets comme il traverse les
     organisations, et un service machine n'a pas d'adhesion. Un utilisateur
     metier, lui, est restreint a ses projets quel que soit son ProjectRole.
+
+    NOTA_CLIENT est traite comme un utilisateur metier : restreint a son
+    organisation et a ses projets. C'est le choix ferme par defaut — un client
+    sans adhesion ne voit donc rien. Lui accorder la lecture de tous les projets
+    de son organisation releverait de member_project_ids, en SQL, comme pour
+    l'Administrateur Metier, et n'est pas fait ici.
     """
     if isinstance(caller, UserCaller):
-        if caller.platform_role in PLATFORM_ROLE_VALUES:
+        if caller.platform_role in CROSS_ORGANISATION_ROLE_VALUES:
             return None
         return caller.matricule
     return None
