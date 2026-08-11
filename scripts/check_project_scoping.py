@@ -29,6 +29,7 @@ Usage :
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -48,16 +49,21 @@ from adam_core.utils.hashing import sha256_bytes
 SECOND_PROJECT = "Projet Temoin Hors Perimetre"
 SEPARATOR = "-" * 60
 
-# Matricules du seed. Attention a l'ordre : dans scripts/seed.py, MAT00001 est
-# la variable `admin`, inscrite en BUSINESS_ADMIN, et MAT00002 la variable
-# `operator`, inscrite en OPERATOR. Les intervertir inverse le verdict sans que
-# rien n'echoue. A adapter si ton seed pose d'autres matricules.
-BUSINESS_ADMIN = "MAT00001"
-OPERATOR = "MAT00002"
-NOTA_ADMIN = "MAT00003"
+# Matricules du seed, surchargeables par l'environnement. Attention a l'ordre :
+# dans scripts/seed.py, MAT00001 est la variable `admin`, inscrite en
+# BUSINESS_ADMIN, et MAT00002 la variable `operator`, inscrite en OPERATOR. Les
+# intervertir inverse le verdict sans que rien n'echoue.
+#
+# Les valeurs par defaut ne valent que pour le seed de ce depot. Ailleurs :
+#
+#     CHECK_OPERATOR=V654846 CHECK_BUSINESS_ADMIN=I659418 \
+#         python scripts/check_project_scoping.py
+BUSINESS_ADMIN = os.environ.get("CHECK_BUSINESS_ADMIN", "MAT00001")
+OPERATOR = os.environ.get("CHECK_OPERATOR", "MAT00002")
+NOTA_ADMIN = os.environ.get("CHECK_NOTA_ADMIN", "MAT00003")
 
 #: Client NOTA, absent du seed : ce script le cree (cf. ensure_nota_client).
-NOTA_CLIENT = "MAT00004"
+NOTA_CLIENT = os.environ.get("CHECK_NOTA_CLIENT", "MAT00004")
 
 
 async def ensure_second_project(organisation_id: int) -> None:
@@ -167,11 +173,21 @@ async def counts(organisation_id: Optional[int], matricule: Optional[str]) -> tu
 
 async def org_of(matricule: str) -> int:
     async with get_async_session() as session:
-        return (
+        found = (
             await session.execute(
                 select(User.organisation_id).where(User.matricule == matricule)
             )
-        ).scalar_one()
+        ).scalar_one_or_none()
+    if found is None:
+        # scalar_one levait un NoResultFound qui ne nommait pas le coupable :
+        # sur un seed different, le script s'arretait sans dire quoi corriger.
+        raise SystemExit(
+            f"Matricule {matricule} absent de la base. Lancer scripts/seed.py, "
+            f"ou pointer les acteurs de ton seed :\n"
+            f"  CHECK_OPERATOR=... CHECK_BUSINESS_ADMIN=... CHECK_NOTA_ADMIN=... "
+            f"python scripts/check_project_scoping.py"
+        )
+    return int(found)
 
 
 async def main() -> int:
