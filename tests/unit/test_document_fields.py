@@ -207,14 +207,25 @@ class TestCreateBulk:
         assert body["skipped"] == []
 
     def test_idempotent_sur_un_second_appel(self, app: FastAPI) -> None:
-        """CA : rejouer le meme lot ne cree pas de doublon et ne leve pas."""
+        """CA : rejouer le meme lot ne cree pas de doublon et ne leve pas.
+
+        200 et non 201 : annoncer Created sans rien avoir cree contredit le corps
+        de la reponse, et c'est le code de statut que lisent un onglet reseau ou
+        un journal d'acces.
+        """
         db = _FakeDb(existing={(11, None), (12, None)})
         response = _client(app, db).post(f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 12))
-        assert response.status_code == 201
+        assert response.status_code == 200
         body = response.json()
         assert body["created"] == []
         assert len(body["skipped"]) == 2
         assert db.added == []
+
+    def test_201_des_qu_un_seul_champ_est_cree(self, app: FastAPI) -> None:
+        """Le lot partiel reste un 201 : quelque chose a bien ete cree."""
+        db = _FakeDb(existing={(11, None)})
+        response = _client(app, db).post(f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 12))
+        assert response.status_code == 201
 
     def test_conflit_partiel_ne_fait_pas_echouer_le_lot(self, app: FastAPI) -> None:
         db = _FakeDb(existing={(11, None)})
@@ -242,9 +253,10 @@ class TestCreateBulk:
         assert db.added == []
 
     def test_lot_vide(self, app: FastAPI) -> None:
+        """200 comme le rejeu : un lot vide ne cree rien non plus."""
         db = _FakeDb()
         response = _client(app, db).post(f"/documents/{DOCUMENT_ID}/fields/bulk", json={"fields": []})
-        assert response.status_code == 201
+        assert response.status_code == 200
         assert response.json()["created"] == []
 
     def test_404_si_document_inconnu(self, app: FastAPI) -> None:

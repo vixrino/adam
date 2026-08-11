@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from adam_api.dependencies.db import get_db
@@ -91,10 +91,16 @@ async def create_document_field(
     return _to_out(row)
 
 
-@router.post("/{document_id}/fields/bulk", response_model=DocumentFieldBulkOut, status_code=201)
+@router.post(
+    "/{document_id}/fields/bulk",
+    response_model=DocumentFieldBulkOut,
+    status_code=201,
+    responses={200: {"description": "Aucun champ cree : tous existaient deja"}},
+)
 async def create_document_fields_bulk(
     document_id: int,
     body: DocumentFieldBulkCreate,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> DocumentFieldBulkOut:
     """Cree tous les champs d'un schema en une requete.
@@ -105,6 +111,11 @@ async def create_document_fields_bulk(
 
     Un field_spec_id hors schema rejette le lot entier en 422, pour ne pas
     laisser un document a moitie pre-alimente.
+
+    201 quand au moins un champ est cree, 200 sinon. Un rejeu integral annoncant
+    Created, alors qu'il n'a rien cree, dit le contraire de ce que porte son
+    corps de reponse ; la difference se lit dans un onglet reseau ou un journal
+    d'acces, la ou personne n'ouvrira le corps.
     """
     document = await _load_document(db, document_id)
     payloads = [item.model_dump() for item in body.fields]
@@ -112,6 +123,8 @@ async def create_document_fields_bulk(
         outcome = await service.create_bulk(db, document, payloads)
     except FieldSpecMismatch as exc:
         raise_unprocessable(str(exc))
+    if not outcome.created:
+        response.status_code = 200
     return DocumentFieldBulkOut(
         document_id=document_id,
         created=[_to_out(row) for row in outcome.created],
