@@ -1,5 +1,7 @@
 # ADAM - Annotation et Données Automatisées
 
-$env:CHECK_OPERATOR="V654846"
-$env:CHECK_BUSINESS_ADMIN="I659418"
-uv run ./scripts/check_project_scoping.py
+SELECT u.matricule, up.role, p.name 
+FROM "user" u 
+JOIN user_project up ON up.user_id = u.id 
+JOIN project p ON p.id = up.project_id 
+ORDER BY u.matricule; 
