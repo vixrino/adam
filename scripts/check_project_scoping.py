@@ -206,19 +206,24 @@ async def main() -> int:
     print(SEPARATOR)
 
     results = {
-        "Operateur Metier    (MAT00002)": await counts(organisation_id, OPERATOR),
-        "Admin Metier        (MAT00001)": await counts(organisation_id, BUSINESS_ADMIN),
-        "Client NOTA         (MAT00004)": await counts(organisation_id, NOTA_CLIENT),
-        "Admin NOTA          (MAT00003)": await counts(None, None),
-        "Service machine               ": await counts(None, None),
+        # Le matricule vient de la variable, pas du libelle : les afficher en
+        # dur laissait lire "(MAT00002)" sous une session ouverte pour un tout
+        # autre utilisateur, ce qui egare au pire moment, celui du diagnostic.
+        f"Operateur Metier    ({OPERATOR})": await counts(organisation_id, OPERATOR),
+        f"Admin Metier        ({BUSINESS_ADMIN})": await counts(
+            organisation_id, BUSINESS_ADMIN
+        ),
+        f"Client NOTA         ({NOTA_CLIENT})": await counts(organisation_id, NOTA_CLIENT),
+        f"Admin NOTA          ({NOTA_ADMIN})": await counts(None, None),
+        "Service machine": await counts(None, None),
     }
     for label, (projects, documents) in results.items():
         print(f"  {label} : {projects} projet(s), {documents} document(s)")
 
-    op_projects, op_documents = results["Operateur Metier    (MAT00002)"]
-    ba_projects, ba_documents = results["Admin Metier        (MAT00001)"]
-    cl_projects, _cl_documents = results["Client NOTA         (MAT00004)"]
-    all_projects, all_documents = results["Service machine               "]
+    op_projects, op_documents = results[f"Operateur Metier    ({OPERATOR})"]
+    ba_projects, ba_documents = results[f"Admin Metier        ({BUSINESS_ADMIN})"]
+    cl_projects, _cl_documents = results[f"Client NOTA         ({NOTA_CLIENT})"]
+    all_projects, all_documents = results["Service machine"]
 
     print()
     print(SEPARATOR)
