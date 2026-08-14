@@ -1,9 +1,34 @@
 # ADAM - Annotation et Données Automatisées
 
+mkdir "$env:USERPROFILE\FBI_USER_REPOSITORY"
+
 @"
-fr.bdf.fbi.mock.oauth2.client=FBI-Appli-Demo
-fr.bdf.fbi.mock.oauth2.resourceId=framedev-api
-fr.bdf.fbi.mock.oauth2.scope=SCOPE
-fr.bdf.fbi.mock.oauth2.redirectURIs=http://localhost:4200/
-"@ | Out-File -Encoding ascii C:\DEV\fbi-mock\application.properties
+{
+  "uid": "i659418",
+  "secret": "motdepasse",
+  "principal": "I659418",
+  "lastName": "Operateur",
+  "firstName": "Test",
+  "email": "test.operateur@banque-france.fr",
+  "phone": "0101010101",
+  "roles": "OPERATOR",
+  "scope": "SCOPE",
+  "CodeUA": "TestUA"
+}
+"@ | Out-File -Encoding ascii "$env:USERPROFILE\FBI_USER_REPOSITORY\i659418.json"
+
+@"
+{
+  "uid": "v654846",
+  "secret": "motdepasse",
+  "principal": "V654846",
+  "lastName": "AdminMetier",
+  "firstName": "Test",
+  "email": "test.admin@banque-france.fr",
+  "phone": "0101010101",
+  "roles": "ADMIN",
+  "scope": "SCOPE",
+  "CodeUA": "TestUA"
+}
+"@ | Out-File -Encoding ascii "$env:USERPROFILE\FBI_USER_REPOSITORY\v654846.json"
 
