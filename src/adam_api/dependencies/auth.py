@@ -148,44 +148,72 @@ async def resolve_caller(principal: str) -> UserCaller:
     )
 
 
+def _payload_of(token: str) -> Optional[dict[str, Any]]:
+    """Charge utile d'un JWT, sans verifier la signature.
+
+    Ne jamais appeler sur un token non valide en amont : cette fonction lit, elle
+    ne controle rien. Le seul appelant est claims_from_request, qui n'est atteint
+    que derriere le middleware.
+    """
+    if token.count(".") != 2:
+        return None
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(payload))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
 def claims_from_request(request: Request) -> dict[str, Any]:
-    """Claims du token, tels que le middleware exa-pie les a laisses.
+    """Claims du token, une fois exa-pie passe.
 
-    Le middleware pose deux attributs apres avoir valide la signature et les
-    roles : `pie_context`, rendu par PIEClient.get_context, et `pie_token`, le
-    token brut. Le premier est prefere quand c'est un mapping ; sinon on decode
-    la charge utile du second.
+    Trois sources, dans l'ordre. Les deux premieres exploitent ce que le
+    middleware pose ; la troisieme relit l'en-tete, et c'est en pratique celle
+    qui sert.
 
-    Decoder soi-meme n'est pas un contournement de la validation : ce code ne
-    s'execute que si `verify` a rendu 200, sans quoi le middleware a deja
-    repondu et la dependance n'est jamais atteinte. La signature est donc
-    verifiee en amont, et il ne reste qu'a lire.
+    Pourquoi pie_token n'arrive pas jusqu'ici
+    ------------------------------------------
+    Le middleware fait `setattr(request, 'pie_token', token)` sur SON objet
+    Request. `call_next` ne transmet ensuite que le scope ASGI, a partir duquel
+    FastAPI reconstruit un nouveau Request pour la route : un attribut pose a la
+    main sur le premier objet ne suit pas. Seul `request.state` traverse, parce
+    qu'il ecrit dans le scope partage — ce que le connecteur ne fait pas.
+
+    Les deux premieres sources sont conservees malgre tout : elles coutent deux
+    getattr, et une version ulterieure d'exa-pie pourrait passer par le scope.
+
+    Relire l'en-tete n'est pas un contournement
+    --------------------------------------------
+    Cette fonction n'est atteinte que si `verify` a rendu 200 : sinon le
+    middleware a deja repondu 400 ou 401, et la dependance n'est jamais appelee.
+    La signature est donc verifiee en amont, et il ne reste qu'a lire ce qu'elle
+    protege. Le bypass DEV, lui, n'appelle jamais cette fonction — c'est ce qui
+    empeche un token fabrique a la main de passer quand rien ne le verifie.
 
     Raises:
-        HTTPException: 401 si aucun des deux attributs n'est exploitable. Ce cas
-            signale un middleware absent ou change de contrat, pas un client
-            fautif — d'ou le log en erreur.
+        HTTPException: 401 si aucune source n'est exploitable.
     """
     context = getattr(request, "pie_context", None)
     if isinstance(context, dict) and context:
         return context
 
-    token = getattr(request, "pie_token", None)
-    if isinstance(token, str) and token.count(".") == 2:
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        try:
-            decoded = json.loads(base64.urlsafe_b64decode(payload))
-        except (ValueError, UnicodeDecodeError):
-            logger.error("charge utile du token illisible malgre une validation reussie")
-            raise HTTPException(status_code=401, detail="Token illisible") from None
-        if isinstance(decoded, dict):
-            return decoded
+    for token in (getattr(request, "pie_token", None), _bearer_header(request)):
+        if isinstance(token, str):
+            claims = _payload_of(token)
+            if claims:
+                return claims
 
-    logger.error(
-        "ni pie_context ni pie_token exploitables : middleware absent ou contrat change"
-    )
+    logger.error("aucune source de claims exploitable : en-tete absent ou token illisible")
     raise HTTPException(status_code=401, detail="Contexte d'authentification indisponible")
+
+
+def _bearer_header(request: Request) -> Optional[str]:
+    """Token porte par l'en-tete Authorization, ou None."""
+    header = request.headers.get("Authorization", "")
+    scheme, _, value = header.partition(" ")
+    return value.strip() if scheme.lower() == "bearer" and value.strip() else None
 
 
 async def get_caller(

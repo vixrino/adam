@@ -157,30 +157,65 @@ def _jwt(claims: dict[str, Any]) -> str:
     return f"entete.{body}.signature"
 
 
+def _request(headers: Optional[dict[str, str]] = None, **attrs: Any) -> Any:
+    """Requete factice : des attributs, et des en-tetes insensibles a la casse."""
+    return SimpleNamespace(headers=_Headers(headers or {}), **attrs)
+
+
+class _Headers(dict):  # type: ignore[type-arg]
+    def get(self, key: str, default: Any = None) -> Any:
+        for k, v in self.items():
+            if k.lower() == key.lower():
+                return v
+        return default
+
+
 class TestClaimsFromRequest:
+    def test_en_tete_authorization(self) -> None:
+        """La source qui sert en pratique : pie_token ne traverse pas call_next."""
+        request = _request({"Authorization": f"Bearer {_jwt(MOCK_CLAIMS)}"})
+
+        assert auth_module.claims_from_request(request)["sub"] == MATRICULE
+
+    def test_schema_insensible_a_la_casse(self) -> None:
+        request = _request({"authorization": f"bearer {_jwt({"sub": MATRICULE})}"})
+
+        assert auth_module.claims_from_request(request)["sub"] == MATRICULE
+
+    @pytest.mark.parametrize(
+        "header",
+        ["", "Bearer", "Bearer    ", "Basic abc", _jwt({"sub": "X"}) ],
+        ids=["vide", "sans-valeur", "espaces", "mauvais-schema", "sans-schema"],
+    )
+    def test_en_tete_inexploitable(self, header: str) -> None:
+        with pytest.raises(HTTPException) as exc:
+            auth_module.claims_from_request(_request({"Authorization": header}))
+
+        assert exc.value.status_code == 401
+
     def test_pie_context_est_prefere(self) -> None:
-        request = SimpleNamespace(pie_context={"sub": "I659418"}, pie_token=_jwt({"sub": "AUTRE"}))
+        request = _request(pie_context={"sub": "I659418"}, pie_token=_jwt({"sub": "AUTRE"}))
 
         assert auth_module.claims_from_request(request)["sub"] == MATRICULE  # type: ignore[arg-type]
 
     def test_repli_sur_le_token_decode(self) -> None:
         """get_context peut rendre autre chose qu'un mapping : on lit le token."""
-        request = SimpleNamespace(pie_context=object(), pie_token=_jwt(MOCK_CLAIMS))
+        request = _request(pie_context=object(), pie_token=_jwt(MOCK_CLAIMS))
 
         assert auth_module.claims_from_request(request) == MOCK_CLAIMS  # type: ignore[arg-type]
 
     def test_pie_context_vide_bascule_sur_le_token(self) -> None:
-        request = SimpleNamespace(pie_context={}, pie_token=_jwt({"sub": MATRICULE}))
+        request = _request(pie_context={}, pie_token=_jwt({"sub": MATRICULE}))
 
         assert auth_module.claims_from_request(request)["sub"] == MATRICULE  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
         "request_obj",
         [
-            SimpleNamespace(),
-            SimpleNamespace(pie_context=None, pie_token=None),
-            SimpleNamespace(pie_token="pas-un-jwt"),
-            SimpleNamespace(pie_token="a.!!!pas-du-base64!!!.c"),
+            _request(),
+            _request(pie_context=None, pie_token=None),
+            _request(pie_token="pas-un-jwt"),
+            _request(pie_token="a.!!!pas-du-base64!!!.c"),
         ],
         ids=["rien", "attributs-nuls", "token-sans-points", "charge-utile-illisible"],
     )
@@ -203,7 +238,7 @@ class TestBypassDev:
     async def test_endosse_le_matricule_configure(self, session_factory: Any) -> None:
         session_factory(_Row())
 
-        caller = await auth_module.get_caller(SimpleNamespace(), None, None)  # type: ignore[arg-type]
+        caller = await auth_module.get_caller(_request(), None, None)  # type: ignore[arg-type]
 
         assert isinstance(caller, auth_module.UserCaller)
         assert caller.matricule == MATRICULE
@@ -217,7 +252,10 @@ class TestBypassDev:
         passe, sans FBI, depuis n'importe quel client HTTP.
         """
         session_factory(_Row())
-        forge = SimpleNamespace(pie_context={"sub": "X000001"}, pie_token=_jwt({"sub": "X000001"}))
+        forge = _request(
+            {"Authorization": f"Bearer {_jwt({'sub': 'X000001'})}"},
+            pie_context={"sub": "X000001"},
+        )
 
         caller = await auth_module.get_caller(forge, None, None)  # type: ignore[arg-type]
 
@@ -229,7 +267,7 @@ class TestBypassDev:
         """Et non d'un UserCaller fabrique : c'etait le defaut de l'ancien bypass."""
         session_factory(_Row(organisation_id=42, platform_role=PlatformRole.NOTA_ADMIN.value))
 
-        caller = await auth_module.get_caller(SimpleNamespace(), None, None)  # type: ignore[arg-type]
+        caller = await auth_module.get_caller(_request(), None, None)  # type: ignore[arg-type]
 
         assert isinstance(caller, auth_module.UserCaller)
         assert caller.organisation_id == 42
