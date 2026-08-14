@@ -92,6 +92,12 @@ class PrepopulationWorker(BaseWorker):
             # part en 404, que le worker traduirait en documents ERROR sans
             # que la vraie cause apparaisse nulle part.
             base_url=f"http://{settings.api_host}:{settings.api_port}{API_PREFIX}",
+            # Sans cette cle, aucun en-tete d'authentification n'est emis et
+            # get_caller rejette l'appel en 401 : le worker mettait alors CHAQUE
+            # document en ERROR avec « schema injoignable », en production
+            # uniquement — le script de test surcharge get_caller par un
+            # ServiceCaller et ne voyait donc rien.
+            api_key=settings.internal_api_key,
             timeout_seconds=float(settings.ocr_timeout_seconds),
         )
         self.batch_size = batch_size
