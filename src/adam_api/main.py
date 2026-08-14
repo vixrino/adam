@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from adam_api.core.config import settings
+from adam_api.core.security import install_jwt_middleware
 from adam_api.routers import (
     admin,
     datasets,
@@ -41,6 +42,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title=settings.api_title, version=settings.app_version, lifespan=lifespan)
 app.add_exception_handler(Exception, http_exception_handler)
+
+# ORDRE CRITIQUE : Starlette place le dernier middleware ajoute en position la plus
+# externe. CORS doit rester externe par rapport a exa-pie, sinon les preflights
+# OPTIONS (depourvus d'en-tete Authorization) sont rejetes en 400 et le front ne
+# peut plus appeler l'API. Ne pas deplacer cet appel apres l'ajout de CORS.
+install_jwt_middleware(app)
 
 app.add_middleware(
     CORSMiddleware,
