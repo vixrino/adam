@@ -84,6 +84,70 @@ def _session_factory(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untype
     return install
 
 
+#: Charge utile reelle d'un token rendu par le mock FBI 2.0.6, reduite aux claims
+#: qui nous concernent. Conservee telle quelle : les noms exotiques et le
+#: desaccord de casse entre `uid` et `sub` sont ce que le code doit encaisser.
+MOCK_CLAIMS = {
+    "sub": "I659418",
+    "user_name": "I659418",
+    "prn": "I659418",
+    "uid": "i659418",
+    "displayname": "I659418",
+    "authorities": ["OPERATOR"],
+    "rolesApplicatifs": "OPERATOR",
+    "email": "test.operateur@banque-france.fr",
+    "iss": "FBI-MOCK-SERVER",
+    "client_id": "FBI-Appli-Demo",
+    "employeetype": None,
+}
+
+
+class TestPrincipalFromClaims:
+    def test_token_du_mock(self) -> None:
+        assert auth_module.principal_from_claims(MOCK_CLAIMS) == MATRICULE
+
+    def test_sub_est_prefere(self) -> None:
+        """Le sujet RFC 7519 l'emporte : tout emetteur conforme le renseigne."""
+        claims = {"sub": "I111111", "prn": "I222222", "user_name": "I333333"}
+
+        assert auth_module.principal_from_claims(claims) == "I111111"
+
+    @pytest.mark.parametrize(
+        ("claims", "attendu"),
+        [
+            ({"prn": "I659418", "user_name": "AUTRE"}, "I659418"),
+            ({"user_name": "I659418"}, "I659418"),
+        ],
+        ids=["repli-sur-prn", "repli-sur-user_name"],
+    )
+    def test_replis(self, claims: dict[str, Any], attendu: str) -> None:
+        assert auth_module.principal_from_claims(claims) == attendu
+
+    def test_uid_n_est_pas_utilise(self) -> None:
+        """uid porte la casse saisie par l'agent, il ne fait pas foi."""
+        with pytest.raises(HTTPException):
+            auth_module.principal_from_claims({"uid": "i659418"})
+
+    @pytest.mark.parametrize(
+        "claims",
+        [{}, {"sub": ""}, {"sub": "   "}, {"sub": None}, {"sub": 42}, {"sub": ["I659418"]}],
+        ids=["vide", "chaine-vide", "espaces", "null", "entier", "liste"],
+    )
+    def test_401_si_aucun_sujet_exploitable(self, claims: dict[str, Any]) -> None:
+        """401 et non 403 : sans sujet, le token n'identifie personne."""
+        with pytest.raises(HTTPException) as exc:
+            auth_module.principal_from_claims(claims)
+
+        assert exc.value.status_code == 401
+
+    def test_aucune_valeur_de_claim_dans_le_message(self) -> None:
+        """Le log ne porte que les noms : un claim peut contenir un email, un NIR."""
+        with pytest.raises(HTTPException) as exc:
+            auth_module.principal_from_claims({"email": "test@banque-france.fr"})
+
+        assert "banque-france" not in str(exc.value.detail)
+
+
 class TestCasNominal:
     @pytest.mark.asyncio
     async def test_rend_le_caller_de_la_ligne(self, session_factory: Any) -> None:

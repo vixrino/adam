@@ -27,7 +27,7 @@ les deux mettrait la moitie de l'autorisation dans un YAML et l'autre en base.
 """
 
 import secrets
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from fastapi import Depends, HTTPException
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
@@ -58,6 +58,47 @@ class ServiceCaller(BaseModel):
 
 
 Caller = Union[UserCaller, ServiceCaller]
+
+#: Claims susceptibles de porter le matricule, par ordre de preference.
+#:
+#: Le token du mock en porte quatre, et ils ne s'accordent pas entre eux : `sub`,
+#: `prn` et `user_name` rendent I659418, `uid` rend i659418. Aucun standard
+#: n'impose lequel un fournisseur renseigne, d'ou cette liste plutot qu'un nom
+#: unique — le vrai FBI n'est pas tenu de se comporter comme son bouchon.
+#:
+#: `sub` d'abord : c'est le sujet au sens de la RFC 7519, present chez tout
+#: emetteur conforme. `prn` ensuite, convention Oracle dont le mock imite les
+#: claims (`oracle.oauth.*`). `user_name` en dernier, convention Spring OAuth2.
+#: `uid` est volontairement absent : il porte la casse saisie par l'agent, la
+#: comparaison en base etant de toute facon insensible a la casse.
+PRINCIPAL_CLAIMS = ("sub", "prn", "user_name")
+
+
+def principal_from_claims(claims: dict[str, Any]) -> str:
+    """Extrait le matricule des claims d'un token deja valide.
+
+    Args:
+        claims: la charge utile du JWT, telle que le middleware l'a validee.
+
+    Returns:
+        Le premier claim non vide de PRINCIPAL_CLAIMS.
+
+    Raises:
+        HTTPException: 401 si aucun ne porte de valeur exploitable. Contrairement
+            aux refus de resolve_caller, celui-ci est bien un 401 : un token sans
+            sujet n'identifie personne, il n'y a pas d'habilitation a discuter.
+    """
+    for claim in PRINCIPAL_CLAIMS:
+        value = claims.get(claim)
+        if isinstance(value, str) and value.strip():
+            logger.debug("principal lu depuis le claim %s", claim)
+            return value.strip()
+
+    logger.error(
+        "token valide mais sans claim de sujet exploitable [claims=%s]",
+        sorted(claims),  # les noms seulement, jamais les valeurs
+    )
+    raise HTTPException(status_code=401, detail="Token sans identifiant d'utilisateur")
 
 
 async def resolve_caller(principal: str) -> UserCaller:
