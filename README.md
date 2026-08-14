@@ -1,3 +1,5 @@
 # ADAM - Annotation et Données Automatisées
 
-$env:API_DISABLE_JWT_VALIDATION
+$pid8000 = (Get-NetTCPConnection -LocalPort 8000 -State Listen).OwningProcess
+Get-Process -Id $pid8000 | Select-Object Id, ProcessName, StartTime
+
