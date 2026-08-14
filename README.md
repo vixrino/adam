@@ -1,6 +1,4 @@
 # ADAM - Annotation et Données Automatisées
 
 
-function Get-Sub($t){ $p=$t.Split('.')[1].Replace('-','+').Replace('_','/'); while($p.Length%4){$p+='='}; ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json).sub }
-Get-Sub $op
-Get-Sub $ba
+curl.exe --noproxy localhost -XPOST localhost:9000/oauth/token --data-urlencode "client_id=FBI-Appli-Demo" --data-urlencode "grant_type=password" --data-urlencode "username=v654846" --data-urlencode "password=motdepasse"
