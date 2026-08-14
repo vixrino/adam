@@ -26,10 +26,12 @@ Les deux restent donc separes, et le controle fin appartient a l'API. Confondre
 les deux mettrait la moitie de l'autorisation dans un YAML et l'autre en base.
 """
 
+import base64
+import json
 import secrets
 from typing import Any, Optional, Union
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -146,11 +148,67 @@ async def resolve_caller(principal: str) -> UserCaller:
     )
 
 
+def claims_from_request(request: Request) -> dict[str, Any]:
+    """Claims du token, tels que le middleware exa-pie les a laisses.
+
+    Le middleware pose deux attributs apres avoir valide la signature et les
+    roles : `pie_context`, rendu par PIEClient.get_context, et `pie_token`, le
+    token brut. Le premier est prefere quand c'est un mapping ; sinon on decode
+    la charge utile du second.
+
+    Decoder soi-meme n'est pas un contournement de la validation : ce code ne
+    s'execute que si `verify` a rendu 200, sans quoi le middleware a deja
+    repondu et la dependance n'est jamais atteinte. La signature est donc
+    verifiee en amont, et il ne reste qu'a lire.
+
+    Raises:
+        HTTPException: 401 si aucun des deux attributs n'est exploitable. Ce cas
+            signale un middleware absent ou change de contrat, pas un client
+            fautif — d'ou le log en erreur.
+    """
+    context = getattr(request, "pie_context", None)
+    if isinstance(context, dict) and context:
+        return context
+
+    token = getattr(request, "pie_token", None)
+    if isinstance(token, str) and token.count(".") == 2:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        try:
+            decoded = json.loads(base64.urlsafe_b64decode(payload))
+        except (ValueError, UnicodeDecodeError):
+            logger.error("charge utile du token illisible malgre une validation reussie")
+            raise HTTPException(status_code=401, detail="Token illisible") from None
+        if isinstance(decoded, dict):
+            return decoded
+
+    logger.error(
+        "ni pie_context ni pie_token exploitables : middleware absent ou contrat change"
+    )
+    raise HTTPException(status_code=401, detail="Contexte d'authentification indisponible")
+
+
 async def get_caller(
+    request: Request,
     jwt: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
     api_key: Optional[str] = Depends(_api_key_header),
 ) -> Caller:
-    """Detecte l'origine - IHM ou service machine."""
+    """Detecte l'origine - IHM ou service machine.
+
+    Le bypass DEV ne lit PAS le token
+    ----------------------------------
+    Quand api_disable_jwt_validation est actif, le middleware n'est pas monte et
+    aucune signature n'est verifiee. Lire le token dans ce mode reviendrait a
+    faire confiance a un JWT fabrique a la main : n'importe qui posant
+    `"sub": "<un matricule d'administrateur>"` obtiendrait ses droits. Le bypass
+    endosse donc un matricule fixe, celui de la configuration, et ignore
+    entierement l'en-tete Authorization.
+
+    Il passe malgre tout par resolve_caller, donc par la base. L'ancienne version
+    fabriquait un UserCaller de toutes pieces, avec un organisation_id=1 qui ne
+    correspondait a aucune ligne reelle : le perimetre observe en DEV n'etait
+    celui de personne, et tester le cloisonnement etait impossible.
+    """
     if api_key is not None:
         if not settings.internal_auth_enabled:
             logger.critical("AUTH SERVICE BYPASS actif ne jamais utiliser en production")
@@ -158,12 +216,19 @@ async def get_caller(
         if not secrets.compare_digest(api_key, settings.internal_api_key):
             raise HTTPException(status_code=403, detail="Token service invalide")
         return ServiceCaller(service_name="internal-service")
-    if jwt is not None:
-        if settings.api_disable_jwt_validation:
-            logger.critical("JWT BYPASS actif ne jamais utiliser en production")
-            return UserCaller(matricule="MAT00003", organisation_id=1)
-        raise HTTPException(status_code=501, detail="Auth JWT non implementee")
-    raise HTTPException(status_code=401, detail="Authentification requise")
+
+    if settings.api_disable_jwt_validation:
+        logger.critical(
+            "JWT BYPASS actif : appel endosse par %s sans aucune verification. "
+            "Ne jamais utiliser en production.",
+            settings.api_dev_matricule,
+        )
+        return await resolve_caller(settings.api_dev_matricule)
+
+    if jwt is None:
+        raise HTTPException(status_code=401, detail="Authentification requise")
+
+    return await resolve_caller(principal_from_claims(claims_from_request(request)))
 
 
 async def require_user(caller: Caller = Depends(get_caller)) -> UserCaller:
