@@ -1,5 +1,9 @@
 # ADAM - Annotation et Données Automatisées
 
-uv run pytest tests/unit/test_resolve_caller.py tests/unit/test_jwt_middleware.py -q
-uv run pytest tests/unit -q          # rien cassé ailleurs
-uv run python -c "import exa_pie; print('ok')"
+@"
+fr.bdf.fbi.mock.oauth2.client=FBI-Appli-Demo
+fr.bdf.fbi.mock.oauth2.resourceId=framedev-api
+fr.bdf.fbi.mock.oauth2.scope=SCOPE
+fr.bdf.fbi.mock.oauth2.redirectURIs=http://localhost:4200/
+"@ | Out-File -Encoding ascii C:\DEV\fbi-mock\application.properties
+
