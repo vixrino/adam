@@ -1,3 +1,4 @@
 # ADAM - Annotation et Données Automatisées
 
-python -c "import base64; t=open(r'C:\DEV\fbi-mock\token.txt').read().strip(); p=t.split('.')[1]; p+='='*(-len(p)%4); print(base64.urlsafe_b64decode(p).decode())"
+cd C:\DEV\nota-back
+uv run python -c "from exa_pie.middleware.fastapi import PIEFastAPIMiddleware as p; import inspect; print(inspect.getsource(p))"
