@@ -78,6 +78,10 @@ class FieldSpec(OrganisationScoped, ProjectScoped, Base):
         comment="Type de valeur : TEXT, NUMBER, DATE, DATETIME, BOOLEAN",
     )
     required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: Champ porteur de donnee personnelle sensible (NIR, IBAN, nom...). Pilote
+    #: la politique de stockage de comparison_result : valeurs en clair pour un
+    #: champ non sensible, HMAC et distance d'edition sinon.
+    is_sensitive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Polygon : 8 floats [x1,y1,x2,y2,x3,y3,x4,y4]
