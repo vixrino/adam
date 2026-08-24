@@ -1,3 +1,4 @@
 # ADAM - Annotation et Données Automatisées
 
-Test-NetConnection api.mistral-outscale.pr01.ai4all.app.private -Port 443
+Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" | Select-Object ProxyServer, ProxyEnable
+netsh winhttp show proxy
