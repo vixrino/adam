@@ -1,3 +1,3 @@
 # ADAM - Annotation et Données Automatisées
 
-uv run python -c "from nota_api.core.config import settings; print(repr(settings.mistral_ca_bundle))"
+MISTRAL_CA_BUNDLE=C:/DEV/nota-back/https.truststore.pem
