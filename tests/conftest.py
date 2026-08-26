@@ -28,6 +28,7 @@ if not (Path(__file__).resolve().parent.parent / ".env").exists():
     os.environ.setdefault("API_TITLE", "NOTA API")
     os.environ.setdefault("API_CORS_ORIGINS", "http://localhost")
     os.environ.setdefault("API_DISABLE_JWT_VALIDATION", "true")
+    os.environ.setdefault("API_DEV_MATRICULE", "MAT00003")
 
     # Auth service machine
     os.environ.setdefault("INTERNAL_AUTH_ENABLED", "false")
