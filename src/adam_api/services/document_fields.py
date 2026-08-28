@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from adam_api.modules.document_fields.exceptions import DuplicateField, FieldSpecMismatch
+from adam_api.exceptions.document_fields import DuplicateField, FieldSpecMismatch
 from adam_core.enums.status import DocumentFieldStatus
 from adam_core.models import Dataset, DocSchema, Document, DocumentField, FieldSpec
 

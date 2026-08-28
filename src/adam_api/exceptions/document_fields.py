@@ -1,4 +1,4 @@
-"""Erreurs metier du module document_fields.
+"""Erreurs metier des document_fields.
 
 Elles sont levees par le service et traduites en codes HTTP par le routeur. Le
 service ne connait donc pas FastAPI, et reste appelable depuis un contexte qui

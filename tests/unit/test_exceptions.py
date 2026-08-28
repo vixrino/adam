@@ -23,8 +23,11 @@ class FakeModel:
     __tablename__ = "organisation"
 
 
-class FakeModelNoTablename:
-    __name__ = "Project"
+class Project:
+    pass
+
+
+FakeModelNoTablename = Project
 
 
 class TestName:

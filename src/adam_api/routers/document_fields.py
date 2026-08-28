@@ -29,15 +29,15 @@ from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from adam_api.dependencies.db import get_db
-from adam_api.modules.document_fields import service
-from adam_api.modules.document_fields.exceptions import DuplicateField, FieldSpecMismatch
-from adam_api.modules.document_fields.schemas import (
+from adam_api.exceptions.document_fields import DuplicateField, FieldSpecMismatch
+from adam_api.schemas.document_fields import (
     DocumentFieldBulkCreate,
     DocumentFieldBulkOut,
     DocumentFieldCreate,
     DocumentFieldOut,
     SkippedFieldOut,
 )
+from adam_api.services import document_fields as service
 from adam_core.models import Document, DocumentField
 from adam_core.utils.exceptions import raise_conflict, raise_not_found, raise_unprocessable
 

@@ -12,9 +12,9 @@ from fastapi.staticfiles import StaticFiles
 
 from adam_api.core.config import API_PREFIX, settings
 from adam_api.dependencies.auth import get_caller, require_service
-from adam_api.modules.document_fields.router import router as document_fields_router
 from adam_api.routers.admin import router as admin_router
 from adam_api.routers.datasets import router as datasets_router
+from adam_api.routers.document_fields import router as document_fields_router
 from adam_api.routers.documents import router as documents_router
 from adam_api.routers.files import router as files_router
 from adam_api.routers.jobs import router as jobs_router

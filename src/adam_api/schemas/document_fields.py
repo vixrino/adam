@@ -1,4 +1,4 @@
-"""Schemas Pydantic du module document_fields.
+"""Schemas Pydantic des routes document_fields.
 
 DocumentFieldOut vient de adam_core.schemas.responses : il est deja utilise par
 les endpoints de lecture existants, et en redefinir un ici ferait diverger deux

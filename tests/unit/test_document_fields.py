@@ -1,4 +1,4 @@
-"""Tests unitaires du module adam_api/modules/document_fields/.
+"""Tests unitaires de adam_api/routers/document_fields.py et services/document_fields.py.
 
 Le service porte les regles, le routeur les traduit en codes HTTP. Les deux sont
 testes ensemble ici, avec une session simulee : ce qui compte est le contrat
@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from adam_api.dependencies.auth import UserCaller
-from adam_api.modules.document_fields import router
+from adam_api.routers.document_fields import router
 from adam_core.enums.status import DocumentFieldStatus
 
 DOCUMENT_ID = 1
