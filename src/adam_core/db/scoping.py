@@ -33,6 +33,10 @@ donc un critere pose uniquement sur Project ne se declencherait pas.
     document_field  -> document -> dataset -> project
     field_proposal  -> job -> dataset -> project
     user_project    -> user (direct)
+    test_recipe        -> dataset -> project
+    test_execution     -> test_recipe -> dataset -> project
+    comparison_result  -> test_execution -> test_recipe -> dataset -> project
+    evaluation_report  -> test_execution -> test_recipe -> dataset -> project
 
 Table volontairement NON scopee :
     - file : contenu physique deduplique par sha256, partage entre plusieurs
@@ -57,6 +61,10 @@ sont en plus restreintes aux adhesions de l'appelant, lues dans user_project.
     field_spec      -> doc_schema -> project
     document_field  -> document -> dataset -> project
     field_proposal  -> job -> dataset -> project
+    test_recipe        -> dataset -> project
+    test_execution     -> test_recipe -> dataset -> project
+    comparison_result  -> test_execution -> test_recipe -> dataset -> project
+    evaluation_report  -> test_execution -> test_recipe -> dataset -> project
 
 Tables volontairement hors du second etage :
     - organisation : l'appelant doit pouvoir lire la sienne, qui n'appartient
@@ -254,6 +262,24 @@ def member_schema_ids(matricule: str) -> "Select[tuple[int]]":
     return select(doc_schema.c.id).where(doc_schema.c.project_id.in_(member_project_ids(matricule)))
 
 
+def member_test_recipe_ids(matricule: str) -> "Select[tuple[int]]":
+    from adam_core.models.test_recipe import TestRecipe
+
+    test_recipe = TestRecipe.__table__
+    return select(test_recipe.c.id).where(
+        test_recipe.c.dataset_id.in_(member_dataset_ids(matricule))
+    )
+
+
+def member_test_execution_ids(matricule: str) -> "Select[tuple[int]]":
+    from adam_core.models.test_execution import TestExecution
+
+    test_execution = TestExecution.__table__
+    return select(test_execution.c.id).where(
+        test_execution.c.recipe_id.in_(member_test_recipe_ids(matricule))
+    )
+
+
 def member_document_ids(matricule: str) -> "Select[tuple[int]]":
     from adam_core.models.document import Document
 
@@ -294,6 +320,24 @@ def org_dataset_ids(organisation_id: int) -> "Select[tuple[int]]":
 
     dataset = Dataset.__table__
     return select(dataset.c.id).where(dataset.c.project_id.in_(org_project_ids(organisation_id)))
+
+
+def org_test_recipe_ids(organisation_id: int) -> "Select[tuple[int]]":
+    from adam_core.models.test_recipe import TestRecipe
+
+    test_recipe = TestRecipe.__table__
+    return select(test_recipe.c.id).where(
+        test_recipe.c.dataset_id.in_(org_dataset_ids(organisation_id))
+    )
+
+
+def org_test_execution_ids(organisation_id: int) -> "Select[tuple[int]]":
+    from adam_core.models.test_execution import TestExecution
+
+    test_execution = TestExecution.__table__
+    return select(test_execution.c.id).where(
+        test_execution.c.recipe_id.in_(org_test_recipe_ids(organisation_id))
+    )
 
 
 def org_schema_ids(organisation_id: int) -> "Select[tuple[int]]":
