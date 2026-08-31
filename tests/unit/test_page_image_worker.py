@@ -71,9 +71,11 @@ async def test_process_one_success_marks_in_progress_and_sets_page_count(
 
 
 @pytest.mark.asyncio
-async def test_process_one_render_failure_leaves_document_received(
+async def test_process_one_render_failure_marks_document_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # CA-5 : un PDF illisible (poison pill) passe en ERROR pour sortir de la
+    # file, au lieu de rester en RECEIVED et d'etre repolle indefiniment.
     document = _document()
     file_row = _file(page_count=1)
     db = _FakeDb(document, file_row)
@@ -87,7 +89,7 @@ async def test_process_one_render_failure_leaves_document_received(
     worker = PageImageWorker(pvc_root=tmp_path)
     await worker._process_one(document.id)
 
-    assert document.status == DocumentStatus.RECEIVED.value
+    assert document.status == DocumentStatus.ERROR.value
     assert file_row.page_count == 1  # inchange
 
 

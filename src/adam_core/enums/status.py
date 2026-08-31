@@ -27,6 +27,7 @@ class DocumentStatus(str, Enum):
     DISPUTED = "DISPUTED"
     EXPORTED = "EXPORTED"
     ARCHIVED = "ARCHIVED"
+    ERROR = "ERROR"  # rendu impossible (PDF illisible) : sort le doc de la file de traitement
 
 
 class DocumentFieldStatus(str, Enum):
