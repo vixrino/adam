@@ -1,17 +1,20 @@
 """Table PROJECT : unité de travail rattachée à une organisation."""
 
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
-from adam_core.db.scoping import OrganisationScoped
+from adam_core.db.scoping import OrganisationScoped, ProjectScoped, member_project_ids
 from adam_core.enums.status import ProjectStatus
 
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
-class Project(OrganisationScoped, Base):
+
+class Project(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "project"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -63,6 +66,12 @@ class Project(OrganisationScoped, Base):
         lazy="noload",
         cascade="all, delete-orphan",
     )
+
+    @classmethod
+    def __project_filter__(cls, matricule: str) -> "ColumnElement[bool]":
+        # project ne porte pas de colonne project_id : le perimetre est le
+        # projet lui-meme, filtre via son propre id.
+        return cls.id.in_(member_project_ids(matricule))
 
     def __repr__(self) -> str:
         schemas_count = len(self.schemas) if self.schemas else "?"

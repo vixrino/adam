@@ -11,13 +11,13 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
-from adam_core.db.scoping import OrganisationScoped, org_project_ids
+from adam_core.db.scoping import OrganisationScoped, ProjectScoped, org_project_ids
 
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
 
 
-class DocSchema(OrganisationScoped, Base):
+class DocSchema(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "doc_schema"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

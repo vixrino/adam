@@ -1,13 +1,16 @@
 """Tests unitaires adam_api/routers/projects.py"""
 
 from datetime import datetime, timezone
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from adam_api.dependencies.auth import UserCaller
 from adam_api.routers.projects import router
+from adam_core.enums.roles import PlatformRole, ProjectRole
 
 _NOW = datetime(2026, 6, 26, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -32,10 +35,18 @@ def mock_db() -> AsyncMock:
 
 
 @pytest.fixture
-def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
+def caller() -> UserCaller:
+    """Appelant metier par defaut : POST /projects l'inscrit sur le projet cree."""
+    return UserCaller(matricule="MATTEST", organisation_id=1)
+
+
+@pytest.fixture
+def client(app: FastAPI, mock_db: AsyncMock, caller: UserCaller) -> TestClient:
+    from adam_api.dependencies.auth import get_caller
     from adam_api.dependencies.db import get_db
 
     app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_caller] = lambda: caller
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -117,6 +128,20 @@ class TestGetProject:
 
 
 class TestCreateProject:
+    """RACI de gouvernance : "creer et gerer les organisations et projets" est R
+    pour l'Administrateur NOTA et I pour les trois autres acteurs. La ligne
+    suivante, "gerer les projets", est celle de l'Administrateur Metier et porte
+    sur un projet existant.
+    """
+
+    @pytest.fixture
+    def caller(self) -> UserCaller:
+        return UserCaller(
+            matricule="MATADMIN",
+            organisation_id=1,
+            platform_role=PlatformRole.NOTA_ADMIN.value,
+        )
+
     def test_returns_201(self, client: TestClient, mock_db: AsyncMock) -> None:
         assert (
             client.post("/projects", json={"organisation_id": 1, "name": "Nouveau"}).status_code
@@ -128,6 +153,55 @@ class TestCreateProject:
 
     def test_422_when_missing_organisation_id(self, client: TestClient) -> None:
         assert client.post("/projects", json={"name": "P"}).status_code == 422
+
+    def test_no_membership_is_created(self, client: TestClient, mock_db: AsyncMock) -> None:
+        # L'Administrateur NOTA porte deja la lecture transverse : aucune
+        # adhesion a poser, le projet nait sans membre.
+        client.post("/projects", json={"organisation_id": 1, "name": "Nouveau"})
+        mock_db.execute.assert_not_called()
+
+
+class TestCreateProjectForbidden:
+    @pytest.mark.parametrize(
+        "platform_role",
+        [
+            None,
+            PlatformRole.NOTA_SUPERVISOR.value,
+            PlatformRole.NOTA_CLIENT.value,
+            ProjectRole.BUSINESS_ADMIN.value,
+        ],
+        ids=[
+            "operateur-ou-admin-metier",
+            "superviseur-nota",
+            "client-nota",
+            "role-projet-egare",
+        ],
+    )
+    def test_403_for_non_nota_admin(
+        self, app: FastAPI, mock_db: AsyncMock, platform_role: Optional[str]
+    ) -> None:
+        from adam_api.dependencies.auth import get_caller
+        from adam_api.dependencies.db import get_db
+
+        app.dependency_overrides[get_db] = lambda: mock_db
+        app.dependency_overrides[get_caller] = lambda: UserCaller(
+            matricule="MATBIZ", organisation_id=1, platform_role=platform_role
+        )
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.post("/projects", json={"organisation_id": 1, "name": "P"})
+        assert response.status_code == 403
+
+    def test_service_caller_is_allowed(self, app: FastAPI, mock_db: AsyncMock) -> None:
+        # Provisionnement et workers : le RACI decrit des acteurs humains, il ne
+        # regit pas les services machine.
+        from adam_api.dependencies.auth import ServiceCaller, get_caller
+        from adam_api.dependencies.db import get_db
+
+        app.dependency_overrides[get_db] = lambda: mock_db
+        app.dependency_overrides[get_caller] = lambda: ServiceCaller(service_name="provisioning")
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.post("/projects", json={"organisation_id": 1, "name": "P"})
+        assert response.status_code == 201
 
 
 # ---------------------------------------------------------------------------
