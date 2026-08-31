@@ -166,6 +166,175 @@ class TestGetDocument:
 
 
 # ---------------------------------------------------------------------------
+# GET /documents/{document_id}/job-progress
+# ---------------------------------------------------------------------------
+
+
+def _make_job(id: int = 1, state: str = "IN_PROGRESS", step: str = "VALIDATION") -> MagicMock:
+    job = MagicMock()
+    job.id = id
+    job.state = state
+    job.step = step
+    return job
+
+
+class TestGetDocumentJobProgress:
+    def test_404_when_document_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        # CA-4 : document introuvable -> 404
+        response = client.get("/documents/99/job-progress")
+        assert response.status_code == 404
+
+    def test_active_job_returns_continue_and_step(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        # CA-1 / CA-2 / CA-3
+        doc = _make_document()
+        doc.status = "IN_PROGRESS"
+        doc.jobs = [_make_job(id=5, state="IN_PROGRESS", step="CONSENSUS")]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        response = client.get("/documents/1/job-progress")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["has_active_job"] is True
+        assert body["active_job_id"] == 5
+        assert body["step"] == "CONSENSUS"
+        assert body["action"] == "CONTINUE"
+
+    def test_assigned_job_is_active(self, client: TestClient, mock_db: AsyncMock) -> None:
+        doc = _make_document()
+        doc.jobs = [_make_job(id=3, state="ASSIGNED", step="VALIDATION")]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        body = client.get("/documents/1/job-progress").json()
+        assert body["has_active_job"] is True
+        assert body["action"] == "CONTINUE"
+
+    def test_no_active_job_but_validated_returns_review(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        # CA-3 : pas de job actif, document valide -> REVIEW
+        doc = _make_document(status="VALIDATED")
+        doc.jobs = [_make_job(state="SUBMITTED")]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        body = client.get("/documents/1/job-progress").json()
+        assert body["has_active_job"] is False
+        assert body["step"] is None
+        assert body["action"] == "REVIEW"
+
+    def test_submitted_job_returns_review(self, client: TestClient, mock_db: AsyncMock) -> None:
+        doc = _make_document(status="IN_PROGRESS")
+        doc.jobs = [_make_job(state="SUBMITTED")]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        body = client.get("/documents/1/job-progress").json()
+        assert body["action"] == "REVIEW"
+
+    def test_no_job_returns_unavailable(self, client: TestClient, mock_db: AsyncMock) -> None:
+        # CA-4 : pas de job actif -> 200 explicite (distinct du 404)
+        doc = _make_document(status="RECEIVED")
+        doc.jobs = []
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        response = client.get("/documents/1/job-progress")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["has_active_job"] is False
+        assert body["action"] == "UNAVAILABLE"
+
+    def test_cancelled_job_is_not_active(self, client: TestClient, mock_db: AsyncMock) -> None:
+        doc = _make_document(status="RECEIVED")
+        doc.jobs = [_make_job(state="CANCELLED")]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        body = client.get("/documents/1/job-progress").json()
+        assert body["has_active_job"] is False
+        assert body["action"] == "UNAVAILABLE"
+
+    def test_most_recent_active_job_wins(self, client: TestClient, mock_db: AsyncMock) -> None:
+        doc = _make_document(status="IN_PROGRESS")
+        doc.jobs = [
+            _make_job(id=1, state="IN_PROGRESS", step="VALIDATION"),
+            _make_job(id=4, state="IN_PROGRESS", step="CONSENSUS"),
+        ]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = doc
+        body = client.get("/documents/1/job-progress").json()
+        assert body["active_job_id"] == 4
+        assert body["step"] == "CONSENSUS"
+
+
+# ---------------------------------------------------------------------------
+# GET /documents/{document_id}/pages/{page_number}
+# ---------------------------------------------------------------------------
+
+# En-tete PNG minimal : suffit pour verifier les octets servis, pas besoin
+# d'une image decodable.
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"fake-image-payload"
+
+
+def _make_document_with_file(file_id: int = 1, page_count: int = 3) -> MagicMock:
+    doc = _make_document(file_id=file_id)
+    file = MagicMock()
+    file.id = file_id
+    file.page_count = page_count
+    doc.file = file
+    return doc
+
+
+class TestGetDocumentPageImage:
+    @pytest.fixture(autouse=True)
+    def pvc_root(self, tmp_path, monkeypatch):
+        from adam_api.core.config import settings
+
+        monkeypatch.setattr(settings, "pvc_mount_path", str(tmp_path))
+        return tmp_path
+
+    def _write_page_image(self, pvc_root, file_id: int, page_number: int) -> None:
+        pages_dir = pvc_root / str(file_id) / "pages"
+        pages_dir.mkdir(parents=True, exist_ok=True)
+        (pages_dir / f"{page_number:04d}.png").write_bytes(_PNG_BYTES)
+
+    # CA-1 / CA-2
+    def test_returns_png_bytes_with_content_type(
+        self, client: TestClient, mock_db: AsyncMock, pvc_root
+    ) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document_with_file()
+        self._write_page_image(pvc_root, file_id=1, page_number=2)
+        response = client.get("/documents/1/pages/2")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.headers["X-Image-Dpi"] == "300"
+        assert response.content == _PNG_BYTES
+
+    def test_404_when_document_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        response = client.get("/documents/99/pages/1")
+        assert response.status_code == 404
+
+    def test_404_when_document_has_no_file(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document()
+        response = client.get("/documents/1/pages/1")
+        assert response.status_code == 404
+
+    # CA-3
+    def test_404_when_images_not_generated(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document_with_file()
+        response = client.get("/documents/1/pages/1")
+        assert response.status_code == 404
+        assert "non generees" in response.json()["detail"]
+
+    # CA-4
+    def test_404_when_page_above_page_count(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document_with_file(
+            page_count=3
+        )
+        response = client.get("/documents/1/pages/4")
+        assert response.status_code == 404
+        assert "hors bornes" in response.json()["detail"]
+
+    def test_404_when_page_zero(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document_with_file()
+        response = client.get("/documents/1/pages/0")
+        assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # GET /documents/{document_id}/fields
 # ---------------------------------------------------------------------------
 

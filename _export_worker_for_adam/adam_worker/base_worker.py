@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 
-from nota_core.utils.logging import get_logger
+from adam_core.utils.logging import get_logger
 
 
 class BaseWorker(ABC):

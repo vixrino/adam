@@ -54,24 +54,44 @@ def looks_like_pdf(content: bytes) -> bool:
 
 
 def pvc_relative_path(
-    *, organisation_slug: str, document_type: str, ingested_at: datetime, file_name: str
+    *,
+    organisation_slug: str,
+    document_type: str,
+    ingested_at: datetime,
+    file_name: str,
+    file_id: int,
 ) -> Path:
-    """Chemin lisible : organisation/type_document/date/nom_fichier.
+    """Chemin lisible : organisation/type_document/date/file_id/nom_fichier.
 
-    Le nom de fichier envoye par le client n'est jamais renomme, seulement
-    ramene a son basename (`Path(file_name).name`) pour empecher toute
-    traversee de repertoire : c'est une entree utilisateur falsifiable
-    (cf. looks_like_pdf).
+    Le sous-dossier file_id garantit un chemin unique par FILE : sans lui,
+    deux contenus differents envoyes le meme jour sous le meme nom
+    partageraient le meme chemin et le second write_bytes ecraserait le PDF
+    du premier. Le nom du client est conserve tel quel, seulement ramene a
+    son basename (`Path(file_name).name`) pour empecher toute traversee de
+    repertoire (entree utilisateur falsifiable, cf. looks_like_pdf).
     """
     timestamp = ingested_at.strftime("%Y_%m_%d")
     safe_name = Path(file_name).name
-    return Path(organisation_slug) / document_type / timestamp / safe_name
+    return Path(organisation_slug) / document_type / timestamp / str(file_id) / safe_name
 
 
 async def _get_or_create_file(
-    db: AsyncSession, *, checksum: str, content: bytes, pvc_root: Path, relative_path: Path
+    db: AsyncSession,
+    *,
+    checksum: str,
+    content: bytes,
+    pvc_root: Path,
+    organisation_slug: str,
+    document_type: str,
+    file_name: str,
 ) -> Tuple[File, bool]:
     """Reutilise le FILE existant (par hash) ou le cree, en ecrivant sur le PVC.
+
+    Le chemin PVC contient le file_id, qui n'existe qu'apres l'INSERT : la
+    ligne est donc inseree d'abord avec un file_path vide, puis le fichier
+    est ecrit sur le PVC et le chemin definitif est renseigne. Tout se passe
+    dans la transaction de la requete : si l'ecriture disque echoue, la
+    ligne (chemin vide compris) est annulee par le rollback.
 
     L'INSERT utilise ON CONFLICT DO NOTHING sur sha256_checksum (contrainte
     unique) pour rester correct sous ingestion concurrente du meme contenu :
@@ -96,7 +116,7 @@ async def _get_or_create_file(
     stmt = (
         pg_insert(File)
         .values(
-            file_path=relative_path.as_posix(),
+            file_path="",  # provisoire : le chemin definitif requiert le file_id
             storage_type="pvc",
             mime_type=PDF_MIME,
             file_size_bytes=len(content),
@@ -107,13 +127,22 @@ async def _get_or_create_file(
     )
     file_row = (await db.execute(stmt)).scalar_one_or_none()
     if file_row is not None:
+        relative_path = pvc_relative_path(
+            organisation_slug=organisation_slug,
+            document_type=document_type,
+            ingested_at=datetime.now(timezone.utc),
+            file_name=file_name,
+            file_id=file_row.id,
+        )
+        abs_path = pvc_root / relative_path
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_path.write_bytes(content)
+        file_row.file_path = relative_path.as_posix()
         await db.flush()
         return file_row, True
 
     # Course perdue : une autre transaction a insere la ligne en premier.
-    file_row = (
-        await db.execute(select(File).where(File.sha256_checksum == checksum))
-    ).scalar_one()
+    file_row = (await db.execute(select(File).where(File.sha256_checksum == checksum))).scalar_one()
     return file_row, False
 
 
@@ -154,14 +183,14 @@ async def ingest_pdf(
             "file_path": existing_file_path,
         }
 
-    relative_path = pvc_relative_path(
+    file_row, file_created = await _get_or_create_file(
+        db,
+        checksum=checksum,
+        content=content,
+        pvc_root=pvc_root,
         organisation_slug=organisation_slug,
         document_type=document_type,
-        ingested_at=datetime.now(timezone.utc),
         file_name=file_name,
-    )
-    file_row, file_created = await _get_or_create_file(
-        db, checksum=checksum, content=content, pvc_root=pvc_root, relative_path=relative_path
     )
     document = Document(
         dataset_id=dataset.id,
