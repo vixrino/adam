@@ -135,7 +135,16 @@ async def create_document_fields_bulk(
     )
 
 
-@router.delete("/{document_id}/fields/{field_id}", status_code=204)
+@router.delete(
+    "/{document_id}/fields/{field_id}",
+    status_code=204,
+    # Sans ces deux-la, les versions recentes de FastAPI deduisent un modele de
+    # reponse depuis l'annotation `-> None` et refusent la route : un 204 ne peut
+    # pas porter de corps. Retirer l'annotation reglerait l'assertion mais
+    # priverait mypy du type de retour.
+    response_model=None,
+    response_class=Response,
+)
 async def delete_document_field(
     document_id: int,
     field_id: int,
