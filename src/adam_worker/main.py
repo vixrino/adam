@@ -14,6 +14,7 @@ from adam_core.db.session import init_engine
 from adam_core.utils.logging import setup_logging
 from adam_worker.base_worker import BaseWorker
 from adam_worker.consensus_worker import ConsensusWorker
+from adam_worker.document_progress_worker import DocumentProgressWorker
 from adam_worker.page_image_worker import PageImageWorker
 
 
@@ -41,7 +42,11 @@ async def _main() -> None:
     setup_logging(core)
     init_engine(core.async_database_url, echo=core.is_dev)
 
-    workers: list[BaseWorker] = [PageImageWorker(), ConsensusWorker()]
+    workers: list[BaseWorker] = [
+        PageImageWorker(),
+        ConsensusWorker(),
+        DocumentProgressWorker(),
+    ]
     _install_signal_handlers(workers)
     await asyncio.gather(*(worker.run_forever() for worker in workers))
 

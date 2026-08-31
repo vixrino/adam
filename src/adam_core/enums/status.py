@@ -30,6 +30,28 @@ class DocumentStatus(str, Enum):
     ERROR = "ERROR"  # rendu impossible (PDF illisible) : sort le doc de la file de traitement
 
 
+class DocumentStage(str, Enum):
+    """Etape atteinte par un document dans la chaine de traitement.
+
+    Distincte de DocumentStatus, qui est pilote par les routes et les workers de
+    traitement. DocumentStage est un constat, derive de l'etat reel des tables
+    liees : le fichier est-il la, les pages sont-elles rendues, l'OCR a-t-il
+    produit un resultat, les champs sont-ils renseignes, le consensus est-il
+    atteint. Rien ne l'ecrit a la main, DocumentProgressWorker le recalcule.
+
+    Les valeurs sont ordonnees : une etape n'est atteinte que si la precedente
+    l'est. INGESTED est le plancher, un document existant ayant toujours une
+    ligne FILE.
+    """
+
+    INGESTED = "INGESTED"
+    PAGES_RENDERED = "PAGES_RENDERED"
+    OCR_AVAILABLE = "OCR_AVAILABLE"
+    FIELDS_PREFILLED = "FIELDS_PREFILLED"
+    ANNOTATION = "ANNOTATION"
+    CONSENSUS_REACHED = "CONSENSUS_REACHED"
+
+
 class DocumentFieldStatus(str, Enum):
     PENDING = "PENDING"
     CORRECTED = "CORRECTED"

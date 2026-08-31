@@ -6,6 +6,7 @@ from adam_core.models.doc_schema import DocSchema
 from adam_core.models.document import Document
 from adam_core.models.document_field import DocumentField
 from adam_core.models.evaluation_report import EvaluationReport
+from adam_core.models.document_progress import DocumentProgress
 from adam_core.models.field_proposal import FieldProposal
 from adam_core.models.field_spec import FieldSpec
 from adam_core.models.file import File
@@ -27,6 +28,7 @@ __all__ = [
     "DocSchema",
     "Document",
     "DocumentField",
+    "DocumentProgress",
     "FieldProposal",
     "FieldSpec",
     "File",
