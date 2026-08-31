@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Tuple, cast
 
 import pymupdf
+from anyio import Path as AsyncPath
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,14 +56,14 @@ def looks_like_pdf(content: bytes) -> bool:
 def pvc_relative_path(
     *, organisation_slug: str, document_type: str, ingested_at: datetime, file_name: str
 ) -> Path:
-    """Chemin lisible : organisation/type_document/horodatage/nom_fichier.
+    """Chemin lisible : organisation/type_document/date/nom_fichier.
 
     Le nom de fichier envoye par le client n'est jamais renomme, seulement
     ramene a son basename (`Path(file_name).name`) pour empecher toute
     traversee de repertoire : c'est une entree utilisateur falsifiable
     (cf. looks_like_pdf).
     """
-    timestamp = ingested_at.strftime("%Y_%m_%d_%H%M")
+    timestamp = ingested_at.strftime("%Y_%m_%d")
     safe_name = Path(file_name).name
     return Path(organisation_slug) / document_type / timestamp / safe_name
 
@@ -82,15 +83,15 @@ async def _get_or_create_file(
     ).scalar_one_or_none()
 
     if file_row is not None:
-        abs_path = pvc_root / file_row.file_path
-        if not abs_path.exists():  # robustesse : re-materialise le contenu si manquant
-            abs_path.parent.mkdir(parents=True, exist_ok=True)
-            abs_path.write_bytes(content)
+        async_abs_path = AsyncPath(pvc_root / file_row.file_path)
+        if not await async_abs_path.exists():  # robustesse : re-materialise le contenu si manquant
+            await async_abs_path.parent.mkdir(parents=True, exist_ok=True)
+            await async_abs_path.write_bytes(content)
         return file_row, False
 
-    abs_path = pvc_root / relative_path
-    abs_path.parent.mkdir(parents=True, exist_ok=True)
-    abs_path.write_bytes(content)
+    async_abs_path = AsyncPath(pvc_root / relative_path)
+    await async_abs_path.parent.mkdir(parents=True, exist_ok=True)
+    await async_abs_path.write_bytes(content)
 
     stmt = (
         pg_insert(File)
