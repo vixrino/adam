@@ -1,0 +1,267 @@
+// Schema NOTA — genere depuis Base.metadata (branche feature/test-recipes-models)
+// A coller dans https://dbdiagram.io/d
+// En vert : le domaine des recettes de test OCR.
+
+Table file {
+  id integer [pk, increment]
+  file_path varchar [not null, note: 'Chemin absolu sur FS']
+  storage_type varchar [not null, note: 'Backend de stockage']
+  mime_type varchar [not null]
+  page_count integer [not null]
+  file_size_bytes integer [not null, note: 'Taille en octets pour le calcul de volumétrie']
+  sha256_checksum varchar [not null, unique, note: 'Empreinte SHA-256 : unicité physique + intégrité']
+  created_at timestamptz [not null, note: 'Date de première ingestion']
+  updated_at timestamptz [not null]
+}
+
+Table organisation {
+  id integer [pk, increment]
+  name varchar [not null]
+  slug varchar [not null, unique]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+  deleted_at timestamptz
+}
+
+Table project {
+  id integer [pk, increment]
+  organisation_id integer [not null]
+  name varchar [not null]
+  description text
+  status varchar [not null]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+}
+
+Table user {
+  id integer [pk, increment]
+  organisation_id integer [not null]
+  email varchar [not null, unique]
+  full_name varchar [not null]
+  matricule varchar [not null, unique]
+  platform_role varchar
+  status varchar [not null]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+  last_login_at timestamptz
+  deleted_at timestamptz
+}
+
+Table doc_schema {
+  id integer [pk, increment]
+  project_id integer [not null]
+  version integer [not null]
+  name varchar [not null]
+  document_type varchar [not null, note: 'Identifiant du type de document']
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+}
+
+Table user_project {
+  user_id integer [pk]
+  project_id integer [pk]
+  role varchar [not null]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+}
+
+Table dataset {
+  id integer [pk, increment]
+  project_id integer [not null]
+  schema_id integer [not null, note: 'Schéma verrouillé sur ce dataset']
+  name varchar [not null]
+  description text
+  ocr_provider varchar [not null, note: 'Moteur OCR : PULSAR, MISTRAL']
+  ocr_model_id varchar [note: 'Version du modèle OCR']
+  status varchar [not null]
+  ocr_job_enabled boolean [not null, note: 'Active la pré-alimentation automatique via OCR']
+  required_operators integer [not null, note: 'Nombre dopérateurs requis par document']
+  configs jsonb [not null, note: '{...}']
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+}
+
+Table field_spec {
+  id integer [pk, increment]
+  schema_id integer [not null]
+  page integer [not null]
+  section_id varchar [not null, note: 'Identifiant technique de la section']
+  section_label varchar [not null, note: 'Libellé de la section']
+  group_id varchar [note: 'Instance de groupe pour les champs répétables']
+  field_key varchar [not null, note: 'Clé du champ']
+  display_label varchar [not null, note: 'Libellé affiché à lopérateur']
+  value_type varchar [not null, note: 'Type de valeur : TEXT, NUMBER, DATE, DATETIME, BOOLEAN']
+  required boolean [not null]
+  is_sensitive boolean [not null]
+  display_order integer [not null]
+  polygon "array" [note: '4 points (x1,y1,x2,y2,x3,y3,x4,y4). 8 floats si non null']
+  updated_at timestamptz [not null]
+
+  indexes {
+    (schema_id, section_id, group_id, field_key) [unique]
+  }
+}
+
+Table document {
+  id integer [pk, increment]
+  dataset_id integer [not null]
+  file_id integer [not null]
+  file_name varchar [not null, note: 'Nom de fichier original reçu']
+  metadata jsonb [note: 'Métadonnées libres dingestion : source, lot, date de dépôt...']
+  status varchar [not null]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+}
+
+Table test_recipe [headercolor: #2D6A4F] {
+  id integer [pk, increment]
+  dataset_id integer [not null]
+  name varchar [not null]
+  description text
+  document_ids "array" [not null]
+  status varchar [not null, note: 'Cycle de vie : DRAFT, LOCKED, ARCHIVED']
+  locked_at timestamptz
+  created_by_user_id integer [not null]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+
+  indexes {
+    (dataset_id, name) [unique]
+  }
+}
+
+Table document_field {
+  id integer [pk, increment]
+  document_id integer [not null]
+  field_spec_id integer [not null]
+  group_id varchar [note: 'Identifiant de groupe pour les champs répétables']
+  ocr_value varchar [note: 'Valeur brute extraite par lOCR lors de la pré-alimentation']
+  resolved_value varchar [note: 'Valeur finale validée, mise à jour à chaque proposition acceptée']
+  status varchar [not null]
+  ocr_confidence float [note: 'Score de confiance OCR entre 0 et 1']
+  consensus_reached boolean [not null, note: 'True = consensus atteint sur ce champ']
+  ocr_polygon "array" [note: 'Zone détectée par lOCR : 4 points (x1,y1,...,x4,y4)']
+  resolved_by varchar [note: 'ID de la dernière FIELD_PROPOSAL ou ocr_system']
+  updated_at timestamptz [not null]
+
+  indexes {
+    (document_id, field_spec_id, group_id) [unique]
+  }
+}
+
+Table job {
+  id integer [pk, increment]
+  dataset_id integer [not null]
+  document_id integer [not null]
+  agent_id integer [not null]
+  state varchar [not null]
+  step varchar [not null]
+  started_at timestamptz [not null]
+  submitted_at timestamptz
+  updated_at timestamptz [not null]
+}
+
+Table ocr_result {
+  id integer [pk, increment]
+  document_id integer [not null]
+  dataset_id integer [not null]
+  storage_mode varchar [not null, note: 'jsonb = stocké en base, file = stocké sur PVC']
+  raw_json jsonb [note: 'Réponse OCR complète. Null si storage_mode=file']
+  processed_at timestamptz [not null]
+
+  indexes {
+    (document_id, dataset_id) [unique]
+  }
+}
+
+Table test_execution [headercolor: #2D6A4F] {
+  id integer [pk, increment]
+  recipe_id integer [not null]
+  status varchar [not null, note: 'PENDING, RUNNING, COMPLETED, FAILED']
+  ocr_provider varchar [not null]
+  ocr_model_id varchar
+  error_message text
+  documents_compared integer [not null]
+  fields_compared integer [not null]
+  fields_human_verified integer [not null]
+  diff_count integer [not null]
+  unexpected_count integer [not null]
+  ocr_calls_made integer [not null]
+  pages_processed integer [not null]
+  confidence_histogram jsonb
+  created_by_user_id integer [not null]
+  created_at timestamptz [not null]
+  started_at timestamptz
+  finished_at timestamptz
+  updated_at timestamptz [not null]
+}
+
+Table comparison_result [headercolor: #2D6A4F] {
+  id bigint [pk, increment]
+  execution_id integer [not null]
+  document_field_id integer [not null]
+  verdict varchar [not null, note: 'MISSING ou WRONG, cf. ComparisonVerdict']
+  diff_kind varchar [note: 'Categorie dun WRONG, cf. ComparisonDiffKind']
+  ocr_confidence float
+  expected_value varchar
+  observed_value varchar
+  observed_hmac varchar
+  edit_distance integer
+  created_at timestamptz [not null]
+
+  indexes {
+    (execution_id, document_field_id) [unique]
+  }
+}
+
+Table evaluation_report [headercolor: #2D6A4F] {
+  id integer [pk, increment]
+  execution_id integer [not null]
+  field_spec_id integer [not null]
+  field_key varchar [not null]
+  compared integer [not null]
+  diff_count integer [not null]
+
+  indexes {
+    (execution_id, field_spec_id) [unique]
+  }
+}
+
+Table field_proposal {
+  id integer [pk, increment]
+  document_field_id integer [not null]
+  job_id integer [not null]
+  step varchar [not null, note: 'Étape à laquelle la proposition a été soumise']
+  value_type varchar [not null, note: 'Type de valeur : TEXT, NUMBER, DATE, DATETIME, BOOLEAN']
+  value varchar [note: 'Valeur proposée par lopérateur']
+  reason text [note: 'Justification optionnelle dune correction']
+  created_at timestamptz [not null]
+}
+
+Ref: project.organisation_id > organisation.id [delete: restrict]
+Ref: user.organisation_id > organisation.id [delete: restrict]
+Ref: doc_schema.project_id > project.id [delete: restrict]
+Ref: user_project.user_id > user.id [delete: cascade]
+Ref: user_project.project_id > project.id [delete: cascade]
+Ref: dataset.project_id > project.id [delete: restrict]
+Ref: dataset.schema_id > doc_schema.id [delete: restrict]
+Ref: field_spec.schema_id > doc_schema.id [delete: cascade]
+Ref: document.dataset_id > dataset.id [delete: restrict]
+Ref: document.file_id > file.id [delete: restrict]
+Ref: test_recipe.dataset_id > dataset.id [delete: restrict]
+Ref: test_recipe.created_by_user_id > user.id [delete: restrict]
+Ref: document_field.document_id > document.id [delete: cascade]
+Ref: document_field.field_spec_id > field_spec.id [delete: restrict]
+Ref: job.dataset_id > dataset.id [delete: restrict]
+Ref: job.document_id > document.id [delete: cascade]
+Ref: job.agent_id > user.id [delete: restrict]
+Ref: ocr_result.document_id > document.id [delete: cascade]
+Ref: ocr_result.dataset_id > dataset.id [delete: restrict]
+Ref: test_execution.recipe_id > test_recipe.id [delete: restrict]
+Ref: test_execution.created_by_user_id > user.id [delete: restrict]
+Ref: comparison_result.execution_id > test_execution.id [delete: cascade]
+Ref: comparison_result.document_field_id > document_field.id [delete: cascade]
+Ref: evaluation_report.execution_id > test_execution.id [delete: cascade]
+Ref: evaluation_report.field_spec_id > field_spec.id [delete: restrict]
+Ref: field_proposal.document_field_id > document_field.id [delete: cascade]
+Ref: field_proposal.job_id > job.id [delete: cascade]

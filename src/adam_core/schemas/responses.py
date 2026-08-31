@@ -7,7 +7,7 @@ Chaque schema correspond a un type de retour d'endpoint.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -141,6 +141,7 @@ class DocumentFieldInPageOut(BaseModel):
     ocr_value: Optional[str] = None
     resolved_value: Optional[str] = None
     status: str
+    consensus_reached: bool
 
 
 class DocumentSectionOut(BaseModel):
@@ -168,6 +169,21 @@ class DocumentJobOut(BaseModel):
 
     id: int
     state: str
+
+
+class DocumentJobProgressOut(BaseModel):
+    """Reponse GET /documents/{id}/job-progress.
+
+    Expose l'etat du Job actif d'un Document pour piloter le bouton
+    Continuer / Revoir / Indisponible du front. `has_active_job=False`
+    est une reponse valide (200) distincte d'un Document introuvable (404).
+    """
+
+    document_id: int
+    has_active_job: bool
+    active_job_id: Optional[int] = None
+    step: Optional[str] = None  # etape du job actif : VALIDATION | CONSENSUS | CORRECTION
+    action: Literal["CONTINUE", "REVIEW", "UNAVAILABLE"]
 
 
 class DocumentFullOut(BaseModel):
@@ -400,16 +416,6 @@ class OrgUserOut(BaseModel):
     matricule: str
     status: str
     projects: List[UserProjectRefOut] = []
-
-
-class OrganisationPatchOut(BaseModel):
-    id: int
-    name: str
-
-
-class OrganisationArchiveOut(BaseModel):
-    id: int
-    archived: bool
 
 
 # ---------------------------------------------------------------------------

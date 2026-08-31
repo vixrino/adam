@@ -7,6 +7,11 @@ from typing import List
 
 from adam_core.core.config import CoreSettings
 
+#: Prefixe commun a toutes les routes metier, monte par main.py.
+#: Declare ici et non dans main.py : le worker en a besoin pour construire ses
+#: URL, et importer main.py depuis un worker chargerait toute l'application.
+API_PREFIX = "/api/v1"
+
 
 class Settings(CoreSettings):
     api_host: str
@@ -15,12 +20,24 @@ class Settings(CoreSettings):
     api_title: str
     api_cors_origins: str
     api_disable_jwt_validation: bool
+    #: Matricule endosse quand la validation JWT est desactivee. Resolu en base
+    #: comme n'importe quel appelant : c'est ce qui evite de reinventer un
+    #: UserCaller de toutes pieces, dont l'organisation finissait par ne
+    #: correspondre a aucune ligne reelle. Sans effet hors bypass.
+    api_dev_matricule: str = "MAT00003"
     internal_auth_enabled: bool
     internal_api_key: str
     pvc_mount_path: str
     ocr_mock_enabled: bool
     ocr_mock_confidence: float
     ocr_timeout_seconds: int
+    # Connecteur Mistral. Optionnels tant que ocr_mock_enabled est vrai ; le
+    # constructeur du connecteur refuse une cle ou un endpoint vides.
+    mistral_api_key: str = ""
+    mistral_ocr_endpoint: str = ""
+    mistral_ocr_model: str = "mistral-ocr-latest"
+    #: Chemin d'un truststore PEM pour un endpoint prive ; vide = CA systeme.
+    mistral_ca_bundle: str = ""
 
     @property
     def cors_origins(self) -> List[str]:

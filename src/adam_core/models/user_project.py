@@ -8,15 +8,20 @@ Clé primaire composite sur (user_id, project_id).
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
-from adam_core.enums.roles import UserRole
+from adam_core.db.scoping import OrganisationScoped, ProjectScoped, org_user_ids
+from adam_core.enums.roles import ProjectRole
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
 
-class UserProject(Base):
+class UserProject(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "user_project"
 
     user_id: Mapped[int] = mapped_column(
@@ -32,7 +37,7 @@ class UserProject(Base):
     role: Mapped[str] = mapped_column(
         String,
         nullable=False,
-        default=UserRole.OPERATOR.value,
+        default=ProjectRole.OPERATOR.value,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -57,6 +62,11 @@ class UserProject(Base):
         back_populates="user_projects",
         lazy="noload",
     )
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # user_project -> user -> organisation
+        return cls.user_id.in_(org_user_ids(organisation_id))
 
     def __repr__(self) -> str:
         return (

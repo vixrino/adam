@@ -4,17 +4,37 @@ Contrainte unique sur (document_id, field_spec_id, group_id)
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import (
+    OrganisationScoped,
+    ProjectScoped,
+    member_document_ids,
+    org_document_ids,
+)
 from adam_core.enums.status import DocumentFieldStatus
 
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
-class DocumentField(Base):
+
+class DocumentField(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "document_field"
 
     __table_args__ = (
@@ -23,6 +43,17 @@ class DocumentField(Base):
             "field_spec_id",
             "group_id",
             name="uq_document_field_doc_spec_group",
+        ),
+        # PostgreSQL considere deux NULL comme distincts dans une contrainte
+        # d'unicite : la precedente ne protege donc que les champs repetables,
+        # et laisse passer autant de doublons qu'on veut sur les autres, qui
+        # sont le cas courant. Cet index partiel couvre ce cas-la.
+        Index(
+            "uq_document_field_doc_spec_no_group",
+            "document_id",
+            "field_spec_id",
+            unique=True,
+            postgresql_where=text("group_id IS NULL"),
         ),
     )
 
@@ -108,6 +139,16 @@ class DocumentField(Base):
         lazy="noload",
         cascade="all, delete-orphan",
     )
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # document_field -> document -> dataset -> project -> organisation
+        return cls.document_id.in_(org_document_ids(organisation_id))
+
+    @classmethod
+    def __project_filter__(cls, matricule: str) -> "ColumnElement[bool]":
+        # document_field -> document -> dataset -> project (adhesions)
+        return cls.document_id.in_(member_document_ids(matricule))
 
     def __repr__(self) -> str:
         polygon_info = f"{len(self.ocr_polygon)} pts" if self.ocr_polygon else "no polygon"

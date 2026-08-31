@@ -1,0 +1,41 @@
+---
+# Configuration exa-pie pour le developpement.
+#
+# NO-VERIFIER n'effectue AUCUNE verification de signature : tout JWT correctement
+# forme est accepte. Reserve au developpement et aux tests, jamais a la production
+# (cf. conf/pie.prod.yaml).
+#
+# Les patterns sont evalues dans leur ordre de declaration : le premier qui
+# correspond l'emporte, du plus specifique au plus general.
+pie:
+  security:
+    mode: KEYCLOAK
+    verifier: NO-VERIFIER
+    algorithms:
+      - RS256
+    log-level: DEBUG
+
+    # Routes techniques : ni token ni role.
+    # /openapi.json est charge par la page Swagger sans en-tete Authorization.
+    # /static est declare par anticipation du Swagger hors ligne (assets deja
+    # presents dans adam_api/static, pas encore cables sur docs_url).
+    public-uris:
+      - ^\/?health$
+      - ^\/?docs(.*)?$
+      - ^\/?redoc(.*)?$
+      - ^\/?openapi\.json$
+      - ^\/?static(.*)?$
+
+    # Filtre grossier par zone. Le controle fin (methode HTTP, appartenance au
+    # projet, cloisonnement par organisation) reste porte par l'API.
+    uris-by-roles:
+      ^\/?db-check$: ADMIN
+      ^\/?organisations(.*)?$: ADMIN
+      ^\/?users(.*)?$: ADMIN
+      ^\/?schemas(.*)?$: ADMIN|SUPERVISOR
+      ^\/?datasets(.*)?$: ADMIN|SUPERVISOR
+      ^\/?projects(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+      ^\/?documents(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+      ^\/?ocr-results(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+      ^\/?jobs(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+      ^\/?files(.*)?$: ADMIN|SUPERVISOR|OPERATOR

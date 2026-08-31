@@ -64,50 +64,76 @@ def _try_number(s: str) -> Optional[Any]:
     return value
 
 
+_TRUTHY = frozenset({"true", "1", "yes", "oui"})
+
+
+def _parse_boolean(raw: str) -> Any:
+    return raw.strip().lower() in _TRUTHY
+
+
+def _parse_number(raw: str) -> Any:
+    """ISO d'abord, puis repli sur la notation FR ("1 234,56")."""
+    for candidate in (raw, _normalize_french_number(raw)):
+        result = _try_number(candidate)
+        if result is not None:
+            return result
+    return raw
+
+
+def _parse_temporal(raw: str, formats: tuple[str, ...], *, date_only: bool) -> Any:
+    """ISO 8601 d'abord, puis les formats FR ; rend raw si aucun ne convient.
+
+    Facteur commun a DATE et DATETIME, qui ne different que par la liste de
+    formats de repli et par la troncature a la date.
+    """
+    candidate = raw.strip()
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except (ValueError, TypeError):
+        parsed = None
+    if parsed is None:
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+                break
+            except (ValueError, TypeError):
+                continue
+    if parsed is None:
+        return raw
+    return parsed.date().isoformat() if date_only else parsed.isoformat()
+
+
+def _parse_date(raw: str) -> Any:
+    return _parse_temporal(raw, _FRENCH_DATE_FORMATS, date_only=True)
+
+
+def _parse_datetime(raw: str) -> Any:
+    return _parse_temporal(raw, _FRENCH_DATETIME_FORMATS, date_only=False)
+
+
+def _parse_text(raw: str) -> Any:
+    return raw
+
+
+#: Un parseur par FieldValueType. Une table de dispatch plutot qu'une chaine de
+#: if : chaque type se lit isolement, et ajouter un type ne rallonge plus une
+#: fonction unique que pylint finissait par refuser (14 returns, 15 branches).
+_PARSERS = {
+    FieldValueType.TEXT.value: _parse_text,
+    FieldValueType.BOOLEAN.value: _parse_boolean,
+    FieldValueType.NUMBER.value: _parse_number,
+    FieldValueType.DATE.value: _parse_date,
+    FieldValueType.DATETIME.value: _parse_datetime,
+}
+
+
 def parse_field_value(raw: Optional[str], value_type: Optional[str]) -> Any:
     """Convertit une valeur brute string selon son FieldValueType.
 
     Retourne la valeur convertie dans son type natif Python/JSON quand
     la conversion est possible, sinon retourne raw tel quel sans erreur.
     """
-    if raw is None or value_type is None:
+    if raw is None or value_type is None or not isinstance(raw, str):
         return raw
-    if not isinstance(raw, str):
-        return raw
-    if value_type == FieldValueType.TEXT.value:
-        return raw
-    if value_type == FieldValueType.BOOLEAN.value:
-        return raw.strip().lower() in {"true", "1", "yes", "oui"}
-    if value_type == FieldValueType.NUMBER.value:
-        result = _try_number(raw)
-        if result is not None:
-            return result
-        result = _try_number(_normalize_french_number(raw))
-        if result is not None:
-            return result
-        return raw
-    if value_type == FieldValueType.DATE.value:
-        candidate = raw.strip()
-        try:
-            return datetime.fromisoformat(candidate).date().isoformat()
-        except (ValueError, TypeError):
-            pass
-        for fmt in _FRENCH_DATE_FORMATS:
-            try:
-                return datetime.strptime(candidate, fmt).date().isoformat()
-            except (ValueError, TypeError):
-                continue
-        return raw
-    if value_type == FieldValueType.DATETIME.value:
-        candidate = raw.strip()
-        try:
-            return datetime.fromisoformat(candidate).isoformat()
-        except (ValueError, TypeError):
-            pass
-        for fmt in _FRENCH_DATETIME_FORMATS:
-            try:
-                return datetime.strptime(candidate, fmt).isoformat()
-            except (ValueError, TypeError):
-                continue
-        return raw
-    return raw
+    parser = _PARSERS.get(value_type)
+    return parser(raw) if parser is not None else raw

@@ -1,0 +1,40 @@
+---
+# Configuration exa-pie pour la production.
+#
+# Selectionnee par la variable d'environnement PIE_CONFIG_FILE, par exemple
+# PIE_CONFIG_FILE=/app/conf/pie.prod.yaml
+#
+# CERT-FILE est prefere a CERT-URI pour deux raisons : aucun appel HTTP sortant
+# sur le chemin critique de chaque requete entrante, et l'API reste disponible si
+# le point d'acces au certificat du SSO ne repond plus. En contrepartie, le
+# fichier doit etre renouvele a l'expiration du certificat.
+#
+# Le certificat est fourni par un secret monte sur le chemin ci-dessous. Il n'est
+# jamais versionne : seul son emplacement figure ici.
+pie:
+  security:
+    mode: KEYCLOAK
+    verifier: CERT-FILE
+    value: /etc/adam/pie/sso.pem
+    algorithms:
+      - RS256
+    log-level: INFO
+
+    public-uris:
+      - ^\/?health$
+      - ^\/?docs(.*)?$
+      - ^\/?redoc(.*)?$
+      - ^\/?openapi\.json$
+      - ^\/?static(.*)?$
+
+    uris-by-roles:
+      ^\/?db-check$: ADMIN
+      ^\/?organisations(.*)?$: ADMIN
+      ^\/?users(.*)?$: ADMIN
+      ^\/?schemas(.*)?$: ADMIN|SUPERVISOR
+      ^\/?datasets(.*)?$: ADMIN|SUPERVISOR
+      ^\/?projects(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+      ^\/?documents(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+      ^\/?ocr-results(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+      ^\/?jobs(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+      ^\/?files(.*)?$: ADMIN|SUPERVISOR|OPERATOR

@@ -2,13 +2,14 @@
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from adam_api.dependencies.auth import Caller, ServiceCaller, UserCaller, get_caller
 from adam_api.dependencies.db import get_db
-from adam_core.enums.roles import UserRole
+from adam_core.enums.roles import PlatformRole, ProjectRole
 from adam_core.enums.status import ProjectStatus
 from adam_core.models import Project, UserProject
 from adam_core.schemas.responses import (
@@ -19,8 +20,15 @@ from adam_core.schemas.responses import (
     UserRolePatchOut,
 )
 from adam_core.utils.exceptions import raise_not_found, raise_unprocessable
+from adam_core.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
+
+
+def _caller_label(caller: Caller) -> str:
+    return caller.service_name if isinstance(caller, ServiceCaller) else caller.matricule
 
 
 class ProjectIn(BaseModel):
@@ -37,7 +45,7 @@ class ProjectPatch(BaseModel):
 
 class UserProjectIn(BaseModel):
     user_id: int
-    role: str = UserRole.OPERATOR.value
+    role: str = ProjectRole.OPERATOR.value
 
 
 class UserRolePatch(BaseModel):
@@ -64,11 +72,38 @@ async def get_project(project_id: int, db: AsyncSession = Depends(get_db)) -> Pr
     return ProjectDetailOut(id=row.id, name=row.name, status=row.status, updated_at=row.updated_at)
 
 
+def _require_project_creator(caller: Caller = Depends(get_caller)) -> Caller:
+    """Autorise la creation de projet a l'Administrateur NOTA seul.
+
+    Le RACI de gouvernance rend "creer et gerer les organisations et projets" R
+    pour l'Administrateur NOTA, et I pour les trois autres acteurs, Administrateur
+    Metier compris. Ce dernier est R sur la ligne suivante, "gerer les projets",
+    qui porte sur un projet existant : PATCH, affectations, workflows.
+
+    Les services machine restent autorises : le provisionnement et les workers
+    n'ont pas de role au sens du RACI, qui decrit des acteurs humains.
+    """
+    if isinstance(caller, UserCaller) and caller.platform_role != PlatformRole.NOTA_ADMIN.value:
+        raise HTTPException(
+            status_code=403,
+            detail="Creation de projet reservee a l'Administrateur NOTA",
+        )
+    return caller
+
+
 @router.post("", response_model=ProjectCreatedOut, status_code=201)
-async def create_project(body: ProjectIn, db: AsyncSession = Depends(get_db)) -> ProjectCreatedOut:
+async def create_project(
+    body: ProjectIn,
+    db: AsyncSession = Depends(get_db),
+    caller: Caller = Depends(_require_project_creator),
+) -> ProjectCreatedOut:
+    # Pas d'inscription du createur : un Administrateur NOTA porte deja la
+    # lecture transverse et n'a pas d'adhesion a poser. Le projet nait donc sans
+    # membre, et le premier acte de gestion est un POST /projects/{id}/users.
     row = Project(**body.model_dump())
     db.add(row)
     await db.flush()
+    logger.info("Projet %s cree par %s", row.id, _caller_label(caller))
     return ProjectCreatedOut(id=row.id, name=row.name)
 
 
@@ -118,7 +153,7 @@ async def update_user_role(
     ).scalar_one_or_none()
     if not up:
         raise_not_found(UserProject, f"User {user_id} n'est pas assigne au projet {project_id}")
-    allowed = [r.value for r in UserRole]
+    allowed = [r.value for r in ProjectRole]
     if body.role not in allowed:
         raise_unprocessable(f"Role invalide. Valeurs acceptees : {allowed}")
     up.role = body.role

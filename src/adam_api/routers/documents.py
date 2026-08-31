@@ -1,14 +1,19 @@
 """Documents - GET/POST/PATCH endpoints."""
 
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional
 
+from anyio import Path as AsyncPath
 from fastapi import APIRouter, Depends
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from adam_api.core.config import settings
 from adam_api.dependencies.db import get_db
+from adam_core.enums.status import DocumentStatus, JobState
 from adam_core.models import Document, DocumentField
 from adam_core.schemas.responses import (
     DocumentFieldInPageOut,
@@ -17,6 +22,7 @@ from adam_core.schemas.responses import (
     DocumentFieldsBySectionOut,
     DocumentFullOut,
     DocumentJobOut,
+    DocumentJobProgressOut,
     DocumentOcrResultOut,
     DocumentOut,
     DocumentPageOut,
@@ -25,6 +31,7 @@ from adam_core.schemas.responses import (
     FileRefOut,
 )
 from adam_core.utils.exceptions import raise_conflict, raise_not_found
+from adam_core.utils.pdf_render import PAGE_IMAGE_DPI, page_image_relative_path
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -101,6 +108,7 @@ async def get_document(
                     ocr_value=df.ocr_value,
                     resolved_value=df.resolved_value,
                     status=df.status,
+                    consensus_reached=df.consensus_reached,
                 )
             )
 
@@ -140,6 +148,91 @@ async def get_document(
         status=doc.status,
         metadata=doc.metadata_,
         page_count=doc.file.page_count if doc.file else None,
+    )
+
+
+@router.get("/{document_id}/job-progress", response_model=DocumentJobProgressOut)
+async def get_document_job_progress(
+    document_id: int, db: AsyncSession = Depends(get_db)
+) -> DocumentJobProgressOut:
+    """Etat du Job actif d'un Document, pour piloter le bouton Continuer du front.
+
+    Un Job actif est un Job non termine (state ASSIGNED ou IN_PROGRESS). CA-4 :
+    un Document sans Job actif renvoie 200 avec has_active_job=False, distinct
+    du 404 d'un Document introuvable.
+    """
+    result = await db.execute(
+        select(Document).where(Document.id == document_id).options(selectinload(Document.jobs))
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise_not_found(Document)  # CA-4 : distinct du "pas de job actif"
+
+    active_states = {JobState.ASSIGNED.value, JobState.IN_PROGRESS.value}
+    active_jobs = [j for j in doc.jobs if j.state in active_states]
+    active = max(active_jobs, key=lambda j: j.id, default=None)
+
+    # CA-3 : action exploitable par le front
+    action: Literal["CONTINUE", "REVIEW", "UNAVAILABLE"]
+    if active is not None:
+        action = "CONTINUE"
+    elif doc.status in (DocumentStatus.VALIDATED.value, DocumentStatus.EXPORTED.value) or any(
+        j.state == JobState.SUBMITTED.value for j in doc.jobs
+    ):
+        action = "REVIEW"
+    else:
+        action = "UNAVAILABLE"
+
+    return DocumentJobProgressOut(
+        document_id=doc.id,
+        has_active_job=active is not None,  # CA-1
+        active_job_id=active.id if active else None,
+        step=active.step if active else None,  # CA-2
+        action=action,
+    )
+
+
+@router.get("/{document_id}/pages/{page_number}/image")
+async def get_document_page_image(
+    document_id: int,
+    page_number: int,
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """Retourne l'image PNG d'une page du document, lue depuis le PVC (file_id/pages/).
+
+    404 si le document n'existe pas, si la page est hors bornes du page_count,
+    ou si les images n'ont pas encore ete generees par le worker.
+    """
+    result = await db.execute(
+        select(Document).where(Document.id == document_id).options(selectinload(Document.file))
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise_not_found(Document)
+    if doc.file is None:
+        raise_not_found(Document, "Aucun fichier associe a ce document")
+
+    # CA-4 : page 1-indexee, bornee par le page_count renseigne par le worker
+    if page_number < 1 or page_number > doc.file.page_count:
+        raise_not_found(
+            Document,
+            f"Page {page_number} hors bornes (document de {doc.file.page_count} page(s))",
+        )
+
+    image_path = Path(settings.pvc_mount_path) / page_image_relative_path(doc.file.id, page_number)
+    async_image_path = AsyncPath(image_path)
+    if not await async_image_path.is_file():
+        # CA-3 : le worker n'a pas (encore) genere les images de ce document
+        raise_not_found(
+            Document,
+            f"Image de la page {page_number} absente du PVC (images non generees)",
+        )
+    # X-Image-Dpi : le front a besoin du DPI de rendu pour l'affichage
+    return FileResponse(
+        image_path,
+        media_type="image/png",
+        filename=image_path.name,
+        headers={"X-Image-Dpi": str(PAGE_IMAGE_DPI)},
     )
 
 

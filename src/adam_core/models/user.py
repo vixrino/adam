@@ -1,6 +1,8 @@
 """Table USER : utilisateur de la plateforme ADAM.
 
-L'accès aux projets et les rôles associés sont gérés via USER_PROJECT.
+L'accès aux projets et les rôles métier associés sont gérés via USER_PROJECT.
+La colonne ``platform_role`` porte, elle, le rôle transverse éventuel
+(Superviseur NOTA, Administrateur NOTA), qui ne dépend d'aucun projet.
 """
 
 from datetime import datetime
@@ -10,10 +12,11 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import OrganisationScoped
 from adam_core.enums.status import UserStatus
 
 
-class User(Base):
+class User(OrganisationScoped, Base):
     __tablename__ = "user"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -26,6 +29,14 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String, nullable=False)
     matricule: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    # Role transverse (PlatformRole), NULL pour un utilisateur purement metier.
+    # Renseigne, il fait franchir la frontiere d'organisation : cf. la docstring
+    # de adam_api.dependencies.db.
+    platform_role: Mapped[Optional[str]] = mapped_column(
+        String,
+        nullable=True,
+        index=True,
+    )
     status: Mapped[str] = mapped_column(
         String,
         nullable=False,

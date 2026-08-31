@@ -258,10 +258,11 @@ class TestDocumentOut:
 
 class TestDocumentFieldInPageOut:
     def test_optional_fields(self):
-        f = DocumentFieldInPageOut(id=1, status="PENDING")
+        f = DocumentFieldInPageOut(id=1, status="PENDING", consensus_reached=False)
         assert f.field_key is None
         assert f.ocr_value is None
         assert f.resolved_value is None
+        assert f.consensus_reached is False
 
     def test_full(self):
         f = DocumentFieldInPageOut(
@@ -270,8 +271,10 @@ class TestDocumentFieldInPageOut:
             ocr_value="Martin",
             resolved_value="MARTIN",
             status="CORRECTED",
+            consensus_reached=True,
         )
         assert f.resolved_value == "MARTIN"
+        assert f.consensus_reached is True
 
 
 class TestDocumentSectionOut:
@@ -280,7 +283,7 @@ class TestDocumentSectionOut:
         assert s.fields == []
 
     def test_with_fields(self):
-        field = DocumentFieldInPageOut(id=1, status="PENDING")
+        field = DocumentFieldInPageOut(id=1, status="PENDING", consensus_reached=False)
         s = DocumentSectionOut(id="s1", fields=[field])
         assert len(s.fields) == 1
 
@@ -306,7 +309,7 @@ class TestDocumentFullOut:
         assert d.file is None
 
     def test_with_nested_pages(self):
-        field = DocumentFieldInPageOut(id=1, status="PENDING")
+        field = DocumentFieldInPageOut(id=1, status="PENDING", consensus_reached=False)
         section = DocumentSectionOut(id="s1", fields=[field])
         page = DocumentPageOut(page_number=1, sections=[section])
         d = DocumentFullOut(id=1, file_name="x.pdf", status="RECEIVED", pages=[page])

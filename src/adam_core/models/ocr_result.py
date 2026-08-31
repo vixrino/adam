@@ -5,17 +5,26 @@ Contrainte unique sur (document_id, dataset_id).
 """
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import (
+    OrganisationScoped,
+    ProjectScoped,
+    member_dataset_ids,
+    org_dataset_ids,
+)
 from adam_core.enums.ocr import StorageMode
 
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
-class OcrResult(Base):
+
+class OcrResult(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "ocr_result"
 
     __table_args__ = (
@@ -62,6 +71,16 @@ class OcrResult(Base):
         back_populates="ocr_results",
         lazy="noload",
     )
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # ocr_result -> dataset -> project -> organisation
+        return cls.dataset_id.in_(org_dataset_ids(organisation_id))
+
+    @classmethod
+    def __project_filter__(cls, matricule: str) -> "ColumnElement[bool]":
+        # ocr_result -> dataset -> project (adhesions de l'appelant)
+        return cls.dataset_id.in_(member_dataset_ids(matricule))
 
     def __repr__(self) -> str:
         return (

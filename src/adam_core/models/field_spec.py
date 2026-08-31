@@ -1,7 +1,7 @@
 """Table FIELD_SPEC : champ individuel au sein d'un DOC_SCHEMA."""
 
 from datetime import datetime
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -9,10 +9,19 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Float
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import (
+    OrganisationScoped,
+    ProjectScoped,
+    member_schema_ids,
+    org_schema_ids,
+)
 from adam_core.enums.status import FieldValueType
 
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
-class FieldSpec(Base):
+
+class FieldSpec(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "field_spec"
 
     __table_args__ = (
@@ -69,6 +78,10 @@ class FieldSpec(Base):
         comment="Type de valeur : TEXT, NUMBER, DATE, DATETIME, BOOLEAN",
     )
     required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: Champ porteur de donnee personnelle sensible (NIR, IBAN, nom...). Pilote
+    #: la politique de stockage de comparison_result : valeurs en clair pour un
+    #: champ non sensible, HMAC et distance d'edition sinon.
+    is_sensitive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Polygon : 8 floats [x1,y1,x2,y2,x3,y3,x4,y4]
@@ -95,6 +108,16 @@ class FieldSpec(Base):
         back_populates="field_spec",
         lazy="noload",
     )
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # field_spec -> doc_schema -> project -> organisation
+        return cls.schema_id.in_(org_schema_ids(organisation_id))
+
+    @classmethod
+    def __project_filter__(cls, matricule: str) -> "ColumnElement[bool]":
+        # field_spec -> doc_schema -> project (adhesions de l'appelant)
+        return cls.schema_id.in_(member_schema_ids(matricule))
 
     def __repr__(self) -> str:
         polygon_info = f"{len(self.polygon)} pts" if self.polygon else "no polygon"
