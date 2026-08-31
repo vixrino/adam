@@ -15,6 +15,11 @@ class Settings(CoreSettings):
     api_title: str
     api_cors_origins: str
     api_disable_jwt_validation: bool
+    #: Matricule endosse quand la validation JWT est desactivee. Resolu en base
+    #: comme n'importe quel appelant : c'est ce qui evite de reinventer un
+    #: UserCaller de toutes pieces, dont l'organisation finissait par ne
+    #: correspondre a aucune ligne reelle. Sans effet hors bypass.
+    api_dev_matricule: str = "MAT00003"
     internal_auth_enabled: bool
     internal_api_key: str
     pvc_mount_path: str
