@@ -141,6 +141,7 @@ class DocumentFieldInPageOut(BaseModel):
     ocr_value: Optional[str] = None
     resolved_value: Optional[str] = None
     status: str
+    consensus_reached: bool
 
 
 class DocumentSectionOut(BaseModel):
@@ -400,16 +401,6 @@ class OrgUserOut(BaseModel):
     matricule: str
     status: str
     projects: List[UserProjectRefOut] = []
-
-
-class OrganisationPatchOut(BaseModel):
-    id: int
-    name: str
-
-
-class OrganisationArchiveOut(BaseModel):
-    id: int
-    archived: bool
 
 
 # ---------------------------------------------------------------------------

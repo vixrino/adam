@@ -101,6 +101,7 @@ async def get_document(
                     ocr_value=df.ocr_value,
                     resolved_value=df.resolved_value,
                     status=df.status,
+                    consensus_reached=df.consensus_reached,
                 )
             )
 
