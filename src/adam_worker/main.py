@@ -16,6 +16,7 @@ from adam_worker.base_worker import BaseWorker
 from adam_worker.consensus_worker import ConsensusWorker
 from adam_worker.document_progress_worker import DocumentProgressWorker
 from adam_worker.page_image_worker import PageImageWorker
+from adam_worker.prepopulation.poller import PrepopulationWorker
 
 
 def _install_signal_handlers(workers: list[BaseWorker]) -> None:
@@ -44,6 +45,7 @@ async def _main() -> None:
 
     workers: list[BaseWorker] = [
         PageImageWorker(),
+        PrepopulationWorker(),
         ConsensusWorker(),
         DocumentProgressWorker(),
     ]

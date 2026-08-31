@@ -4,32 +4,36 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from adam_api.core.config import settings
+from adam_api.core.config import API_PREFIX, settings
 from adam_api.core.security import install_jwt_middleware
-from adam_api.routers import (
-    admin,
-    datasets,
-    documents,
-    files,
-    jobs,
-    ocr,
-    organisations,
-    projects,
-    schemas,
-    users,
-)
+from adam_api.dependencies.auth import get_caller, require_service
+from adam_api.routers.admin import router as admin_router
+from adam_api.routers.datasets import router as datasets_router
+from adam_api.routers.document_fields import router as document_fields_router
+from adam_api.routers.documents import router as documents_router
+from adam_api.routers.files import router as files_router
+from adam_api.routers.jobs import router as jobs_router
+from adam_api.routers.ocr import router as ocr_router
+from adam_api.routers.organisations import router as orgs_router
+from adam_api.routers.projects import router as projects_router
+from adam_api.routers.schemas import router as schemas_router
+from adam_api.routers.users import router as users_router
 from adam_core.core.config import get_core_settings
 from adam_core.db.session import init_engine
 from adam_core.utils.exceptions import http_exception_handler
 from adam_core.utils.logging import setup_logging
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+#: /health et /db-check restent a la racine : ce sont des sondes
+#: d'infrastructure, elles ne suivent pas le versionnement de l'API.
+PREFIX = API_PREFIX
 
 
 @asynccontextmanager
@@ -61,16 +65,23 @@ app.add_middleware(
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-app.include_router(admin.router)
-app.include_router(datasets.router)
-app.include_router(documents.router)
-app.include_router(files.router)
-app.include_router(jobs.router)
-app.include_router(ocr.router)
-app.include_router(organisations.router)
-app.include_router(projects.router)
-app.include_router(schemas.router)
-app.include_router(users.router)
+# Routes IHM : un utilisateur resolu, dont get_db derive le scope de session.
+app.include_router(admin_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+app.include_router(orgs_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+app.include_router(users_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+app.include_router(projects_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+app.include_router(schemas_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+app.include_router(datasets_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+app.include_router(documents_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+# Les champs sont une sous-ressource des documents : meme prefixe, meme
+# dependance. Le worker de pre-alimentation s'y presente comme un service, ce
+# que get_caller resout aussi bien qu'un utilisateur.
+app.include_router(document_fields_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+app.include_router(jobs_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+
+# Routes machine : reservees aux services internes, jamais appelees par l'IHM.
+app.include_router(files_router, prefix=PREFIX, dependencies=[Depends(require_service)])
+app.include_router(ocr_router, prefix=PREFIX, dependencies=[Depends(require_service)])
 
 
 def _add_binary_format_to_file_uploads(schema: Dict[str, Any]) -> None:
