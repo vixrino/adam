@@ -34,11 +34,14 @@ def mock_db() -> AsyncMock:
 @pytest.fixture
 def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
     from adam_api.dependencies.db import get_db
+
     app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _make_project(id: int = 1, name: str = "Projet", organisation_id: int = 1, status: str = "ACTIVE") -> MagicMock:
+def _make_project(
+    id: int = 1, name: str = "Projet", organisation_id: int = 1, status: str = "ACTIVE"
+) -> MagicMock:
     row = MagicMock()
     row.id = id
     row.name = name
@@ -61,6 +64,7 @@ def _make_up(user_id: int = 5, project_id: int = 1, role: str = "OPERATOR") -> M
 # GET /projects
 # ---------------------------------------------------------------------------
 
+
 class TestListProjects:
     def test_returns_200(self, client: TestClient) -> None:
         assert client.get("/projects").status_code == 200
@@ -70,14 +74,17 @@ class TestListProjects:
 
     def test_returns_list(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalars.return_value.all.return_value = [
-            _make_project(id=1, name="P1"), _make_project(id=2, name="P2"),
+            _make_project(id=1, name="P1"),
+            _make_project(id=2, name="P2"),
         ]
         data = client.get("/projects").json()
         assert len(data) == 2
         assert data[0]["name"] == "P1"
 
     def test_filter_by_organisation_id(self, client: TestClient, mock_db: AsyncMock) -> None:
-        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_project(organisation_id=3)]
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_project(organisation_id=3)
+        ]
         data = client.get("/projects?organisation_id=3").json()
         assert data[0]["organisation_id"] == 3
 
@@ -85,6 +92,7 @@ class TestListProjects:
 # ---------------------------------------------------------------------------
 # GET /projects/{project_id}
 # ---------------------------------------------------------------------------
+
 
 class TestGetProject:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -94,7 +102,9 @@ class TestGetProject:
     def test_404_when_not_found(self, client: TestClient) -> None:
         assert client.get("/projects/99").status_code == 404
 
-    def test_response_contains_status_and_updated_at(self, client: TestClient, mock_db: AsyncMock) -> None:
+    def test_response_contains_status_and_updated_at(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
         mock_db.get.return_value = _make_project(id=1, status="ARCHIVED")
         data = client.get("/projects/1").json()
         assert data["status"] == "ARCHIVED"
@@ -105,9 +115,13 @@ class TestGetProject:
 # POST /projects
 # ---------------------------------------------------------------------------
 
+
 class TestCreateProject:
     def test_returns_201(self, client: TestClient, mock_db: AsyncMock) -> None:
-        assert client.post("/projects", json={"organisation_id": 1, "name": "Nouveau"}).status_code == 201
+        assert (
+            client.post("/projects", json={"organisation_id": 1, "name": "Nouveau"}).status_code
+            == 201
+        )
 
     def test_422_when_missing_name(self, client: TestClient) -> None:
         assert client.post("/projects", json={"organisation_id": 1}).status_code == 422
@@ -120,6 +134,7 @@ class TestCreateProject:
 # POST /projects/{project_id}/users
 # ---------------------------------------------------------------------------
 
+
 class TestAddUserToProject:
     def test_returns_201(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = _make_project(id=1)
@@ -130,8 +145,10 @@ class TestAddUserToProject:
 
     def test_response_contains_role(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = _make_project(id=1)
-        data = client.post("/projects/1/users", json={"user_id": 5, "role": "SUPERVISOR"}).json()
-        assert data["role"] == "SUPERVISOR"
+        data = client.post(
+            "/projects/1/users", json={"user_id": 5, "role": "BUSINESS_ADMIN"}
+        ).json()
+        assert data["role"] == "BUSINESS_ADMIN"
         assert data["project_id"] == 1
         assert data["user_id"] == 5
 
@@ -139,6 +156,7 @@ class TestAddUserToProject:
 # ---------------------------------------------------------------------------
 # PATCH /projects/{project_id}
 # ---------------------------------------------------------------------------
+
 
 class TestPatchProject:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -166,10 +184,13 @@ class TestPatchProject:
 # PATCH /projects/{project_id}/users/{user_id}
 # ---------------------------------------------------------------------------
 
+
 class TestUpdateUserRole:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_up()
-        assert client.patch("/projects/1/users/5", json={"role": "SUPERVISOR"}).status_code == 200
+        assert (
+            client.patch("/projects/1/users/5", json={"role": "BUSINESS_ADMIN"}).status_code == 200
+        )
 
     def test_404_when_user_not_in_project(self, client: TestClient) -> None:
         assert client.patch("/projects/1/users/99", json={"role": "OPERATOR"}).status_code == 404
@@ -178,9 +199,11 @@ class TestUpdateUserRole:
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_up()
         assert client.patch("/projects/1/users/5", json={"role": "INVALID"}).status_code == 422
 
-    def test_response_contains_role_and_updated_at(self, client: TestClient, mock_db: AsyncMock) -> None:
+    def test_response_contains_role_and_updated_at(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_up(role="OPERATOR")
-        data = client.patch("/projects/1/users/5", json={"role": "SUPERVISOR"}).json()
+        data = client.patch("/projects/1/users/5", json={"role": "BUSINESS_ADMIN"}).json()
         assert "role" in data
         assert "updated_at" in data
         assert data["user_id"] == 5
@@ -190,6 +213,7 @@ class TestUpdateUserRole:
 # ---------------------------------------------------------------------------
 # DELETE /projects/{project_id}/users/{user_id}
 # ---------------------------------------------------------------------------
+
 
 class TestRemoveUserFromProject:
     def test_returns_204(self, client: TestClient, mock_db: AsyncMock) -> None:

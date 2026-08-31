@@ -24,7 +24,7 @@ from adam_core.core.config import CoreSettings
 from adam_core.utils.hashing import sha256_bytes
 from adam_core.db.session import create_tables, get_engine, init_engine
 from adam_core.enums.ocr import OcrProvider, StorageMode
-from adam_core.enums.roles import UserRole
+from adam_core.enums.roles import PlatformRole, ProjectRole
 from adam_core.enums.status import (
     DatasetStatus,
     DocumentFieldStatus,
@@ -71,26 +71,35 @@ async def seed_infrastructure(session: AsyncSession) -> Tuple:
     print(f"        {org_beta}")
     print(" [2/3] Users...")
     admin = User(
-        organisation_id=org-beta.id,
+        organisation_id=org_beta.id,
         email="admin@example.com",
         full_name="Admin Demo",
         matricule="MAT00001",
         status=UserStatus.ACTIVE.value,
     )
     operator = User(
-        organisation_id=org-beta.id,
+        organisation_id=org_beta.id,
         email="operateur@example.com",
        full_name="Operateur Demo",
        matricule="MAT00002",
        status=UserStatus.ACTIVE.value,
     )
-    session.add_all([admin, operator])
+    nota_admin = User(
+        organisation_id=org_beta.id,
+        email="admin.nota@example.com",
+        full_name="Administrateur NOTA Demo",
+        matricule="MAT00003",
+        platform_role=PlatformRole.NOTA_ADMIN.value,
+        status=UserStatus.ACTIVE.value,
+    )
+    session.add_all([admin, operator, nota_admin])
     await session.flush()
     print(f"        {admin}")
     print(f"        {operator}")
+    print(f"        {nota_admin} (platform_role={nota_admin.platform_role})")
     print(" [3/3] Project + UserProjects...")
     project = Project(
-       organisation_id=org-beta.id,
+       organisation_id=org_beta.id,
        name="Projet Demo Formulaires",
        description="Labellisation de formulaires administratifs demo",
        status=ProjectStatus.ACTIVE.value,
@@ -98,8 +107,8 @@ async def seed_infrastructure(session: AsyncSession) -> Tuple:
     session.add(project)
     await session.flush()
     session.add_all([
-       UserProject(user_id=admin.id, project_id=project.id, role=UserRole.ADMIN.value),
-       UserProject(user_id=operator.id, project_id=project.id, role=UserRole.OPERATOR.value),
+       UserProject(user_id=admin.id, project_id=project.id, role=ProjectRole.BUSINESS_ADMIN.value),
+       UserProject(user_id=operator.id, project_id=project.id, role=ProjectRole.OPERATOR.value),
     ])
     await session.flush()
     print(f"        {project}")

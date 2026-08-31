@@ -110,9 +110,11 @@ class TestScopedRegistry:
     def test_every_scoped_model_has_working_filter(self) -> None:
         # CA-3 : aucune table scopee ne reste sans critere coherent.
         for model in _iter_scoped_models():
-            sql = _compile(select(model).options(
-                with_loader_criteria(model, model.__organisation_filter__(TEST_ORG_ID))
-            ))
+            sql = _compile(
+                select(model).options(
+                    with_loader_criteria(model, model.__organisation_filter__(TEST_ORG_ID))
+                )
+            )
             assert "organisation_id = 42" in sql or "organisation.id = 42" in sql
 
 
@@ -131,7 +133,9 @@ class TestOrganisationFilters:
         assert '"user".organisation_id = 42' in sql
 
     def test_organisation_filters_on_own_id(self) -> None:
-        sql = _compile(select(Organisation).where(Organisation.__organisation_filter__(TEST_ORG_ID)))
+        sql = _compile(
+            select(Organisation).where(Organisation.__organisation_filter__(TEST_ORG_ID))
+        )
         assert "organisation.id = 42" in sql
 
     def test_dataset_via_project(self) -> None:
@@ -261,7 +265,9 @@ class TestSessionOrganisationInfo:
         async with get_async_session(organisation_id=TEST_ORG_ID) as session:
             assert session.info[SESSION_ORG_KEY] == TEST_ORG_ID
 
-    async def test_session_without_org_is_unscoped(self, fake_session_factory: _FakeSession) -> None:
+    async def test_session_without_org_is_unscoped(
+        self, fake_session_factory: _FakeSession
+    ) -> None:
         from adam_core.db.session import get_async_session
 
         async with get_async_session() as session:
@@ -310,3 +316,71 @@ class TestGetDbCallerWiring:
         assert captured["organisation_id"] == TEST_ORG_ID
         with pytest.raises(StopAsyncIteration):
             await gen.__anext__()
+
+
+class TestPlatformRoleCrossesOrganisations:
+    """Les roles NOTA operent au-dessus de l'organisation (RACI).
+
+    L'Administrateur NOTA gere LES organisations et le Superviseur NOTA pilote
+    les datasets de reference et les campagnes de tests sur toute la plateforme.
+    Un filtre derive de User.organisation_id les enfermerait dans la leur. Leur
+    session est donc ouverte sans organisation_id, ce qui neutralise le listener
+    par le meme chemin que les services machine.
+    """
+
+    def test_nota_admin_yields_none(self) -> None:
+        from adam_api.dependencies.auth import UserCaller
+        from adam_api.dependencies.db import _organisation_id_of
+        from adam_core.enums.roles import PlatformRole
+
+        caller = UserCaller(
+            matricule="MATADMIN",
+            organisation_id=TEST_ORG_ID,
+            platform_role=PlatformRole.NOTA_ADMIN.value,
+        )
+        assert _organisation_id_of(caller) is None
+
+    def test_nota_supervisor_yields_none(self) -> None:
+        from adam_api.dependencies.auth import UserCaller
+        from adam_api.dependencies.db import _organisation_id_of
+        from adam_core.enums.roles import PlatformRole
+
+        caller = UserCaller(
+            matricule="MATSUP",
+            organisation_id=TEST_ORG_ID,
+            platform_role=PlatformRole.NOTA_SUPERVISOR.value,
+        )
+        assert _organisation_id_of(caller) is None
+
+    def test_role_projet_ne_neutralise_pas_le_filtre(self) -> None:
+        """Un role de projet reste scope : seuls les roles NOTA traversent."""
+        from adam_api.dependencies.auth import UserCaller
+        from adam_api.dependencies.db import _organisation_id_of
+        from adam_core.enums.roles import ProjectRole
+
+        caller = UserCaller(
+            matricule="MATBIZ",
+            organisation_id=TEST_ORG_ID,
+            platform_role=ProjectRole.BUSINESS_ADMIN.value,
+        )
+        assert _organisation_id_of(caller) == TEST_ORG_ID
+
+    def test_valeur_inconnue_ne_neutralise_pas_le_filtre(self) -> None:
+        """Fail closed : une valeur non reconnue laisse le filtre en place."""
+        from adam_api.dependencies.auth import UserCaller
+        from adam_api.dependencies.db import _organisation_id_of
+
+        caller = UserCaller(
+            matricule="MATX",
+            organisation_id=TEST_ORG_ID,
+            platform_role="SUPERADMIN",
+        )
+        assert _organisation_id_of(caller) == TEST_ORG_ID
+
+    def test_platform_role_absent_reste_scope(self) -> None:
+        from adam_api.dependencies.auth import UserCaller
+        from adam_api.dependencies.db import _organisation_id_of
+
+        caller = UserCaller(matricule="MATTEST", organisation_id=TEST_ORG_ID)
+        assert caller.platform_role is None
+        assert _organisation_id_of(caller) == TEST_ORG_ID
