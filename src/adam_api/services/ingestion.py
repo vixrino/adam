@@ -109,10 +109,6 @@ async def _get_or_create_file(
             await async_abs_path.write_bytes(content)
         return file_row, False
 
-    async_abs_path = AsyncPath(pvc_root / relative_path)
-    await async_abs_path.parent.mkdir(parents=True, exist_ok=True)
-    await async_abs_path.write_bytes(content)
-
     stmt = (
         pg_insert(File)
         .values(
@@ -134,9 +130,9 @@ async def _get_or_create_file(
             file_name=file_name,
             file_id=file_row.id,
         )
-        abs_path = pvc_root / relative_path
-        abs_path.parent.mkdir(parents=True, exist_ok=True)
-        abs_path.write_bytes(content)
+        async_abs_path = AsyncPath(pvc_root / relative_path)
+        await async_abs_path.parent.mkdir(parents=True, exist_ok=True)
+        await async_abs_path.write_bytes(content)
         file_row.file_path = relative_path.as_posix()
         await db.flush()
         return file_row, True
