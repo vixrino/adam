@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from adam_worker.connectors.base import BaseOcrConnector
+from nota_worker.connectors.base import BaseOcrConnector
 
 
 def connector_from_settings(settings) -> BaseOcrConnector:
@@ -12,11 +12,11 @@ def connector_from_settings(settings) -> BaseOcrConnector:
     httpx ni le schema CERFA quand on ne construit aucun connecteur.
     """
     if settings.ocr_mock_enabled:
-        from adam_worker.connectors.mock import MockOcrConnector
+        from nota_worker.connectors.mock import MockOcrConnector
 
         return MockOcrConnector(confidence=settings.ocr_mock_confidence)
 
-    from adam_worker.connectors.mistral import MistralOcrConnector
+    from nota_worker.connectors.mistral import MistralOcrConnector
 
     return MistralOcrConnector(
         api_key=settings.mistral_api_key,

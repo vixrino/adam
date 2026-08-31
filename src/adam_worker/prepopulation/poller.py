@@ -42,8 +42,8 @@ from adam_core.enums.status import DocumentStatus
 from adam_core.models import Document
 from adam_core.schemas.interface_contract import SmartdocDocument
 from adam_worker.base_worker import BaseWorker
+from adam_worker.connectors import connector_from_settings
 from adam_worker.connectors.base import BaseOcrConnector, OcrConnectorError
-from adam_worker.connectors.mock import MockOcrConnector
 from adam_worker.prepopulation.api_client import ApiClient, ApiClientError
 from adam_worker.prepopulation.merger import count_detected, merge
 
@@ -86,7 +86,7 @@ class PrepopulationWorker(BaseWorker):
         pages_dir: Callable[[int], Path] = default_pages_dir,
     ) -> None:
         super().__init__()
-        self.connector = connector or MockOcrConnector()
+        self.connector = connector or connector_from_settings(settings)
         self.api_client = api_client or ApiClient(
             # API_PREFIX est celui que main.py monte : sans lui, chaque appel
             # part en 404, que le worker traduirait en documents ERROR sans

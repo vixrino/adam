@@ -31,6 +31,13 @@ class Settings(CoreSettings):
     ocr_mock_enabled: bool
     ocr_mock_confidence: float
     ocr_timeout_seconds: int
+    # Connecteur Mistral. Optionnels tant que ocr_mock_enabled est vrai ; le
+    # constructeur du connecteur refuse une cle ou un endpoint vides.
+    mistral_api_key: str = ""
+    mistral_ocr_endpoint: str = ""
+    mistral_ocr_model: str = "mistral-ocr-latest"
+    #: Chemin d'un truststore PEM pour un endpoint prive ; vide = CA systeme.
+    mistral_ca_bundle: str = ""
 
     @property
     def cors_origins(self) -> List[str]:
