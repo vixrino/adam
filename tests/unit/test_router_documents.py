@@ -259,7 +259,7 @@ class TestGetDocumentJobProgress:
 
 
 # ---------------------------------------------------------------------------
-# GET /documents/{document_id}/pages/{page_number}
+# GET /documents/{document_id}/pages/{page_number}/image
 # ---------------------------------------------------------------------------
 
 # En-tete PNG minimal : suffit pour verifier les octets servis, pas besoin
@@ -295,25 +295,25 @@ class TestGetDocumentPageImage:
     ) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document_with_file()
         self._write_page_image(pvc_root, file_id=1, page_number=2)
-        response = client.get("/documents/1/pages/2")
+        response = client.get("/documents/1/pages/2/image")
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/png"
         assert response.headers["X-Image-Dpi"] == "300"
         assert response.content == _PNG_BYTES
 
     def test_404_when_document_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
-        response = client.get("/documents/99/pages/1")
+        response = client.get("/documents/99/pages/1/image")
         assert response.status_code == 404
 
     def test_404_when_document_has_no_file(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document()
-        response = client.get("/documents/1/pages/1")
+        response = client.get("/documents/1/pages/1/image")
         assert response.status_code == 404
 
     # CA-3
     def test_404_when_images_not_generated(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document_with_file()
-        response = client.get("/documents/1/pages/1")
+        response = client.get("/documents/1/pages/1/image")
         assert response.status_code == 404
         assert "non generees" in response.json()["detail"]
 
@@ -324,13 +324,13 @@ class TestGetDocumentPageImage:
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document_with_file(
             page_count=3
         )
-        response = client.get("/documents/1/pages/4")
+        response = client.get("/documents/1/pages/4/image")
         assert response.status_code == 404
         assert "hors bornes" in response.json()["detail"]
 
     def test_404_when_page_zero(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_document_with_file()
-        response = client.get("/documents/1/pages/0")
+        response = client.get("/documents/1/pages/0/image")
         assert response.status_code == 404
 
 
