@@ -4,17 +4,21 @@ Index sur file_id pour la vérification des références avant purge PVC.
 """
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import OrganisationScoped, org_dataset_ids
 from adam_core.enums.status import DocumentStatus
 
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
-class Document(Base):
+
+class Document(OrganisationScoped, Base):
     __tablename__ = "document"
 
     __table_args__ = (
@@ -101,6 +105,11 @@ class Document(Base):
         """
         f = self.__dict__.get("file")
         return f.page_count if f is not None else None
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # document -> dataset -> project -> organisation
+        return cls.dataset_id.in_(org_dataset_ids(organisation_id))
 
     def __repr__(self) -> str:
         return f"<Document id={self.id} file_name={self.file_name!r} status={self.status!r}>"

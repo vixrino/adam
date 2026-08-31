@@ -4,17 +4,21 @@ Contrainte unique sur (document_id, field_spec_id, group_id)
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
+from adam_core.db.scoping import OrganisationScoped, org_document_ids
 from adam_core.enums.status import DocumentFieldStatus
 
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
-class DocumentField(Base):
+
+class DocumentField(OrganisationScoped, Base):
     __tablename__ = "document_field"
 
     __table_args__ = (
@@ -108,6 +112,11 @@ class DocumentField(Base):
         lazy="noload",
         cascade="all, delete-orphan",
     )
+
+    @classmethod
+    def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+        # document_field -> document -> dataset -> project -> organisation
+        return cls.document_id.in_(org_document_ids(organisation_id))
 
     def __repr__(self) -> str:
         polygon_info = f"{len(self.ocr_polygon)} pts" if self.ocr_polygon else "no polygon"
