@@ -66,6 +66,31 @@ def default_pages_dir(file_id: int) -> Path:
     return Path(str(file_id)) / "pages"
 
 
+#: Adresses d'ecoute qui ne designent aucun hote joignable. `0.0.0.0` et `::`
+#: signifient "toutes les interfaces locales" : elles disent a un serveur ou se
+#: mettre, pas a un client ou aller.
+_WILDCARD_HOSTS = {"0.0.0.0", "::", "[::]", ""}
+
+
+def _api_origin() -> str:
+    """Origine HTTP de l'API, telle qu'un client doit la composer.
+
+    api_host est l'adresse d'ECOUTE de l'API. La reutiliser telle quelle pour un
+    appel sortant marche tant qu'elle vaut un hote reel, et casse des qu'elle
+    vaut le joker d'ecoute : le worker tente alors une connexion vers 0.0.0.0,
+    que la pile reseau refuse — ECONNREFUSED sous Windows, comportement variable
+    ailleurs.
+
+    Le joker est donc rabattu sur localhost, qui est ce qu'il designe du point de
+    vue d'un processus tournant sur la meme machine. Un deploiement ou l'API vit
+    ailleurs renseigne api_host avec son nom d'hote, et rien ne change ici.
+    """
+    host = settings.api_host.strip()
+    if host in _WILDCARD_HOSTS:
+        host = "127.0.0.1"
+    return f"http://{host}:{settings.api_port}"
+
+
 class PrepopulationError(Exception):
     """Echec bloquant sur un document : il passera en ERROR."""
 
@@ -91,7 +116,7 @@ class PrepopulationWorker(BaseWorker):
             # API_PREFIX est celui que main.py monte : sans lui, chaque appel
             # part en 404, que le worker traduirait en documents ERROR sans
             # que la vraie cause apparaisse nulle part.
-            base_url=f"http://{settings.api_host}:{settings.api_port}{API_PREFIX}",
+            base_url=f"{_api_origin()}{API_PREFIX}",
             # Sans cette cle, aucun en-tete d'authentification n'est emis et
             # get_caller rejette l'appel en 401 : le worker mettait alors CHAQUE
             # document en ERROR avec « schema injoignable », en production
@@ -184,9 +209,7 @@ class PrepopulationWorker(BaseWorker):
         async with get_async_session() as db:
             row = (
                 await db.execute(
-                    select(Document.dataset_id, Document.file_id).where(
-                        Document.id == document_id
-                    )
+                    select(Document.dataset_id, Document.file_id).where(Document.id == document_id)
                 )
             ).one_or_none()
         if row is None:
@@ -221,9 +244,7 @@ class PrepopulationWorker(BaseWorker):
             )
         return ocr
 
-    async def _load_field_specs(
-        self, dataset_id: int, document_id: int
-    ) -> List[Dict[str, Any]]:
+    async def _load_field_specs(self, dataset_id: int, document_id: int) -> List[Dict[str, Any]]:
         try:
             return await self.api_client.get_field_specs(dataset_id)
         except ApiClientError as exc:

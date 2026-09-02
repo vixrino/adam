@@ -405,9 +405,7 @@ class TestPollerSelection:
         db = _FakeDb(candidates=[])
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient()).poll()
-        assert "'INGESTED'" in str(
-            db.statements[0].compile(compile_kwargs={"literal_binds": True})
-        )
+        assert "'INGESTED'" in str(db.statements[0].compile(compile_kwargs={"literal_binds": True}))
 
 
 class TestPollerSucces:
@@ -429,9 +427,7 @@ class TestPollerSucces:
         assert len(api.bulk_payloads[0]) == len(SPECS)
 
     @pytest.mark.asyncio
-    async def test_ocr_indisponible_reste_un_succes(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_ocr_indisponible_reste_un_succes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Un OCR muet n'est pas une erreur : champs vides, document utilisable."""
         db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
         _patch_session(monkeypatch, db)
@@ -443,18 +439,14 @@ class TestPollerSucces:
 
 class TestPollerEchecs:
     @pytest.mark.asyncio
-    async def test_connecteur_en_echec_met_en_error(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_connecteur_en_echec_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
 
     @pytest.mark.asyncio
-    async def test_schema_injoignable_met_en_error(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_schema_injoignable_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(specs_error=True)).poll()
@@ -524,6 +516,29 @@ class TestPageImages:
             (directory / name).touch()
         worker = _worker(_FakeApiClient(), tmp_path=tmp_path)
         assert [p.name for p in worker._page_images(1)] == ["page_1.png", "page_2.png"]
+
+
+class TestApiOrigin:
+    """api_host est une adresse d'ecoute ; le worker en tire une destination.
+
+    Le joker d'ecoute a deja produit une panne : le worker tentait une connexion
+    vers 0.0.0.0, refusee par la pile reseau, et aucun document n'etait
+    pre-alimente sans que la cause soit lisible.
+    """
+
+    @pytest.mark.parametrize("host", ["0.0.0.0", "::", "[::]", "", "  "])
+    def test_les_jokers_d_ecoute_sont_rabattus_sur_localhost(
+        self, monkeypatch: pytest.MonkeyPatch, host: str
+    ) -> None:
+        monkeypatch.setattr(poller_module.settings, "api_host", host)
+        monkeypatch.setattr(poller_module.settings, "api_port", 8001)
+        assert poller_module._api_origin() == "http://127.0.0.1:8001"
+
+    @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "api.interne"])
+    def test_un_hote_reel_est_conserve(self, monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+        monkeypatch.setattr(poller_module.settings, "api_host", host)
+        monkeypatch.setattr(poller_module.settings, "api_port", 8001)
+        assert poller_module._api_origin() == f"http://{host}:8001"
 
 
 def test_prepopulation_error_est_exportee() -> None:
