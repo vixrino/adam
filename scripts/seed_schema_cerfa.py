@@ -200,22 +200,33 @@ def print_overview(specs: List[Dict[str, Any]]) -> None:
         print(f"      {spec['field_key']:<28} {spec['value_type']:<8} {spec['display_label']}")
 
 
-async def _get_or_create_project(session: AsyncSession) -> Project:
+async def _get_or_create_project(session: AsyncSession, organisation_slug: str) -> Project:
     """Organisation et projet d'accueil, crees si absents.
 
     Le script est rejouable : relance apres relance, il retrouve le meme projet
     au lieu d'en empiler des copies.
+
+    Le choix de l'organisation n'est pas cosmetique. Les sessions de l'API sont
+    filtrees par l'organisation de l'appelant : un projet cree dans une
+    organisation ou l'utilisateur de demonstration n'est pas rattache existe en
+    base, mais reste invisible dans l'IHM. D'ou --organisation-slug, pour poser
+    le projet la ou les comptes existent deja.
     """
     org = (
-        await session.execute(select(Organisation).where(Organisation.slug == ORGANISATION_SLUG))
+        await session.execute(select(Organisation).where(Organisation.slug == organisation_slug))
     ).scalar_one_or_none()
     if org is None:
-        org = Organisation(name=ORGANISATION_NAME, slug=ORGANISATION_SLUG)
+        org = Organisation(name=ORGANISATION_NAME, slug=organisation_slug)
         session.add(org)
         await session.flush()
-        print(f"  organisation creee : {org.name}")
+        print(f"  organisation creee : {org.name} (slug={organisation_slug})")
+        print(
+            "  ATTENTION : organisation neuve, donc sans utilisateur. Le projet "
+            "n'apparaitra dans l'IHM pour personne.\n"
+            "  Relancer avec --organisation-slug <slug d'une organisation existante>."
+        )
     else:
-        print(f"  organisation existante : {org.name}")
+        print(f"  organisation existante : {org.name} (id={org.id})")
 
     project = (
         await session.execute(
@@ -240,8 +251,8 @@ async def _get_or_create_project(session: AsyncSession) -> Project:
     return project
 
 
-async def seed_schema(session: AsyncSession, replace: bool) -> DocSchema:
-    project = await _get_or_create_project(session)
+async def seed_schema(session: AsyncSession, replace: bool, organisation_slug: str) -> DocSchema:
+    project = await _get_or_create_project(session, organisation_slug)
 
     existing = (
         await session.execute(
@@ -304,12 +315,12 @@ async def seed_schema(session: AsyncSession, replace: bool) -> DocSchema:
     return schema
 
 
-async def main(replace: bool) -> None:
+async def main(replace: bool, organisation_slug: str) -> None:
     init_engine(settings.async_database_url, echo=False)
     await create_tables()
     factory = async_sessionmaker(bind=get_engine(), expire_on_commit=False)
     async with factory() as session:
-        await seed_schema(session, replace=replace)
+        await seed_schema(session, replace=replace, organisation_slug=organisation_slug)
         await session.commit()
     await get_engine().dispose()
 
@@ -320,6 +331,14 @@ if __name__ == "__main__":
         "--list",
         action="store_true",
         help="Affiche les champs qui seraient crees, sans toucher a la base",
+    )
+    parser.add_argument(
+        "--organisation-slug",
+        default=ORGANISATION_SLUG,
+        help=(
+            "Slug de l'organisation d'accueil. Choisir celle des comptes de "
+            "demonstration : un projet pose ailleurs reste invisible dans l'IHM."
+        ),
     )
     parser.add_argument(
         "--replace",
@@ -343,7 +362,7 @@ if __name__ == "__main__":
         print(f"\n{SEPARATOR}")
         sys.exit(0)
 
-    asyncio.run(main(replace=args.replace))
+    asyncio.run(main(replace=args.replace, organisation_slug=args.organisation_slug))
     print(SEPARATOR)
     print("Schema pret. Il apparait dans le projet, onglet Schemas.")
     print(SEPARATOR)
