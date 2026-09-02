@@ -83,6 +83,7 @@ SECTION_LABELS: Dict[str, str] = {
     "situation_logement_deposant": "Situation de logement",
     "dettes_logement": "Dettes de logement",
     "dettes_courantes": "Dettes de charges courantes",
+    "credits_immobiliers": "Credits immobiliers",
     "credits_consommation": "Credits a la consommation",
 }
 
@@ -92,6 +93,7 @@ REPEATABLE_SECTIONS: Dict[str, Tuple[int, str, str]] = {
     "personnes_a_charge": (5, "personne", "Personne n° {n}"),
     "dettes_logement": (4, "dette_logement", "Dette n° {n}"),
     "dettes_courantes": (5, "dette_courante", "Dette n° {n}"),
+    "credits_immobiliers": (4, "pret_immo", "Pret n° {n}"),
     "credits_consommation": (6, "pret", "Pret n° {n}"),
 }
 

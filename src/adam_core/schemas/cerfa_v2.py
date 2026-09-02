@@ -309,6 +309,66 @@ _PAGE_6: Dict[str, FieldDef] = {
     },
 }
 
+#: Page 9, credits immobiliers. Meme tableau que la page 10, a deux colonnes
+#: pres : le CERFA y demande l'assureur du pret et le montant mensuel de son
+#: assurance, qui n'existent pas pour un credit a la consommation.
+_PAGE_9: Dict[str, FieldDef] = {
+    "credits_immobiliers.nom_creancier": {
+        "description": "Nom du creancier du credit immobilier",
+        "type": "string",
+    },
+    "credits_immobiliers.adresse_creancier": {
+        "description": "Adresse du creancier du credit immobilier",
+        "type": "string",
+    },
+    "credits_immobiliers.nom_assureur": {
+        "description": "Nom et adresse de l'assureur du pret, si different du creancier",
+        "type": "string",
+    },
+    "credits_immobiliers.reference": {
+        "description": "Reference du pret immobilier",
+        "type": "string",
+    },
+    "credits_immobiliers.date_octroi": {
+        "description": "Date d'octroi du credit immobilier",
+        "type": "string",
+        "format": "date",
+    },
+    "credits_immobiliers.capital_emprunte": {
+        "description": "Capital emprunte",
+        "type": "number",
+    },
+    "credits_immobiliers.taux": {
+        "description": "Taux nominal ou debiteur annuel",
+        "type": "string",
+    },
+    "credits_immobiliers.mensualite": {
+        "description": "Montant de la mensualite hors assurance",
+        "type": "number",
+    },
+    "credits_immobiliers.assurance_mensuelle": {
+        "description": "Montant mensuel de l'assurance du pret",
+        "type": "number",
+    },
+    "credits_immobiliers.restant_du": {"description": "Montant restant du", "type": "number"},
+    "credits_immobiliers.montant_impaye": {
+        "description": "Montant impaye du credit immobilier",
+        "type": "number",
+    },
+    "credits_immobiliers.montant_exigible": {
+        "description": "Montant exigible",
+        "type": "number",
+    },
+    "credits_immobiliers.poursuites_oui": {
+        "description": "Poursuites en cours relatives au credit immobilier",
+        "type": "boolean",
+    },
+    "credits_immobiliers.poursuites_non": {
+        "description": "Aucune poursuite relative au credit immobilier",
+        "type": "boolean",
+    },
+}
+
 _PAGE_10: Dict[str, FieldDef] = {
     "credits_consommation.nom_creancier": {
         "description": "Nom du creancier du credit",
@@ -355,5 +415,6 @@ CERFA_V2_PAGE_FIELDS: Dict[int, Dict[str, FieldDef]] = {
     1: _PAGE_1,
     2: _PAGE_2,
     6: _PAGE_6,
+    9: _PAGE_9,
     10: _PAGE_10,
 }
