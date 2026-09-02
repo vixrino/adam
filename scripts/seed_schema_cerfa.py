@@ -20,7 +20,7 @@ Champs repetables
 -----------------
 Le CERFA ouvre plusieurs emplacements identiques pour un meme objet : six
 prets a la consommation page 10, plusieurs dettes page 6, plusieurs personnes
-au domicile page 2. cerfa_schema.py, qui pilote l'appel OCR, les aplatit
+au domicile page 2. cerfa_v2.py, qui pilote l'appel OCR, les aplatit
 volontairement en une seule instance : la repetition ne change rien a ce qu'on
 demande a Mistral, seulement au depliage de sa reponse.
 
@@ -56,7 +56,7 @@ from adam_core.core.config import CoreSettings
 from adam_core.db.session import create_tables, get_engine, init_engine
 from adam_core.enums.status import FieldValueType, ProjectStatus
 from adam_core.models import DocSchema, FieldSpec, Organisation, Project
-from adam_worker.connectors.cerfa_schema import CERFA_V2_PAGE_FIELDS
+from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
 
 settings = CoreSettings()
 SEPARATOR = "-" * 70

@@ -43,7 +43,7 @@ from adam_core.schemas.interface_contract import (
 )
 from adam_core.utils.logging import get_logger
 from adam_worker.connectors.base import BaseOcrConnector, OcrConnectorError
-from adam_worker.connectors.cerfa_schema import CERFA_V2_PAGE_FIELDS, FieldDef
+from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS, FieldDef
 
 logger = get_logger(__name__)
 

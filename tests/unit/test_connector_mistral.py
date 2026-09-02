@@ -22,7 +22,7 @@ import pytest
 
 from adam_worker.connectors import connector_from_settings
 from adam_worker.connectors.base import OcrConnectorError
-from adam_worker.connectors.cerfa_schema import CERFA_V2_PAGE_FIELDS
+from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
 from adam_worker.connectors.mistral import MistralOcrConnector
 from adam_worker.connectors.mock import MockOcrConnector
 
