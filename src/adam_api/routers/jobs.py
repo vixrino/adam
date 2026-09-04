@@ -20,7 +20,13 @@ from sqlalchemy.sql.functions import count
 
 from adam_api.dependencies.db import get_db
 from adam_api.services.consensus import try_resolve
-from adam_core.enums.status import DocumentFieldStatus, DocumentStatus, FieldValueType, JobState, JobStep
+from adam_core.enums.status import (
+    DocumentFieldStatus,
+    DocumentStatus,
+    FieldValueType,
+    JobState,
+    JobStep,
+)
 from adam_core.models import Dataset, Document, DocumentField, FieldProposal, Job, User
 from adam_core.schemas.responses import (
     FieldProposalOut,
@@ -54,6 +60,7 @@ class FieldProposalIn(BaseModel):
 
 # GET
 
+
 @router.get("", response_model=List[JobOut])
 async def list_jobs(
     agent_id: Optional[int] = None,
@@ -83,7 +90,9 @@ async def get_job(job_id: int, db: AsyncSession = Depends(get_db)) -> JobDetailO
         select(Job)
         .where(Job.id == job_id)
         .options(
-            selectinload(Job.document).selectinload(Document.document_fields).selectinload(DocumentField.field_spec),
+            selectinload(Job.document)
+            .selectinload(Document.document_fields)
+            .selectinload(DocumentField.field_spec),
             selectinload(Job.field_proposals),
         )
     )
@@ -136,6 +145,7 @@ async def get_job(job_id: int, db: AsyncSession = Depends(get_db)) -> JobDetailO
 
 
 # POST
+
 
 @router.post("", response_model=JobCreatedOut, status_code=201)
 async def create_job(payload: JobIn, db: AsyncSession = Depends(get_db)) -> JobCreatedOut:
@@ -213,7 +223,13 @@ async def propose_field_value(
 
     if existing:
         existing.value = payload.value
-        existing.value_type = payload.value_type
+        # value_type est NOT NULL en base, et le front ne le renvoie pas a chaque
+        # correction : l'ecraser par None faisait echouer la mise a jour en
+        # IntegrityError, donc en 500. La creation se protegeait deja par le meme
+        # repli ; seule cette branche l'avait oublie, ce qui rendait la panne
+        # invisible a la premiere proposition et systematique aux suivantes.
+        if payload.value_type is not None:
+            existing.value_type = payload.value_type
         existing.reason = payload.reason
         proposal = existing
     else:
@@ -242,6 +258,7 @@ async def propose_field_value(
 
 
 # PATCH
+
 
 @router.patch("/{job_id}/submit", response_model=JobSubmitOut)
 async def submit_job(

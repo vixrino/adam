@@ -1,6 +1,7 @@
 """
 Tests unitaires adam_api/routers/jobs.py
 """
+
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -40,6 +41,7 @@ def mock_db() -> AsyncMock:
 @pytest.fixture
 def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
     from adam_api.dependencies.db import get_db
+
     app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app, raise_server_exceptions=False)
 
@@ -222,6 +224,31 @@ class TestProposeFieldValue:
         mock_db.execute.return_value.scalar_one_or_none.return_value = existing_proposal
         response = client.post("/jobs/1/propose", json=self._payload())
         assert response.status_code == 201
+
+    def test_update_sans_value_type_conserve_celui_en_base(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        """value_type est NOT NULL : une correction qui l'omet ne doit pas l'effacer.
+
+        Le front ne renvoie pas le type a chaque correction. L'ecraser par None
+        faisait echouer la mise a jour en IntegrityError, donc en 500 — apres
+        que la premiere proposition, elle, avait reussi.
+        """
+        job = _make_job(state="IN_PROGRESS")
+        existing_proposal = MagicMock()
+        existing_proposal.id = 5
+        existing_proposal.step = "VALIDATION"
+        existing_proposal.value_type = "text"
+        mock_db.get.side_effect = [job, MagicMock()]
+        mock_db.execute.return_value.scalar_one_or_none.return_value = existing_proposal
+
+        response = client.post(
+            "/jobs/1/propose",
+            json={"document_field_id": 1, "value": "MOULIN"},
+        )
+
+        assert response.status_code == 201
+        assert existing_proposal.value_type == "text"
 
 
 # ---------------------------------------------------------------------------
