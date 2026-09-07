@@ -61,58 +61,144 @@ async def reset_db(session: AsyncSession) -> None:
     await session.commit()
     print(" Tables videes")
 # Infrastructure commune
+#
+# Les DIRES sont les directions regionales qui instruisent les dossiers de
+# surendettement : une organisation par direction, chacune avec ses agents et
+# son projet. Le decoupage rend visible ce que le seed precedent, avec ses deux
+# "Org Alpha" et "Org Beta" vides, ne montrait pas — un agent ne voit que les
+# projets de sa direction, et c'est la premiere chose qu'une demonstration doit
+# donner a voir.
+#
+# La premiere de la liste est la direction de reference : c'est elle que le
+# reste du seed alimente en schema, dataset et documents, et c'est la qu'on
+# retrouve les trois matricules attendus par check_project_scoping.py.
+
+#: (slug, nom). Ajouter une ligne suffit a creer une direction de plus.
+ORGANISATIONS = [
+    ("dires-idf", "DIRES Ile-de-France"),
+    ("dires-paca", "DIRES Provence-Alpes-Cote d'Azur"),
+    ("dires-ara", "DIRES Auvergne-Rhone-Alpes"),
+]
+
+#: Agents, par slug d'organisation : (matricule, prenom, nom, role projet,
+#: role plateforme). Les identites sont fictives ; les matricules MAT00001 a
+#: MAT00003 gardent en revanche leur signification, check_project_scoping.py et
+#: la valeur par defaut d'API_DEV_MATRICULE s'appuyant dessus.
+#:
+#: Les prenoms et noms evitent les accents : le repr des lignes est imprime sur
+#: la sortie standard, qui n'est pas toujours en UTF-8 sous Windows.
+AGENTS = {
+    "dires-idf": [
+        ("MAT00001", "Philippe", "Bernard", ProjectRole.BUSINESS_ADMIN, None),
+        ("MAT00002", "Nadia", "Fontaine", ProjectRole.OPERATOR, None),
+        ("MAT00003", "Sylvie", "Marchand", None, PlatformRole.NOTA_ADMIN),
+        ("MAT00005", "Karim", "Belkacem", ProjectRole.OPERATOR, None),
+    ],
+    "dires-paca": [
+        ("MAT00010", "Martine", "Vasseur", ProjectRole.BUSINESS_ADMIN, None),
+        ("MAT00011", "Thomas", "Roux", ProjectRole.OPERATOR, None),
+        ("MAT00012", "Awa", "Diallo", ProjectRole.OPERATOR, None),
+    ],
+    "dires-ara": [
+        ("MAT00020", "Michel", "Perrot", ProjectRole.BUSINESS_ADMIN, None),
+        ("MAT00021", "Claire", "Lemoine", ProjectRole.OPERATOR, None),
+    ],
+}
+
+#: Projet type, decline dans chaque direction. Le libelle porte la direction :
+#: deux projets homonymes dans deux organisations sont indiscernables dans une
+#: liste, alors que le filtrage par organisation les separe deja en base.
+PROJECT_NAME = "Traitement des declarations de surendettement"
+PROJECT_DESCRIPTION = "Annotation des CERFA 13594*02 recus par la direction"
+
+#: Nom des lots : le formulaire et sa version, pas une date de reception. Un lot
+#: se retrouve par ce qu'il contient ; "Lot janvier 2024" obligeait a l'ouvrir
+#: pour savoir de quel formulaire il s'agissait.
+#:
+#: Deux noms parce que les deux modes du seed ne portent pas le meme formulaire.
+#: Le mode JSON derive ses champs de form_demo_v0.3.json, dont les sections sont
+#: bien celles du CERFA surendettement. Le mode hardcode, lui, decrit un
+#: formulaire synthetique — demandeur, bien, creance — qu'aucun CERFA ne
+#: reprend : lui donner un numero de CERFA serait faux.
+CERFA_DATASET_NAME = "cerfa_13594-02_v2"
+DEMO_DATASET_NAME = "form_demo_v2"
+
+
+def _email(first_name: str, last_name: str) -> str:
+    return f"{first_name.lower()}.{last_name.lower()}@banque-france.fr"
+
+
 async def seed_infrastructure(session: AsyncSession) -> Tuple:
     print("\n [1/3] Organisations...")
-    org_alpha = Organisation(name="Org Alpha", slug="org-alpha")
-    org_beta = Organisation(name="Org Beta", slug="org-beta")
-    session.add_all([org_alpha, org_beta])
+    organisations = {}
+    for slug, name in ORGANISATIONS:
+        org = Organisation(name=name, slug=slug)
+        session.add(org)
+        organisations[slug] = org
     await session.flush()
-    print(f"        {org_alpha}")
-    print(f"        {org_beta}")
+    for org in organisations.values():
+        print(f"        {org}")
+
     print(" [2/3] Users...")
-    admin = User(
-        organisation_id=org_beta.id,
-        email="admin@example.com",
-        full_name="Admin Demo",
-        matricule="MAT00001",
-        status=UserStatus.ACTIVE.value,
-    )
-    operator = User(
-        organisation_id=org_beta.id,
-        email="operateur@example.com",
-       full_name="Operateur Demo",
-       matricule="MAT00002",
-       status=UserStatus.ACTIVE.value,
-    )
-    nota_admin = User(
-        organisation_id=org_beta.id,
-        email="admin.nota@example.com",
-        full_name="Administrateur NOTA Demo",
-        matricule="MAT00003",
-        platform_role=PlatformRole.NOTA_ADMIN.value,
-        status=UserStatus.ACTIVE.value,
-    )
-    session.add_all([admin, operator, nota_admin])
+    users_by_slug: Dict[str, List[Tuple[User, Optional[ProjectRole]]]] = {}
+    for slug, agents in AGENTS.items():
+        users_by_slug[slug] = []
+        for matricule, first_name, last_name, project_role, platform_role in agents:
+            user = User(
+                organisation_id=organisations[slug].id,
+                email=_email(first_name, last_name),
+                full_name=f"{first_name} {last_name}",
+                matricule=matricule,
+                platform_role=platform_role.value if platform_role else None,
+                status=UserStatus.ACTIVE.value,
+            )
+            session.add(user)
+            users_by_slug[slug].append((user, project_role))
     await session.flush()
-    print(f"        {admin}")
-    print(f"        {operator}")
-    print(f"        {nota_admin} (platform_role={nota_admin.platform_role})")
-    print(" [3/3] Project + UserProjects...")
-    project = Project(
-       organisation_id=org_beta.id,
-       name="Projet Demo Formulaires",
-       description="Labellisation de formulaires administratifs demo",
-       status=ProjectStatus.ACTIVE.value,
+    for slug, entries in users_by_slug.items():
+        for user, project_role in entries:
+            role = user.platform_role or (project_role.value if project_role else "sans role")
+            print(f"        [{slug}] {user.matricule} {user.full_name} - {role}")
+
+    print(" [3/3] Projects + UserProjects...")
+    projects = {}
+    for slug, org in organisations.items():
+        project = Project(
+            organisation_id=org.id,
+            name=f"{PROJECT_NAME} - {org.name}",
+            description=PROJECT_DESCRIPTION,
+            status=ProjectStatus.ACTIVE.value,
+        )
+        session.add(project)
+        projects[slug] = project
+    await session.flush()
+
+    for slug, entries in users_by_slug.items():
+        for user, project_role in entries:
+            # L'administrateur NOTA n'est inscrit dans aucun projet : son role de
+            # plateforme neutralise le filtrage, une adhesion serait redondante
+            # et masquerait ce que le scoping fait reellement.
+            if project_role is None:
+                continue
+            session.add(
+                UserProject(
+                    user_id=user.id,
+                    project_id=projects[slug].id,
+                    role=project_role.value,
+                )
+            )
+    await session.flush()
+    for project in projects.values():
+        print(f"        {project}")
+
+    reference_slug = ORGANISATIONS[0][0]
+    reference_users = {user.matricule: user for user, _ in users_by_slug[reference_slug]}
+    return (
+        organisations[reference_slug],
+        reference_users["MAT00001"],
+        reference_users["MAT00002"],
+        projects[reference_slug],
     )
-    session.add(project)
-    await session.flush()
-    session.add_all([
-       UserProject(user_id=admin.id, project_id=project.id, role=ProjectRole.BUSINESS_ADMIN.value),
-       UserProject(user_id=operator.id, project_id=project.id, role=ProjectRole.OPERATOR.value),
-    ])
-    await session.flush()
-    print(f"        {project}")
-    return org_beta, admin, operator, project
 # Mode 1 : Donnees hardcodees
 HARDCODED_FIELD_SPECS = [
     ("demandeur", "Demandeur", "demandeur.nom", "Nom de naissance", FieldValueType.TEXT.value, 1),
@@ -195,8 +281,8 @@ async def seed_from_form_json(
     schema = DocSchema(
        project_id=project.id,
        version=1,
-       name="Formulaire Demo",
-       document_type="FORM_DEMO_01",
+       name="CERFA 13594*02 - declaration de surendettement",
+       document_type="CERFA_SURENDETTEMENT_V2",
     )
     session.add(schema)
     await session.flush()
@@ -226,7 +312,8 @@ async def seed_from_form_json(
     print(" [6/8] Dataset...")
     dataset = Dataset(
        project_id=project.id, schema_id=schema.id,
-       name="Lot Formulaires Demo - Seed",
+       name=CERFA_DATASET_NAME,
+       description="Lot issu du JSON formulaire v0.3",
        ocr_provider=OcrProvider.PULSAR.value,
        status=DatasetStatus.ACTIVE.value,
        required_operators=2,
@@ -306,8 +393,8 @@ async def _seed_dataset_to_fields(
     print(f"  [{step_offset}/8] Dataset...")
     dataset = Dataset(
        project_id=project.id, schema_id=schema.id,
-       name="Lot janvier 2024",
-       description="Premier lot de documents",
+       name=DEMO_DATASET_NAME,
+       description="Lot de formulaires synthetiques",
        ocr_provider=OcrProvider.PULSAR.value,
        status=DatasetStatus.ACTIVE.value,
        required_operators=2,
