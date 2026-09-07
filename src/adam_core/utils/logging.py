@@ -7,8 +7,7 @@ from typing import Any
 from adam_core.core.config import CoreSettings
 
 try:
-    from exa.logger.formatter import \
-        JsonFormatter  # type: ignore[import-untyped]
+    from exa.logger.formatter import JsonFormatter  # type: ignore[import-untyped]
 
     _JSON_CLASS = "exa.logger.formatter.JsonFormatter"
 except ImportError:

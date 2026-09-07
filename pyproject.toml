@@ -64,6 +64,14 @@ packages = ["src/adam_core", "src/adam_api", "src/adam_worker"]
 target-version = ["py312"]
 line-length = 100
 
+# isort et black ne s'accordent pas par defaut sur les imports trop longs :
+# isort coupe par une barre obliquee inverse, black exige des parentheses. Sans
+# ces deux lignes, chacun defait le travail de l'autre selon l'ordre ou la
+# chaine de controles les lance.
+[tool.isort]
+profile = "black"
+line_length = 100
+
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
