@@ -35,9 +35,18 @@ def mock_db() -> AsyncMock:
     db.add = MagicMock(side_effect=lambda obj: setattr(obj, "id", 1))
     db.add_all = MagicMock()
     result = MagicMock()
+    # Tous les accesseurs de resultat sont bouchonnes, pas seulement ceux que
+    # les routes utilisent aujourd'hui. Un accesseur oublie rend un MagicMock,
+    # qui est vrai : une route qui cherche un doublon croit alors en trouver un,
+    # et le test echoue en 409 sur une ligne qui n'existe pas.
     result.scalars.return_value.all.return_value = []
+    result.scalars.return_value.first.return_value = None
+    result.scalars.return_value.one_or_none.return_value = None
     result.scalar_one_or_none.return_value = None
     result.scalar_one.return_value = None
+    result.one_or_none.return_value = None
+    result.first.return_value = None
+    result.scalar.return_value = None
     db.execute.return_value = result
     db.get.return_value = None
     return db
@@ -46,6 +55,7 @@ def mock_db() -> AsyncMock:
 @pytest.fixture
 def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
     from adam_api.dependencies.db import get_db
+
     app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app, raise_server_exceptions=False)
 
@@ -112,6 +122,7 @@ def _unlocked_db(mock_db: AsyncMock) -> AsyncMock:
 # GET /schemas
 # ---------------------------------------------------------------------------
 
+
 class TestListSchemas:
     def test_returns_200(self, client: TestClient) -> None:
         assert client.get("/schemas").status_code == 200
@@ -121,21 +132,28 @@ class TestListSchemas:
 
     def test_returns_list(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalars.return_value.all.return_value = [
-            _make_schema(id=1, name="S1"), _make_schema(id=2, name="S2"),
+            _make_schema(id=1, name="S1"),
+            _make_schema(id=2, name="S2"),
         ]
         data = client.get("/schemas").json()
         assert len(data) == 2
         assert data[0]["name"] == "S1"
 
-    def test_response_contains_version_and_project_id(self, client: TestClient, mock_db: AsyncMock) -> None:
-        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_schema(version=3, project_id=5)]
+    def test_response_contains_version_and_project_id(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_schema(version=3, project_id=5)
+        ]
         data = client.get("/schemas").json()
         assert data[0]["version"] == 3
         assert data[0]["project_id"] == 5
         assert "created_at" in data[0]
 
     def test_filter_by_project_id(self, client: TestClient, mock_db: AsyncMock) -> None:
-        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_schema(project_id=5)]
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_schema(project_id=5)
+        ]
         data = client.get("/schemas?project_id=5").json()
         assert len(data) == 1
 
@@ -143,6 +161,7 @@ class TestListSchemas:
 # ---------------------------------------------------------------------------
 # GET /schemas/field-specs/{field_spec_id}
 # ---------------------------------------------------------------------------
+
 
 class TestGetFieldSpec:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -156,13 +175,24 @@ class TestGetFieldSpec:
         mock_db.get.return_value = _make_field_spec(id=10, schema_id=3)
         data = client.get("/schemas/field-specs/10").json()
         assert data["schema_id"] == 3
-        expected = {"id", "schema_id", "page", "section_id", "section_label", "field_key", "display_label", "value_type", "required"}
+        expected = {
+            "id",
+            "schema_id",
+            "page",
+            "section_id",
+            "section_label",
+            "field_key",
+            "display_label",
+            "value_type",
+            "required",
+        }
         assert expected <= data.keys()
 
 
 # ---------------------------------------------------------------------------
 # GET /schemas/{schema_id}
 # ---------------------------------------------------------------------------
+
 
 class TestGetSchema:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -175,13 +205,24 @@ class TestGetSchema:
     def test_response_contains_all_fields(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_schema(id=1)
         data = client.get("/schemas/1").json()
-        expected = {"id", "name", "document_type", "version", "project_id", "created_at", "updated_at", "field_specs"}
+        expected = {
+            "id",
+            "name",
+            "document_type",
+            "version",
+            "project_id",
+            "created_at",
+            "updated_at",
+            "field_specs",
+        }
         assert expected <= data.keys()
         assert data["field_specs"] == []
 
     def test_response_contains_field_specs(self, client: TestClient, mock_db: AsyncMock) -> None:
         fs = _make_field_spec(id=10, field_key="identite.nom")
-        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_schema(id=1, field_specs=[fs])
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_schema(
+            id=1, field_specs=[fs]
+        )
         data = client.get("/schemas/1").json()
         assert len(data["field_specs"]) == 1
         spec = data["field_specs"][0]
@@ -193,45 +234,60 @@ class TestGetSchema:
 # POST /schemas
 # ---------------------------------------------------------------------------
 
+
 class TestCreateSchema:
     def test_returns_201(self, client: TestClient) -> None:
-        resp = client.post("/schemas", json={
-            "project_id": 1, "name": "Nouveau Schema", "document_type": "IDENTITE"
-        })
+        resp = client.post(
+            "/schemas",
+            json={"project_id": 1, "name": "Nouveau Schema", "document_type": "IDENTITE"},
+        )
         assert resp.status_code == 201
 
     def test_422_when_missing_document_type(self, client: TestClient) -> None:
         assert client.post("/schemas", json={"project_id": 1, "name": "X"}).status_code == 422
 
     def test_422_when_missing_name(self, client: TestClient) -> None:
-        assert client.post("/schemas", json={"project_id": 1, "document_type": "T"}).status_code == 422
+        assert (
+            client.post("/schemas", json={"project_id": 1, "document_type": "T"}).status_code == 422
+        )
 
     def test_response_contains_version_and_field_specs_created(self, client: TestClient) -> None:
-        data = client.post("/schemas", json={
-            "project_id": 1, "name": "Schema", "document_type": "IDENTITE"
-        }).json()
+        data = client.post(
+            "/schemas", json={"project_id": 1, "name": "Schema", "document_type": "IDENTITE"}
+        ).json()
         assert "version" in data
         assert "field_specs_created" in data
         assert data["field_specs_created"] == 0
 
     def test_creates_field_specs_in_same_request(self, client: TestClient) -> None:
-        data = client.post("/schemas", json={
-            "project_id": 1, "name": "Schema", "document_type": "IDENTITE",
-            "field_specs": [_VALID_SPEC],
-        }).json()
+        data = client.post(
+            "/schemas",
+            json={
+                "project_id": 1,
+                "name": "Schema",
+                "document_type": "IDENTITE",
+                "field_specs": [_VALID_SPEC],
+            },
+        ).json()
         assert data["field_specs_created"] == 1
 
     def test_422_on_invalid_field_key_in_field_specs(self, client: TestClient) -> None:
-        resp = client.post("/schemas", json={
-            "project_id": 1, "name": "Schema", "document_type": "IDENTITE",
-            "field_specs": [{**_VALID_SPEC, "field_key": "invalid-key"}],
-        })
+        resp = client.post(
+            "/schemas",
+            json={
+                "project_id": 1,
+                "name": "Schema",
+                "document_type": "IDENTITE",
+                "field_specs": [{**_VALID_SPEC, "field_key": "invalid-key"}],
+            },
+        )
         assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
 # POST /schemas/{schema_id}/field-specs
 # ---------------------------------------------------------------------------
+
 
 class TestAddFieldSpec:
     def test_returns_201(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -259,7 +315,9 @@ class TestAddFieldSpec:
         bad_spec = {**_VALID_SPEC, "field_key": "invalid-key"}
         assert client.post("/schemas/1/field-specs", json=bad_spec).status_code == 422
 
-    def test_response_contains_id_field_key_schema_id(self, client: TestClient, mock_db: AsyncMock) -> None:
+    def test_response_contains_id_field_key_schema_id(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
         _unlocked_db(mock_db)
         mock_db.get.return_value = _make_schema(id=1)
         data = client.post("/schemas/1/field-specs", json=_VALID_SPEC).json()
@@ -282,6 +340,7 @@ class TestAddFieldSpec:
 # POST /schemas/{schema_id}/duplicate
 # ---------------------------------------------------------------------------
 
+
 class TestDuplicateSchema:
     def test_returns_201(self, client: TestClient, mock_db: AsyncMock) -> None:
         source = _make_schema(id=1, version=1, field_specs=[])
@@ -293,7 +352,9 @@ class TestDuplicateSchema:
     def test_404_when_source_not_found(self, client: TestClient) -> None:
         assert client.post("/schemas/99/duplicate").status_code == 404
 
-    def test_response_contains_incremented_version(self, client: TestClient, mock_db: AsyncMock) -> None:
+    def test_response_contains_incremented_version(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
         source = _make_schema(id=1, version=2, field_specs=[])
         # first execute call (get_schema with options) returns source
         results = [MagicMock(), MagicMock()]
@@ -335,22 +396,36 @@ class TestDuplicateSchema:
 # PATCH /schemas/{schema_id}/field-specs/{spec_id}
 # ---------------------------------------------------------------------------
 
+
 class TestPatchFieldSpec:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
         _unlocked_db(mock_db)
         fs = _make_field_spec(id=10, schema_id=1)
         mock_db.get.return_value = fs
-        assert client.patch("/schemas/1/field-specs/10", json={"display_label": "Nouveau Label"}).status_code == 200
+        assert (
+            client.patch(
+                "/schemas/1/field-specs/10", json={"display_label": "Nouveau Label"}
+            ).status_code
+            == 200
+        )
 
     def test_404_when_spec_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
         _unlocked_db(mock_db)
-        assert client.patch("/schemas/1/field-specs/99", json={"display_label": "X"}).status_code == 404
+        assert (
+            client.patch("/schemas/1/field-specs/99", json={"display_label": "X"}).status_code
+            == 404
+        )
 
-    def test_404_when_spec_belongs_to_other_schema(self, client: TestClient, mock_db: AsyncMock) -> None:
+    def test_404_when_spec_belongs_to_other_schema(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
         _unlocked_db(mock_db)
         fs = _make_field_spec(id=10, schema_id=999)
         mock_db.get.return_value = fs
-        assert client.patch("/schemas/1/field-specs/10", json={"display_label": "X"}).status_code == 404
+        assert (
+            client.patch("/schemas/1/field-specs/10", json={"display_label": "X"}).status_code
+            == 404
+        )
 
     def test_423_when_schema_locked(self, client: TestClient, mock_db: AsyncMock) -> None:
         locked = MagicMock()
@@ -363,12 +438,16 @@ class TestPatchFieldSpec:
         _unlocked_db(mock_db)
         fs = _make_field_spec(id=10, schema_id=1)
         mock_db.get.return_value = fs
-        assert client.patch("/schemas/1/field-specs/10", json={"section_label": "Nouveau"}).status_code == 200
+        assert (
+            client.patch("/schemas/1/field-specs/10", json={"section_label": "Nouveau"}).status_code
+            == 200
+        )
 
 
 # ---------------------------------------------------------------------------
 # DELETE /schemas/{schema_id}/field-specs/{spec_id}
 # ---------------------------------------------------------------------------
+
 
 class TestDeleteFieldSpec:
     def test_returns_204(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -381,7 +460,9 @@ class TestDeleteFieldSpec:
         _unlocked_db(mock_db)
         assert client.delete("/schemas/1/field-specs/99").status_code == 404
 
-    def test_404_when_spec_belongs_to_other_schema(self, client: TestClient, mock_db: AsyncMock) -> None:
+    def test_404_when_spec_belongs_to_other_schema(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
         _unlocked_db(mock_db)
         fs = _make_field_spec(id=10, schema_id=999)
         mock_db.get.return_value = fs
@@ -394,7 +475,9 @@ class TestDeleteFieldSpec:
         mock_db.execute.return_value.scalar_one_or_none.return_value = locked
         assert client.delete("/schemas/1/field-specs/10").status_code == 423
 
-    def test_409_when_referenced_by_document_field(self, client: TestClient, mock_db: AsyncMock) -> None:
+    def test_409_when_referenced_by_document_field(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
         fs = _make_field_spec(id=10, schema_id=1)
         mock_db.get.return_value = fs
         # premier execute : lock check (pas verrouille)
