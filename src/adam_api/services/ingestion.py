@@ -44,13 +44,19 @@ def looks_like_pdf(content: bytes) -> bool:
     try:
         # pymupdf expose py.typed mais Document.__init__ n'a pas d'annotations :
         # l'appel et l'attribut suivant sont donc non types cote lib, pas cote nous.
-        doc = pymupdf.open(stream=content, filetype="pdf")  # type: ignore[no-untyped-call]
+        # `unused-ignore` accompagne le code : selon la version de pymupdf
+        # installee, l'annotation existe ou non, et l'ignore est tantot
+        # necessaire tantot superflu. Sans lui, une configuration qui signale
+        # les ignores inutiles echoue des que la lib est annotee.
+        doc = pymupdf.open(  # type: ignore[no-untyped-call, unused-ignore]
+            stream=content, filetype="pdf"
+        )
     except RuntimeError:
         return False
     try:
         return cast(int, doc.page_count) > 0
     finally:
-        doc.close()  # type: ignore[no-untyped-call]
+        doc.close()  # type: ignore[no-untyped-call, unused-ignore]
 
 
 def pvc_relative_path(

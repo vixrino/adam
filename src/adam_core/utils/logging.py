@@ -7,7 +7,11 @@ from typing import Any
 from adam_core.core.config import CoreSettings
 
 try:
-    from exa.logger.formatter import JsonFormatter  # type: ignore[import-untyped]
+    # Pas de `type: ignore` ici : ignore_missing_imports couvre deja le cas, que
+    # exa-logger soit absent (paquet interne, extra optionnel) ou installe sans
+    # marqueur py.typed. Le commentaire devenait inutile des que le paquet etait
+    # la, et une configuration qui signale les ignores inutiles echouait dessus.
+    from exa.logger.formatter import JsonFormatter
 
     _JSON_CLASS = "exa.logger.formatter.JsonFormatter"
 except ImportError:
