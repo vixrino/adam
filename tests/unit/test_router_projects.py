@@ -51,13 +51,18 @@ def client(app: FastAPI, mock_db: AsyncMock, caller: UserCaller) -> TestClient:
 
 
 def _make_project(
-    id: int = 1, name: str = "Projet", organisation_id: int = 1, status: str = "ACTIVE"
+    id: int = 1,
+    name: str = "Projet",
+    organisation_id: int = 1,
+    status: str = "ACTIVE",
+    description: Optional[str] = "Projet de demonstration",
 ) -> MagicMock:
     row = MagicMock()
     row.id = id
     row.name = name
     row.organisation_id = organisation_id
     row.status = status
+    row.description = description
     row.updated_at = _NOW
     return row
 
@@ -120,6 +125,20 @@ class TestGetProject:
         data = client.get("/projects/1").json()
         assert data["status"] == "ARCHIVED"
         assert "updated_at" in data
+
+    def test_description_absente_reste_lisible(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        """project.description est nullable : un projet sans description se lit.
+
+        Declaree obligatoire, elle faisait echouer la route en 500 — la
+        validation de reponse survenant apres le retour, l'erreur ne pointait
+        pas la route mais le schema.
+        """
+        mock_db.get.return_value = _make_project(id=1, description=None)
+        response = client.get("/projects/1")
+        assert response.status_code == 200
+        assert response.json()["description"] is None
 
 
 # ---------------------------------------------------------------------------

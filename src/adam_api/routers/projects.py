@@ -69,7 +69,13 @@ async def get_project(project_id: int, db: AsyncSession = Depends(get_db)) -> Pr
     row = await db.get(Project, project_id)
     if not row:
         raise_not_found(Project)
-    return ProjectDetailOut(id=row.id, name=row.name, status=row.status, updated_at=row.updated_at)
+    return ProjectDetailOut(
+        id=row.id,
+        name=row.name,
+        description=row.description,
+        status=row.status,
+        updated_at=row.updated_at,
+    )
 
 
 def _require_project_creator(caller: Caller = Depends(get_caller)) -> Caller:
@@ -136,7 +142,13 @@ async def patch_project(
             raise_unprocessable(f"Statut invalide. Valeurs acceptees : {allowed}")
         row.status = body.status
     await db.flush()
-    return ProjectDetailOut(id=row.id, name=row.name, status=row.status, updated_at=row.updated_at)
+    return ProjectDetailOut(
+        id=row.id,
+        name=row.name,
+        description=row.description,
+        status=row.status,
+        updated_at=row.updated_at,
+    )
 
 
 @router.patch("/{project_id}/users/{user_id}", response_model=UserRolePatchOut)

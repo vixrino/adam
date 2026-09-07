@@ -1,4 +1,4 @@
-"""Schemas Pydantic de reponse pour les endpoints Sprint 3. 
+"""Schemas Pydantic de reponse pour les endpoints Sprint 3.
 
 Chaque schema correspond a un type de retour d'endpoint.
 ``from_attributes=True`` permet de construire directement depuis un ORM row.
@@ -11,10 +11,10 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
 # ---------------------------------------------------------------------------
 # Organisation
 # ---------------------------------------------------------------------------
+
 
 class OrganisationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -30,6 +30,7 @@ class OrganisationOut(BaseModel):
 # ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
+
 
 class DatasetOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -54,6 +55,7 @@ class DatasetStatsOut(BaseModel):
 # ---------------------------------------------------------------------------
 # File
 # ---------------------------------------------------------------------------
+
 
 class FileOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -111,6 +113,7 @@ class FileRefOut(BaseModel):
 # ---------------------------------------------------------------------------
 # Document
 # ---------------------------------------------------------------------------
+
 
 class DocumentOut(BaseModel):
     """Reponse standard d'un document (liste / creation / patch).
@@ -205,6 +208,7 @@ class DocumentFullOut(BaseModel):
 # DocumentField by-section
 # ---------------------------------------------------------------------------
 
+
 class FieldBySectionItemOut(BaseModel):
     """Champ minimal dans la réponse par section."""
 
@@ -222,6 +226,7 @@ class DocumentFieldsBySectionOut(BaseModel):
 # ---------------------------------------------------------------------------
 # DocumentField
 # ---------------------------------------------------------------------------
+
 
 class DocumentFieldOut(BaseModel):
     """CA-3 : inclut ocr_polygon, statut et valeur resolue.
@@ -247,6 +252,7 @@ class DocumentFieldOut(BaseModel):
     @model_validator(mode="after")
     def _parse_values(self) -> "DocumentFieldOut":
         from adam_core.utils.field_parser import parse_field_value
+
         self.ocr_value = parse_field_value(self.ocr_value, self.value_type)
         self.resolved_value = parse_field_value(self.resolved_value, self.value_type)
         return self
@@ -263,6 +269,7 @@ class DocumentFieldPatchOut(BaseModel):
 # ---------------------------------------------------------------------------
 # Job
 # ---------------------------------------------------------------------------
+
 
 class JobOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -314,6 +321,7 @@ class FieldProposalOut(BaseModel):
 # Job detail (GET /jobs/{id}) — structure pages / sections
 # ---------------------------------------------------------------------------
 
+
 class JobFieldItemOut(BaseModel):
     id: int
     field_key: Optional[str] = None
@@ -352,6 +360,7 @@ class JobDetailOut(BaseModel):
 # Ingestion (Sprint 3 - ticket 7)
 # ---------------------------------------------------------------------------
 
+
 class FileIngestionItemOut(BaseModel):
     """Resultat pour un fichier dans la reponse d'ingestion."""
 
@@ -375,6 +384,7 @@ class IngestionOut(BaseModel):
 # ---------------------------------------------------------------------------
 # OCR
 # ---------------------------------------------------------------------------
+
 
 class OcrResultOut(BaseModel):
     id: int
@@ -404,6 +414,7 @@ class OcrResultCreatedOut(BaseModel):
 # Organisation (extensions)
 # ---------------------------------------------------------------------------
 
+
 class UserProjectRefOut(BaseModel):
     project_id: int
     role: str
@@ -422,6 +433,7 @@ class OrgUserOut(BaseModel):
 # Project
 # ---------------------------------------------------------------------------
 
+
 class ProjectOut(BaseModel):
     id: int
     name: str
@@ -431,6 +443,11 @@ class ProjectOut(BaseModel):
 class ProjectDetailOut(BaseModel):
     id: int
     name: str
+    #: Optionnel parce que project.description l'est en base (Text nullable).
+    #: Le declarer obligatoire ferait echouer la lecture de tout projet cree
+    #: sans description — en 500, la validation de reponse survenant apres le
+    #: retour de la route.
+    description: Optional[str] = None
     status: str
     updated_at: Optional[datetime] = None
 
@@ -456,6 +473,7 @@ class UserRolePatchOut(BaseModel):
 # ---------------------------------------------------------------------------
 # DocSchema
 # ---------------------------------------------------------------------------
+
 
 class SchemaListItemOut(BaseModel):
     id: int
@@ -525,6 +543,7 @@ class SchemaCreatedOut(BaseModel):
 # ---------------------------------------------------------------------------
 # User
 # ---------------------------------------------------------------------------
+
 
 class UserListItemOut(BaseModel):
     id: int
