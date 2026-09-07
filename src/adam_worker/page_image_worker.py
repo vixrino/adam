@@ -51,7 +51,10 @@ class PageImageWorker(BaseWorker):
         if not candidate_ids:
             self.logger.debug("aucun document RECEIVED")
             return
-        self.logger.info("%s document(s) RECEIVED a traiter", len(candidate_ids))
+        # En DEBUG : le meme decompte est rendu par « cycle termine », qui porte
+        # en plus la duree. Deux lignes INFO pour un seul chiffre encadraient
+        # chaque lot sans rien apprendre.
+        self.logger.debug("%s document(s) RECEIVED a traiter", len(candidate_ids))
         cycle_started = perf_counter()
         for document_id in candidate_ids:
             try:

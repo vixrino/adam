@@ -2,6 +2,13 @@
 
 Stub minimal Sprint 3 : pas de scheduler, chaque worker boucle sur son
 propre polling (voir BaseWorker.run_forever).
+
+echo est force a False, comme dans les lanceurs individuels. Avec APP_ENV=dev,
+l'echo SQLAlchemy imprime chaque instruction emise, BEGIN et COMMIT compris :
+quatre workers qui interrogent la base toutes les quelques secondes noient
+alors les lignes du worker lui-meme, les seules qui disent ce qui se passe.
+Le lecteur d'un journal de worker cherche « quel document, quel echec », pas
+le SQL qui l'a amene. Pour ce dernier, relancer ponctuellement avec echo=True.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ def _install_signal_handlers(workers: list[BaseWorker]) -> None:
     add_signal_handler n'est pas supporte sur Windows : on l'ignore alors
     (contexte dev uniquement, le deploiement reel tourne sous Linux).
     """
+
     def _request_stop() -> None:
         for worker in workers:
             worker.stop()
@@ -41,7 +49,7 @@ def _install_signal_handlers(workers: list[BaseWorker]) -> None:
 async def _main() -> None:
     core = get_core_settings()
     setup_logging(core)
-    init_engine(core.async_database_url, echo=core.is_dev)
+    init_engine(core.async_database_url, echo=False)
 
     workers: list[BaseWorker] = [
         PageImageWorker(),

@@ -139,7 +139,10 @@ class PrepopulationWorker(BaseWorker):
             self.logger.debug("aucun document INGESTED")
             return
 
-        self.logger.info("%s document(s) INGESTED a pre-alimenter", len(candidates))
+        # En DEBUG : chaque document du lot emet ensuite sa propre ligne, avec le
+        # detail qui compte. Annoncer le decompte n'ajoutait rien devant N lignes
+        # qui le disent.
+        self.logger.debug("%s document(s) INGESTED a pre-alimenter", len(candidates))
         for document_id in candidates:
             try:
                 await self._process_one(document_id)
