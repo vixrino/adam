@@ -293,7 +293,10 @@ async def submit_job(
     ).scalar_one() or 0
 
     dataset = await db.get(Dataset, job.dataset_id)
-    if dataset and submitted_count >= dataset.required_operators:
+    required = dataset.required_operators if dataset else None
+    quorum_atteint = required is not None and submitted_count >= required
+
+    if quorum_atteint:
         doc = await db.get(Document, job.document_id)
         if doc and doc.status not in (
             DocumentStatus.VALIDATED.value,
@@ -301,13 +304,22 @@ async def submit_job(
         ):
             doc.status = DocumentStatus.PENDING_CONSENSUS.value
 
+    # Le message disait « consensus declenche » a chaque soumission, quorum
+    # atteint ou non. Sur un lot a deux operateurs, la moitie des lignes
+    # annoncaient donc un consensus qui n'avait pas lieu — et un journal qui
+    # annonce ce qui n'arrive pas ne sert plus a diagnostiquer.
     logger.info(
-        "consensus declenche [document_id=%s jobs=%s/%s]",
+        "job soumis [document_id=%s jobs=%s/%s consensus=%s]",
         job.document_id,
         submitted_count,
-        dataset.required_operators if dataset else "?",
+        required if required is not None else "?",
+        "declenche" if quorum_atteint else "en attente",
     )
-    background_tasks.add_task(try_resolve, job.document_id, job.dataset_id)
+    if quorum_atteint:
+        # Conditionne l'appel, comme l'annonce la docstring. try_resolve rendait
+        # « waiting » sans rien faire dans le cas contraire, au prix de trois
+        # requetes par soumission.
+        background_tasks.add_task(try_resolve, job.document_id, job.dataset_id)
 
     return JobSubmitOut(
         id=job.id,
