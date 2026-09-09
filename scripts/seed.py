@@ -281,8 +281,8 @@ async def seed_from_form_json(
     schema = DocSchema(
        project_id=project.id,
        version=1,
-       name="CERFA 13594*02 - declaration de surendettement",
-       document_type="CERFA_SURENDETTEMENT_V2",
+       name="Formulaire Demo",
+       document_type="FORM_DEMO_01",
     )
     session.add(schema)
     await session.flush()
@@ -313,7 +313,6 @@ async def seed_from_form_json(
     dataset = Dataset(
        project_id=project.id, schema_id=schema.id,
        name=CERFA_DATASET_NAME,
-       description="Lot issu du JSON formulaire v0.3",
        ocr_provider=OcrProvider.PULSAR.value,
        status=DatasetStatus.ACTIVE.value,
        required_operators=2,
@@ -394,7 +393,7 @@ async def _seed_dataset_to_fields(
     dataset = Dataset(
        project_id=project.id, schema_id=schema.id,
        name=DEMO_DATASET_NAME,
-       description="Lot de formulaires synthetiques",
+       description="Premier lot de documents",
        ocr_provider=OcrProvider.PULSAR.value,
        status=DatasetStatus.ACTIVE.value,
        required_operators=2,
