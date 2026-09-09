@@ -1,7 +1,7 @@
 """Datasets - Cree par les admins metier via CLI."""
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends
 from fastapi import File as UploadField
@@ -67,7 +67,7 @@ class DatasetPatch(BaseModel):
 #: ARCHIVED est terminal. Desarchiver rouvrirait la meme question sans la
 #: resoudre : soit le perimetre est fige et le dataset reste utilisable en
 #: lecture, soit il change et c'est un autre dataset.
-_ALLOWED_TRANSITIONS: Dict[str, set] = {
+_ALLOWED_TRANSITIONS: Dict[str, Set[str]] = {
     DatasetStatus.DRAFT.value: {DatasetStatus.ACTIVE.value, DatasetStatus.ARCHIVED.value},
     DatasetStatus.ACTIVE.value: {DatasetStatus.ARCHIVED.value},
     DatasetStatus.ARCHIVED.value: set(),
@@ -107,7 +107,7 @@ async def _apply_status_transition(dataset: Dataset, target: str, db: AsyncSessi
         raise_unprocessable(f"Statut invalide: {target}")
     if target == dataset.status:
         return
-    if target not in _ALLOWED_TRANSITIONS.get(dataset.status, set()):
+    if target not in _ALLOWED_TRANSITIONS.get(dataset.status, frozenset()):
         raise_conflict(
             Dataset,
             f"transition {dataset.status} -> {target} interdite",
