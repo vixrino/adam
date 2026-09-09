@@ -3,7 +3,9 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File as UploadField, UploadFile
+from fastapi import APIRouter, Depends
+from fastapi import File as UploadField
+from fastapi import UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,9 +16,14 @@ from adam_api.dependencies.db import get_db
 from adam_api.services.ingestion import ingest_pdf, looks_like_pdf
 from adam_core.enums.ocr import OcrProvider
 from adam_core.enums.status import DatasetStatus, DocumentStatus
-from adam_core.models import Dataset, DocSchema, Document, Organisation, Project
-from adam_core.schemas.responses import DatasetOut, DatasetStatsOut, IngestionOut, FileIngestionItemOut
-from adam_core.utils.exceptions import raise_not_found, raise_unprocessable
+from adam_core.models import Dataset, DocSchema, Document, FieldSpec, Organisation, Project
+from adam_core.schemas.responses import (
+    DatasetOut,
+    DatasetStatsOut,
+    FileIngestionItemOut,
+    IngestionOut,
+)
+from adam_core.utils.exceptions import raise_conflict, raise_not_found, raise_unprocessable
 from adam_core.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -43,6 +50,71 @@ class DatasetPatch(BaseModel):
     required_operators: Optional[int] = Field(default=None, ge=1, le=5)
     ocr_job_enabled: Optional[bool] = None
     configs: Optional[Dict[str, Any]] = None
+
+
+#: Cycle de vie d'un dataset : ce qu'on peut atteindre depuis chaque etat.
+#:
+#: DRAFT est l'etat de preparation. Le schema reste modifiable tant qu'aucun
+#: dataset ne l'a quitte — c'est la regle que fait respecter
+#: _check_schema_not_locked, dans routers/schemas.py.
+#:
+#: ACTIVE ne revient pas a DRAFT. Le retour deverrouillerait le schema alors que
+#: des documents ont pu etre annotes avec : les DOCUMENT_FIELD deja crees
+#: pointeraient vers des FIELD_SPEC redevenus modifiables, et une correction du
+#: schema changerait retroactivement le sens de ce qui a ete saisi. Un dataset
+#: qu'on veut reprendre s'archive, et un nouveau prend sa suite.
+#:
+#: ARCHIVED est terminal. Desarchiver rouvrirait la meme question sans la
+#: resoudre : soit le perimetre est fige et le dataset reste utilisable en
+#: lecture, soit il change et c'est un autre dataset.
+_ALLOWED_TRANSITIONS: Dict[str, set] = {
+    DatasetStatus.DRAFT.value: {DatasetStatus.ACTIVE.value, DatasetStatus.ARCHIVED.value},
+    DatasetStatus.ACTIVE.value: {DatasetStatus.ARCHIVED.value},
+    DatasetStatus.ARCHIVED.value: set(),
+}
+
+
+async def _check_ready_for_activation(dataset: Dataset, db: AsyncSession) -> None:
+    """Refuse l'activation d'un dataset dont le schema ne decrit aucun champ.
+
+    Activer, c'est ouvrir le lot aux operateurs et figer le schema. Un schema
+    sans FIELD_SPEC leur presenterait des documents sans rien a annoter, et le
+    verrou interdirait ensuite d'y ajouter les champs manquants : le lot serait
+    inutilisable et irreparable en meme temps.
+    """
+    schema = await db.get(DocSchema, dataset.schema_id)
+    if schema is None:
+        raise_unprocessable(
+            f"Dataset {dataset.id} : schema {dataset.schema_id} introuvable, activation impossible"
+        )
+    field_count: int = (
+        await db.execute(select(count(FieldSpec.id)).where(FieldSpec.schema_id == schema.id))
+    ).scalar_one()
+    if field_count == 0:
+        raise_unprocessable(
+            f"Le schema '{schema.name}' ne declare aucun champ : "
+            "activer le dataset le figerait sans rien a annoter"
+        )
+
+
+async def _apply_status_transition(dataset: Dataset, target: str, db: AsyncSession) -> None:
+    """Fait passer le dataset a `target`, si le cycle de vie l'autorise.
+
+    Reposer le statut courant ne fait rien et ne leve pas : un client qui rejoue
+    sa requete ne doit pas recevoir un conflit pour un etat deja atteint.
+    """
+    if target not in {s.value for s in DatasetStatus}:
+        raise_unprocessable(f"Statut invalide: {target}")
+    if target == dataset.status:
+        return
+    if target not in _ALLOWED_TRANSITIONS.get(dataset.status, set()):
+        raise_conflict(
+            Dataset,
+            f"transition {dataset.status} -> {target} interdite",
+        )
+    if target == DatasetStatus.ACTIVE.value:
+        await _check_ready_for_activation(dataset, db)
+    dataset.status = target
 
 
 @router.get("", response_model=List[DatasetOut])
@@ -82,7 +154,9 @@ async def get_dataset_stats(dataset_id: int, db: AsyncSession = Depends(get_db))
             .where(Document.status == DocumentStatus.VALIDATED.value)
         )
     ).scalar_one()
-    return DatasetStatsOut(dataset_id=dataset_id, documents_total=total, documents_validated=validated)
+    return DatasetStatsOut(
+        dataset_id=dataset_id, documents_total=total, documents_validated=validated
+    )
 
 
 @router.post("", response_model=DatasetOut, status_code=201)
@@ -100,8 +174,15 @@ async def patch_dataset(
     row = await db.get(Dataset, dataset_id)
     if not row:
         raise_not_found(Dataset)
-    for key, val in body.model_dump(exclude_unset=True).items():
+    fields = body.model_dump(exclude_unset=True)
+    # Le statut passe par le cycle de vie, comme sur la route dediee. Le poser
+    # ici par setattr ouvrait une porte derobee : la meme valeur, refusee sur
+    # /status, etait acceptee sur PATCH /datasets/{id}.
+    target_status = fields.pop("status", None)
+    for key, val in fields.items():
         setattr(row, key, val)
+    if target_status is not None:
+        await _apply_status_transition(row, target_status, db)
     await db.flush()
     return row
 
@@ -110,12 +191,10 @@ async def patch_dataset(
 async def patch_dataset_status(
     dataset_id: int, status: str, db: AsyncSession = Depends(get_db)
 ) -> Dataset:
-    if status not in {s.value for s in DatasetStatus}:
-        raise_unprocessable(f"Statut invalide: {status}")
     row = await db.get(Dataset, dataset_id)
     if not row:
         raise_not_found(Dataset)
-    row.status = status
+    await _apply_status_transition(row, status, db)
     await db.flush()
     return row
 
@@ -147,8 +226,12 @@ async def ingest_documents(
         file_name = upload.filename or "sans_nom.pdf"
         content = await upload.read()
         if not looks_like_pdf(content):
-            logger.warning("Fichier ignore (non PDF) [dataset_id=%s file_name=%s]", dataset_id, file_name)
-            items.append(FileIngestionItemOut(file_name=file_name, status="rejected", reason="non-PDF"))
+            logger.warning(
+                "Fichier ignore (non PDF) [dataset_id=%s file_name=%s]", dataset_id, file_name
+            )
+            items.append(
+                FileIngestionItemOut(file_name=file_name, status="rejected", reason="non-PDF")
+            )
             continue
         raw = await ingest_pdf(
             db,

@@ -1,17 +1,17 @@
 """
 Tests unitaires adam_api/routers/datasets.py
 """
+
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pymupdf
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from adam_api.routers.datasets import router
 from adam_core.models import Dataset, DocSchema, Organisation, Project
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -40,6 +40,7 @@ def mock_db() -> AsyncMock:
 @pytest.fixture
 def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
     from adam_api.dependencies.db import get_db
+
     app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app, raise_server_exceptions=False)
 
@@ -193,9 +194,7 @@ class TestGetDatasetStats:
         response = client.get("/datasets/99/stats")
         assert response.status_code == 404
 
-    def test_stats_contain_expected_fields(
-        self, client: TestClient, mock_db: AsyncMock
-    ) -> None:
+    def test_stats_contain_expected_fields(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = _make_dataset()
         mock_db.execute.return_value.all.return_value = []
         response = client.get("/datasets/1/stats")
@@ -316,7 +315,9 @@ class TestIngestDocuments:
         new_file.file_path = "dires/cerfa/2026_01_15_1321/doc.pdf"
         mock_db.execute = AsyncMock(
             side_effect=[
-                _exec_result(scalar_one_or_none=None),  # existing document (dataset+checksum) -> aucun
+                _exec_result(
+                    scalar_one_or_none=None
+                ),  # existing document (dataset+checksum) -> aucun
                 _exec_result(scalar_one_or_none=None),  # File existant par checksum -> aucun
                 _exec_result(scalar_one_or_none=new_file),  # INSERT ... RETURNING -> cree
             ]
@@ -349,7 +350,9 @@ class TestIngestDocuments:
         existing_doc.file_id = 3
         mock_db.execute = AsyncMock(
             side_effect=[
-                _exec_result(one_or_none=(existing_doc, "dires/cerfa/2026_01_01_0000/doc.pdf")),  # deja lie dans ce dataset
+                _exec_result(
+                    one_or_none=(existing_doc, "dires/cerfa/2026_01_01_0000/doc.pdf")
+                ),  # deja lie dans ce dataset
             ]
         )
 
@@ -426,3 +429,102 @@ class TestIngestDocuments:
         statuses = {r["file_name"]: r["status"] for r in body["results"]}
         assert statuses["valid.pdf"] == "created"
         assert statuses["invalid.pdf"] == "rejected"
+
+
+# ---------------------------------------------------------------------------
+# Cycle de vie du dataset
+# ---------------------------------------------------------------------------
+
+
+class TestCycleDeVie:
+    """DRAFT -> ACTIVE -> ARCHIVED, et rien d'autre.
+
+    Avant ces regles, la route acceptait n'importe quel statut de l'enumeration
+    depuis n'importe quel etat : un dataset actif pouvait redevenir brouillon,
+    ce qui deverrouillait son schema alors que des documents etaient deja
+    annotes avec.
+    """
+
+    def _activable(self, mock_db: AsyncMock, status: str = "DRAFT", field_count: int = 3):
+        dataset = _make_dataset(status=status)
+        schema = MagicMock()
+        schema.id = 1
+        schema.name = "Schema CERFA"
+        mock_db.get.side_effect = [dataset, schema]
+        mock_db.execute.return_value.scalar_one.return_value = field_count
+        return dataset
+
+    def test_brouillon_vers_actif(self, client: TestClient, mock_db: AsyncMock) -> None:
+        dataset = self._activable(mock_db)
+        response = client.patch("/datasets/1/status?status=ACTIVE")
+        assert response.status_code == 200
+        assert dataset.status == "ACTIVE"
+
+    def test_activation_refusee_si_le_schema_n_a_aucun_champ(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        dataset = self._activable(mock_db, field_count=0)
+        response = client.patch("/datasets/1/status?status=ACTIVE")
+        assert response.status_code == 422
+        assert dataset.status == "DRAFT"
+
+    def test_actif_ne_revient_pas_a_brouillon(self, client: TestClient, mock_db: AsyncMock) -> None:
+        dataset = _make_dataset(status="ACTIVE")
+        mock_db.get.return_value = dataset
+        response = client.patch("/datasets/1/status?status=DRAFT")
+        assert response.status_code == 409
+        assert dataset.status == "ACTIVE"
+
+    def test_archive_est_terminal(self, client: TestClient, mock_db: AsyncMock) -> None:
+        dataset = _make_dataset(status="ARCHIVED")
+        mock_db.get.return_value = dataset
+        assert client.patch("/datasets/1/status?status=ACTIVE").status_code == 409
+        assert dataset.status == "ARCHIVED"
+
+    def test_brouillon_vers_archive(self, client: TestClient, mock_db: AsyncMock) -> None:
+        dataset = _make_dataset(status="DRAFT")
+        mock_db.get.return_value = dataset
+        assert client.patch("/datasets/1/status?status=ARCHIVED").status_code == 200
+        assert dataset.status == "ARCHIVED"
+
+    def test_actif_vers_archive(self, client: TestClient, mock_db: AsyncMock) -> None:
+        dataset = _make_dataset(status="ACTIVE")
+        mock_db.get.return_value = dataset
+        assert client.patch("/datasets/1/status?status=ARCHIVED").status_code == 200
+        assert dataset.status == "ARCHIVED"
+
+    def test_reposer_le_meme_statut_ne_leve_pas(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        # Un client qui rejoue sa requete ne doit pas recevoir un conflit pour
+        # un etat deja atteint.
+        dataset = _make_dataset(status="ACTIVE")
+        mock_db.get.return_value = dataset
+        assert client.patch("/datasets/1/status?status=ACTIVE").status_code == 200
+
+    def test_statut_hors_enumeration(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_dataset(status="DRAFT")
+        assert client.patch("/datasets/1/status?status=EN_COURS").status_code == 422
+
+    def test_le_patch_general_applique_les_memes_regles(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        """PATCH /datasets/{id} ne doit pas contourner le cycle de vie.
+
+        Le statut y etait pose par setattr : la transition refusee sur la route
+        dediee passait par celle-ci.
+        """
+        dataset = _make_dataset(status="ACTIVE")
+        mock_db.get.return_value = dataset
+        response = client.patch("/datasets/1", json={"status": "DRAFT"})
+        assert response.status_code == 409
+        assert dataset.status == "ACTIVE"
+
+    def test_le_patch_general_modifie_toujours_les_autres_champs(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        dataset = _make_dataset(status="DRAFT")
+        mock_db.get.return_value = dataset
+        response = client.patch("/datasets/1", json={"name": "Nouveau nom"})
+        assert response.status_code == 200
+        assert dataset.name == "Nouveau nom"
