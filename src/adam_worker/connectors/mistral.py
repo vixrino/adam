@@ -70,14 +70,21 @@ _MIME_BY_SUFFIX = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jp
 
 #: Consigne d'annotation. Elle n'enumere pas les champs : le json_schema passe
 #: en response_format le fait deja, et le repeter en prose ouvrirait la porte a
-#: une divergence entre les deux. Elle ne dit donc que ce que le schema ne peut
-#: pas dire — ne rien inventer, et distinguer l'absence de la case vide.
+#: une divergence entre les deux. Elle ne dit que ce que le schema ne peut pas
+#: dire, et chaque phrase repond a une erreur vue sur un CERFA reel.
 _CONSIGNE = (
     "Tu releves les champs d'un formulaire administratif francais a partir de "
-    "sa transcription. Rends uniquement les valeurs lues dans le texte. "
+    "sa transcription. Rends uniquement les valeurs lues dans le texte.\n"
     "Laisse null tout champ absent, illisible ou non renseigne : une valeur "
-    "plausible mais non lue est une erreur. Pour une case a cocher, rends true "
-    "si elle est cochee et false si elle est vue non cochee."
+    "plausible mais non lue est une erreur, un null ne l'est jamais.\n"
+    "Ne reporte jamais la valeur d'un champ dans un autre. Si une seule date "
+    "figure dans une rubrique, elle renseigne le seul champ auquel elle se "
+    "rapporte ; les autres restent null.\n"
+    "Pour une case a cocher, rends true si elle est cochee et false si elle "
+    "est vue non cochee. Une case non cochee n'appelle aucune date, aucun "
+    "montant et aucun libelle : les champs qui en dependent restent null.\n"
+    "Si une rubrique porte plusieurs lignes, ne rends que la premiere. Ne "
+    "concatene jamais plusieurs lignes dans un meme champ."
 )
 
 

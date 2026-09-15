@@ -27,7 +27,7 @@ import pytest
 from adam_worker.connectors import connector_from_settings
 from adam_worker.connectors.base import OcrConnectorError
 from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
-from adam_worker.connectors.mistral import MistralOcrConnector
+from adam_worker.connectors.mistral import _CONSIGNE, MistralOcrConnector
 from adam_worker.connectors.mock import MockOcrConnector
 
 ENDPOINT = "https://mistral.test"
@@ -145,6 +145,8 @@ def test_les_deux_appels_portent_image_puis_schema(tmp_path: Path) -> None:
     corps = json.loads(annotation.content)
     assert corps["model"] == "mistral-medium-latest"
     assert corps["temperature"] == 0
+    assert [m["role"] for m in corps["messages"]] == ["system", "user"]
+    assert corps["messages"][0]["content"] == _CONSIGNE
     assert corps["messages"][-1]["content"] == MARKDOWN
     schema = corps["response_format"]["json_schema"]["schema"]
     assert schema["additionalProperties"] is False
@@ -171,6 +173,15 @@ def test_page_sans_texte_economise_l_annotation(tmp_path: Path) -> None:
 
     assert [r.url.path for r in requetes] == ["/v1/ocr"]
     assert doc is None
+
+
+def test_la_consigne_interdit_le_report_entre_champs() -> None:
+    """Sur un CERFA reel, une seule date de rubrique avait renseigne les cinq
+    champs de date de la section, cases decochees comprises. Le json_schema ne
+    sait pas exprimer cette dependance : seule la consigne le peut."""
+    assert "Ne reporte jamais la valeur d'un champ dans un autre" in _CONSIGNE
+    assert "les champs qui en dependent restent null" in _CONSIGNE
+    assert "Ne concatene jamais plusieurs lignes" in _CONSIGNE
 
 
 # -- Absence de resultat (CA-3, cas nominal) --------------------------------
