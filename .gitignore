@@ -73,3 +73,10 @@ _screenshots/
 # FastAPI swagger (downloaded via scripts/download_swagger.ps1)
 src/adam_api/static/swagger-ui-bundle.js
 src/adam_api/static/swagger-ui.css
+
+# Truststores et certificats locaux (endpoints internes). Le bundle depend du
+# poste et de la PKI, il n'a pas de valeur partagee ; MISTRAL_CA_BUNDLE en
+# donne le chemin.
+*.pem
+*.crt
+*.cer
