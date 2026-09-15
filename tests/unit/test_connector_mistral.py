@@ -153,6 +153,25 @@ def test_les_deux_appels_portent_image_puis_schema(tmp_path: Path) -> None:
     assert set(schema["properties"]) == set(CERFA_V2_PAGE_FIELDS[1])
 
 
+def test_le_schema_autorise_null_sur_chaque_champ(tmp_path: Path) -> None:
+    """Sans null, le mode strict oblige le modele a fabriquer une valeur.
+
+    Sur un CERFA reel, date_octroi rendait 1947-01-01 pour un tableau vide :
+    le type "string" seul interdisait la seule reponse juste.
+    """
+    requetes: List[httpx.Request] = []
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
+    asyncio.run(_connector(handler).extract(_images(tmp_path, 1)))
+
+    schema = json.loads(requetes[1].content)["response_format"]["json_schema"]["schema"]
+    proprietes = schema["properties"]
+    assert all("null" in p["type"] for p in proprietes.values())
+    # Le type du contrat survit a cote de null, il n'est pas remplace.
+    assert "boolean" in proprietes["deposant.civilite_monsieur"]["type"]
+    # Strict exige que tout figure dans required : l'absence passe par null.
+    assert set(schema["required"]) == set(proprietes)
+
+
 def test_pages_sans_schema_ne_sont_pas_soumises(tmp_path: Path) -> None:
     """Le CERFA n'a de champs qu'en pages 1, 2, 6 et 10 : 4 pages sur 10."""
     requetes: List[httpx.Request] = []

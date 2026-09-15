@@ -299,11 +299,37 @@ class MistralOcrConnector(BaseOcrConnector):
         )
 
 
+def _nullable(spec: FieldDef) -> Dict[str, Any]:
+    """Autorise null a cote du type declare par le contrat.
+
+    En sortie structuree stricte, une propriete de type "string" doit rendre
+    une chaine : null n'est pas une valeur legale. Le modele somme de remplir
+    une date qui n'est pas au document n'a alors pas d'autre issue que d'en
+    fabriquer une — sur un CERFA reel, il a tire 1947-01-01 du pied de page du
+    formulaire. Aucune consigne ne peut contredire le schema sur ce point :
+    tant que null est interdit, une valeur inventee est la seule sortie
+    conforme. On l'autorise donc explicitement, champ par champ.
+    """
+    declared = spec.get("type")
+    if isinstance(declared, list):
+        types = list(declared)
+    else:
+        types = [declared]
+    if "null" not in types:
+        types.append("null")
+    return {**spec, "type": types}
+
+
 def _annotation_format(page_number: int, fields: Mapping[str, FieldDef]) -> Dict[str, Any]:
     """json_schema strict et plat, tel que qualifie par le script du manager.
 
     La forme rendue vaut pour response_format comme pour l'ancien
     document_annotation_format : c'est la meme enveloppe json_schema.
+
+    Le mode strict exige que toute propriete figure dans required : l'absence
+    ne s'y exprime pas en retirant le champ, mais en autorisant null sur son
+    type. Les deux vont ensemble, et required vide donnait a l'inverse un
+    schema que le modele lisait comme « rends tout ce que tu peux ».
     """
     return {
         "type": "json_schema",
@@ -312,8 +338,8 @@ def _annotation_format(page_number: int, fields: Mapping[str, FieldDef]) -> Dict
             "strict": True,
             "schema": {
                 "type": "object",
-                "properties": {key: dict(spec) for key, spec in fields.items()},
-                "required": [],
+                "properties": {key: _nullable(spec) for key, spec in fields.items()},
+                "required": list(fields),
                 "additionalProperties": False,
             },
         },
