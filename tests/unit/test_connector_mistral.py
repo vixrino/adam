@@ -182,6 +182,10 @@ def test_la_consigne_interdit_le_report_entre_champs() -> None:
     assert "Ne reporte jamais la valeur d'un champ dans un autre" in _CONSIGNE
     assert "les champs qui en dependent restent null" in _CONSIGNE
     assert "Ne concatene jamais plusieurs lignes" in _CONSIGNE
+    # Page 10 vide, pied de page "300 bdf 1947 - dircom - 30/04/2020" : le
+    # modele en avait tire date_octroi=1947-04-30 et capital_emprunte=300.
+    assert "mentions d'impression ne sont pas des donnees saisies" in _CONSIGNE
+    assert "rend null pour tous ses champs" in _CONSIGNE
 
 
 # -- Absence de resultat (CA-3, cas nominal) --------------------------------

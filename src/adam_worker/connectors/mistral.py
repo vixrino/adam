@@ -84,7 +84,11 @@ _CONSIGNE = (
     "est vue non cochee. Une case non cochee n'appelle aucune date, aucun "
     "montant et aucun libelle : les champs qui en dependent restent null.\n"
     "Si une rubrique porte plusieurs lignes, ne rends que la premiere. Ne "
-    "concatene jamais plusieurs lignes dans un meme champ."
+    "concatene jamais plusieurs lignes dans un meme champ.\n"
+    "Les en-tetes, pieds de page, references de formulaire, numeros de notice "
+    "et mentions d'impression ne sont pas des donnees saisies : ignore-les. "
+    "Une rubrique laissee vide par le deposant rend null pour tous ses champs, "
+    "meme si des chiffres ou des dates figurent ailleurs sur la page."
 )
 
 
