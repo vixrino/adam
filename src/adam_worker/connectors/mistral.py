@@ -1,19 +1,34 @@
-"""Connecteur OCR Mistral : une passe par page avec json_schema d'annotation.
+"""Connecteur OCR Mistral : OCR par page, puis annotation par un modele choisi.
 
-La configuration reprise ici est celle que le script de qualification
-test_mistral_configuration.py a validee sur des CERFA fictifs : cible OCR (et
-non un modele multimodal prompte), envoi page par page, et json_schema de
-sortie fourni des l'appel. C'est ce schema qui resout le coeur du ticket T5 :
-comme ses proprietes sont les cles pointees du contrat ("deposant.nom", ...),
-l'annotation rendue par Mistral porte directement les field_key que le merger
-sait rapprocher, sans rapprochement de polygones apres coup.
+L'endpoint sait faire les deux en un appel, via document_annotation_format, et
+c'est ce que faisait ce connecteur. Mais l'annotation n'est pas rendue par le
+modele OCR : l'endpoint la delegue a un modele de completion qu'il choisit
+seul, et son defaut est mistral-small-2503. Le deploiement de la Banque ne sert
+que du medium, si bien que la requete tombait en 404 « does not exist for
+router completion » alors que la route repond 200 sans annotation. Aucun
+parametre n'existe pour imposer ce modele : les candidats plausibles sont tous
+refuses en extra_forbidden, et l'endpoint n'expose pas son schema.
+
+Le connecteur fait donc lui-meme les deux pas : /v1/ocr rend le markdown de la
+page, puis /v1/chat/completions extrait les champs de ce markdown avec le
+json_schema en response_format. Deux appels par page au lieu d'un, contre le
+choix explicite du modele d'annotation — qui etait de toute facon la seule
+maniere de faire tourner ce connecteur ici.
+
+Le reste du dispositif est inchange, et c'est ce qui rend la bascule tenable :
+le json_schema plat dont les proprietes sont les cles pointees du contrat
+("deposant.nom", ...) part maintenant en response_format au lieu de
+document_annotation_format, mais l'annotation rendue porte les memes field_key,
+que le merger sait deja rapprocher. C'est le coeur du ticket T5.
 
 Consequence assumee : l'annotation ne rend pas de position. Les KVPair sortent
 sans polygone et le merger retombe sur celui du FieldSpec, ce que la chaine de
-pre-alimentation prevoit deja pour les champs non detectes.
+pre-alimentation prevoit deja pour les champs non detectes. Les dimensions de
+page, elles, restent celles que rend l'OCR.
 
 Les pages sans schema (pages d'information du CERFA) ne sont pas soumises :
-rien a y extraire, autant d'appels economises.
+rien a y extraire, autant d'appels economises. Une page dont l'OCR ne rend
+aucun texte economise de meme son second appel.
 
 Erreurs : moteur injoignable, statut non-2xx epuisant les reprises, ou reponse
 illisible levent OcrConnectorError. Un moteur joignable qui ne detecte aucun
@@ -53,6 +68,18 @@ _RETRYABLE_STATUS = range(500, 600)
 
 _MIME_BY_SUFFIX = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
+#: Consigne d'annotation. Elle n'enumere pas les champs : le json_schema passe
+#: en response_format le fait deja, et le repeter en prose ouvrirait la porte a
+#: une divergence entre les deux. Elle ne dit donc que ce que le schema ne peut
+#: pas dire — ne rien inventer, et distinguer l'absence de la case vide.
+_CONSIGNE = (
+    "Tu releves les champs d'un formulaire administratif francais a partir de "
+    "sa transcription. Rends uniquement les valeurs lues dans le texte. "
+    "Laisse null tout champ absent, illisible ou non renseigne : une valeur "
+    "plausible mais non lue est une erreur. Pour une case a cocher, rends true "
+    "si elle est cochee et false si elle est vue non cochee."
+)
+
 
 class MistralOcrConnector(BaseOcrConnector):
     """Soumet chaque image de page a l'API OCR Mistral et assemble la reponse."""
@@ -65,6 +92,7 @@ class MistralOcrConnector(BaseOcrConnector):
         endpoint: str,
         *,
         model: str = "mistral-ocr-latest",
+        annotation_model: str = "mistral-medium-latest",
         page_fields: Mapping[int, Mapping[str, FieldDef]] = CERFA_V2_PAGE_FIELDS,
         timeout_seconds: float = 30.0,
         ca_bundle: Optional[str] = None,
@@ -76,6 +104,7 @@ class MistralOcrConnector(BaseOcrConnector):
             raise ValueError("endpoint Mistral absent : renseigner MISTRAL_OCR_ENDPOINT")
         self.endpoint = endpoint.rstrip("/")
         self.model = model
+        self.annotation_model = annotation_model
         self.page_fields = page_fields
         # Un client injecte appartient a l'appelant, qui gere sa fermeture.
         self._external_client = client is not None
@@ -112,7 +141,11 @@ class MistralOcrConnector(BaseOcrConnector):
             document_id="mistral",
             page_count=max(len(images), 1),
             pages=pages,
-            metadata={"provider": "mistral", "model": self.model},
+            metadata={
+                "provider": "mistral",
+                "model": self.model,
+                "annotation_model": self.annotation_model,
+            },
         )
 
     # -- Appel de l'API -----------------------------------------------------
@@ -120,18 +153,54 @@ class MistralOcrConnector(BaseOcrConnector):
     async def _annotate(
         self, image: Path, page_number: int, fields: Mapping[str, FieldDef]
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Une passe OCR sur une image, rend (annotation aplatie, dimensions)."""
+        """Deux passes sur une image, rend (annotation aplatie, dimensions)."""
+        markdown, dims = await self._read_page(image, page_number)
+        if not markdown.strip():
+            # Page illisible ou vide : rien a donner au modele d'annotation,
+            # autant lui epargner l'appel. Absence de texte, pas une erreur.
+            return {}, dims
+        return await self._extract_fields(markdown, page_number, fields), dims
+
+    async def _read_page(self, image: Path, page_number: int) -> Tuple[str, Dict[str, Any]]:
+        """Passe OCR nue : rend le markdown de la page et ses dimensions."""
         payload = {
             "model": self.model,
             "document": {"type": "image_url", "image_url": self._data_uri(image)},
-            "document_annotation_format": _annotation_format(page_number, fields),
             "include_image_base64": False,
         }
-        data = await self._post(payload, page_number)
+        data = await self._post("/v1/ocr", payload, page_number)
+        pages = data.get("pages") or []
+        markdown = "\n\n".join(
+            str(page.get("markdown") or "") for page in pages if isinstance(page, Mapping)
+        )
+        return markdown, _dimensions(data)
 
-        raw = data.get("document_annotation")
-        if raw is None:
-            return {}, _dimensions(data)
+    async def _extract_fields(
+        self, markdown: str, page_number: int, fields: Mapping[str, FieldDef]
+    ) -> Dict[str, Any]:
+        """Passe d'annotation : le json_schema part en response_format.
+
+        temperature=0 parce qu'il s'agit de relever ce qui est ecrit : tout
+        ecart d'une execution a l'autre serait du bruit, jamais une meilleure
+        lecture.
+        """
+        payload = {
+            "model": self.annotation_model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": _CONSIGNE},
+                {"role": "user", "content": markdown},
+            ],
+            "response_format": _annotation_format(page_number, fields),
+        }
+        data = await self._post("/v1/chat/completions", payload, page_number)
+
+        choices = data.get("choices") or []
+        if not choices:
+            return {}
+        raw = (choices[0].get("message") or {}).get("content")
+        if raw is None or raw == "":
+            return {}
         if isinstance(raw, str):
             try:
                 raw = json.loads(raw)
@@ -143,11 +212,11 @@ class MistralOcrConnector(BaseOcrConnector):
             raise OcrConnectorError(
                 f"annotation de la page {page_number} : objet attendu, recu {type(raw).__name__}"
             )
-        return _flatten(raw, set(fields)), _dimensions(data)
+        return _flatten(raw, set(fields))
 
-    async def _post(self, payload: Dict[str, Any], page_number: int) -> Dict[str, Any]:
-        """POST /v1/ocr avec reprises sur erreurs reseau et 5xx, comme ApiClient."""
-        url = f"{self.endpoint}/v1/ocr"
+    async def _post(self, path: str, payload: Dict[str, Any], page_number: int) -> Dict[str, Any]:
+        """POST avec reprises sur erreurs reseau et 5xx, comme ApiClient."""
+        url = f"{self.endpoint}{path}"
         last_error = ""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
@@ -166,9 +235,10 @@ class MistralOcrConnector(BaseOcrConnector):
                         ) from exc
                 else:
                     # 4xx : rejouer ne changera rien, la requete est en cause.
+                    # Le corps porte le motif, que le statut seul laisse deviner.
                     raise OcrConnectorError(
-                        f"appel OCR refuse pour la page {page_number} "
-                        f"(statut {response.status_code})"
+                        f"appel {path} refuse pour la page {page_number} "
+                        f"(statut {response.status_code}) : {response.text[:300]}"
                     )
             if attempt < _MAX_ATTEMPTS:
                 await asyncio.sleep(_BACKOFF_SECONDS * attempt)
@@ -219,7 +289,11 @@ class MistralOcrConnector(BaseOcrConnector):
 
 
 def _annotation_format(page_number: int, fields: Mapping[str, FieldDef]) -> Dict[str, Any]:
-    """json_schema strict, plat, tel que qualifie par le script du manager."""
+    """json_schema strict et plat, tel que qualifie par le script du manager.
+
+    La forme rendue vaut pour response_format comme pour l'ancien
+    document_annotation_format : c'est la meme enveloppe json_schema.
+    """
     return {
         "type": "json_schema",
         "json_schema": {
