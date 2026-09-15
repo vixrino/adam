@@ -175,8 +175,10 @@ def main() -> None:
         print("  La route /v1/ocr n'existe pas sur ce deploiement, meme sans annotation.")
         print("  -> question a l'equipe de l'endpoint, pas un probleme de code.")
     elif s4 == 404 and s3 != 404:
-        print("  La route existe mais document_annotation_format la fait basculer en 404 :")
-        print("  l'annotation structuree n'est pas deployee. -> remonter a l'equipe.")
+        print("  La route existe et repond nue, mais document_annotation_format la fait")
+        print("  basculer en 404 : l'annotation est deleguee a un modele de completion")
+        print("  absent du deploiement. Lis le corps ci-dessus, il le nomme.")
+        print("  -> scripts/diag_ocr_annotation_model.py dit si on peut en imposer un autre.")
     elif not configured_ok:
         print(f"  MISTRAL_OCR_MODEL={settings.mistral_ocr_model!r} n'est pas servi.")
         print(f"  -> mets MISTRAL_OCR_MODEL={probe_model} dans le .env.")
