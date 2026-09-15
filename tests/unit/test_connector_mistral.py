@@ -207,6 +207,22 @@ def test_la_consigne_interdit_le_report_entre_champs() -> None:
     assert "rend null pour tous ses champs" in _CONSIGNE
 
 
+def test_la_consigne_distingue_case_vide_et_reponse_par_exclusion() -> None:
+    """Une case non cochee est une absence, sauf dans un groupe exclusif.
+
+    Si « non » est coche, « oui » n'est pas indetermine : le document y repond,
+    et le champ vaut false. Isolee, la meme case non cochee ne dit rien et rend
+    null. Le json_schema declare des booleens independants et ne peut pas
+    exprimer le groupe : seule la consigne le peut.
+    """
+    assert "Une case non cochee rend null" in _CONSIGNE
+    assert "cocher l'une repond pour toutes" in _CONSIGNE
+    assert "Si aucune n'est cochee dans le groupe, toutes rendent null" in _CONSIGNE
+    # Un champ vide de sens du fait de la reponse cochee (numero de dossier
+    # alors qu'il n'y a pas de dossier) suit la meme logique.
+    assert "prive d'objet" in _CONSIGNE
+
+
 # -- Absence de resultat (CA-3, cas nominal) --------------------------------
 
 
