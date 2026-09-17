@@ -37,12 +37,14 @@ from sqlalchemy import select  # noqa: E402
 
 try:  # les deux miroirs du projet ne portent pas le meme nom de paquet
     from nota_api.core.config import settings
-    from nota_core.db.session import get_async_session
+    from nota_core.core.config import get_core_settings
+    from nota_core.db.session import get_async_session, init_engine
     from nota_core.models import Document
     from nota_worker.connectors import connector_from_settings
 except ImportError:  # pragma: no cover
     from adam_api.core.config import settings
-    from adam_core.db.session import get_async_session
+    from adam_core.core.config import get_core_settings
+    from adam_core.db.session import get_async_session, init_engine
     from adam_core.models import Document
     from adam_worker.connectors import connector_from_settings
 
@@ -109,7 +111,11 @@ async def main() -> None:
     document_id = int(args[0])
 
     # -- 1. Le document -----------------------------------------------------
+    # L'engine est global et paresseux : hors des points d'entree de l'API et
+    # des workers, personne ne l'a initialise, et get_async_session leve avant
+    # la premiere requete. Un script autonome doit donc l'amorcer lui-meme.
     line(f"1. Document {document_id}")
+    init_engine(get_core_settings().async_database_url, echo=False)
     async with get_async_session() as db:
         row = (
             await db.execute(
