@@ -39,13 +39,13 @@ try:  # les deux miroirs du projet ne portent pas le meme nom de paquet
     from nota_api.core.config import settings
     from nota_core.core.config import get_core_settings
     from nota_core.db.session import get_async_session, init_engine
-    from nota_core.models import Document
+    from nota_core.models import Document, DocumentField, FieldSpec
     from nota_worker.connectors import connector_from_settings
 except ImportError:  # pragma: no cover
     from adam_api.core.config import settings
     from adam_core.core.config import get_core_settings
     from adam_core.db.session import get_async_session, init_engine
-    from adam_core.models import Document
+    from adam_core.models import Document, DocumentField, FieldSpec
     from adam_worker.connectors import connector_from_settings
 
 API_PREFIX = "/api/v1"
@@ -226,15 +226,61 @@ async def main() -> None:
                 print(f"    {key}")
         return
 
-    print("\n  CAUSE TROUVEE : aucune cle commune.")
-    print("  L'OCR detecte bien, mais le dataset pointe un autre schema que le CERFA.")
-    print("  Le merger ne rapproche rien et cree tous les champs vides, sans erreur.")
-    print("\n  Cles rendues par l'OCR :")
-    for key in sorted(ocr_keys)[:5]:
-        print(f"    {key}")
-    print("  Cles declarees par le schema :")
-    for key in sorted(schema_keys)[:5]:
-        print(f"    {key}")
+    if not commun:
+        print("\n  CAUSE TROUVEE : aucune cle commune.")
+        print("  L'OCR detecte bien, mais le dataset pointe un autre schema que le CERFA.")
+        print("  Le merger ne rapproche rien et cree tous les champs vides, sans erreur.")
+        print("\n  Cles rendues par l'OCR :")
+        for key in sorted(ocr_keys)[:5]:
+            print(f"    {key}")
+        print("  Cles declarees par le schema :")
+        for key in sorted(schema_keys)[:5]:
+            print(f"    {key}")
+
+    # -- 6. Ce qui est reellement en base -----------------------------------
+    # Les paliers precedents disent ce que le worker DEVRAIT ecrire s'il
+    # tournait maintenant. Celui-ci dit ce qu'il a ecrit la fois ou il est
+    # passe, ce qui n'est pas la meme chose : les champs d'un document ne sont
+    # crees qu'une fois, et repointer son dataset apres coup ne les rejoue pas.
+    line("6. DOCUMENT_FIELD reellement stockes")
+    async with get_async_session() as db:
+        rows = (
+            await db.execute(
+                select(
+                    DocumentField.id,
+                    DocumentField.ocr_value,
+                    DocumentField.group_id,
+                    FieldSpec.section_id,
+                    FieldSpec.field_key,
+                )
+                .join(FieldSpec, FieldSpec.id == DocumentField.field_spec_id)
+                .where(DocumentField.document_id == document_id)
+                .order_by(DocumentField.id)
+            )
+        ).all()
+
+    remplis = [r for r in rows if r.ocr_value is not None]
+    print(f"  {len(rows)} champ(s) en base, {len(remplis)} avec une ocr_value")
+    for r in remplis[:10]:
+        key = semantic_key(r.section_id, r.field_key)
+        group = f" [{r.group_id}]" if r.group_id else ""
+        print(f"    {key}{group:20s} = {r.ocr_value if show_values else '***'}")
+    if len(remplis) > 10:
+        print(f"    ... et {len(remplis) - 10} autre(s)")
+
+    if not rows:
+        print("\n  Aucun champ : le worker n'est jamais passe sur ce document.")
+        print("  Verifier qu'il tourne et que le document est en INGESTED.")
+    elif not remplis and commun:
+        print("\n  CAUSE TROUVEE : les champs ont ete crees AVANT le bon schema.")
+        print("  La creation est idempotente : le worker ne rejoue pas un document")
+        print("  deja pre-alimente, meme si le rapprochement donnerait des valeurs")
+        print("  aujourd'hui. Supprimer les champs et repasser le document en")
+        print("  INGESTED, ou ingerer le PDF a nouveau.")
+    elif remplis:
+        print("\n  La base porte bien les valeurs.")
+        print("  Si l'API rend null, c'est la lecture qu'il faut regarder :")
+        print("  GET /documents/{id} sans view=full ne renvoie aucun champ.")
 
 
 if __name__ == "__main__":
