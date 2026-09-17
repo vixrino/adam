@@ -1,3 +1,5 @@
 # ADAM - Annotation et Données Automatisées
 
-uv run python scripts/diag_ocr_markdown.py C:\DEV\nota-back\pdfs_archives\cerfa_test.pdf 10 1947
+
+SELECT count(*) AS total, count(ocr_value) AS remplis    
+FROM document_field WHERE document_id = 4;      
