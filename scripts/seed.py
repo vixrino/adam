@@ -2,17 +2,24 @@
  scripts/seed.py
  ----------
  Seed unifie de la base ADAM.
- Trois modes :
-     - Par defaut : CERFA surendettement, champs et groupes repetables derives
-       de adam_core.schemas.cerfa_v2, avec un dossier fictif complet
+ Modes :
+     - Par defaut : CERFA surendettement, schema seul. Champs et groupes
+       repetables derives de adam_core.schemas.cerfa_v2, plus le lot qui va
+       avec. Aucun document : on en depose un ensuite, et ce sont les workers
+       qui l'OCRisent.
+     - --pdf <fichier> : idem, plus un vrai CERFA copie sur le PVC en statut
+       RECEIVED. PageImageWorker en rend les pages, PrepopulationWorker appelle
+       l'OCR et cree les champs. Les valeurs annotees sont celles du document.
+     - --fake-ocr : idem, plus un dossier fictif ecrit directement en base,
+       sans PDF ni appel OCR. Demo hors ligne, sans rien a afficher en regard.
      - --form-demo : ancien formulaire synthetique hardcode (demandeur, bien,
-       creance), conserve pour les tests qui s'y appuient
-     - --json : schema et champs derives d'un fichier format formulaire v0.3
+       creance), conserve pour les tests qui s'y appuient.
+     - --json : schema et champs derives d'un fichier format formulaire v0.3.
 Usage :
-    python scripts/seed.py
     python scripts/seed.py --reset
+    python scripts/seed.py --reset --pdf ~/cerfa_rempli.pdf
+    python scripts/seed.py --reset --fake-ocr
     python scripts/seed.py --form-demo --reset
-    python scripts/seed.py --json form_demo_v0.3.json
     python scripts/seed.py --json form_demo_v0.3.json --reset
 """
 import argparse
@@ -51,6 +58,9 @@ from adam_core.models import (
     User,
     UserProject,
 )
+# Le chemin du PVC est un reglage d'API, pas de coeur : c'est la que vivent
+# les workers qui liront le PDF depose ici.
+from adam_api.core.config import settings as api_settings
 from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
 
 # Le seed fabrique les DocumentField que le worker de pre-alimentation creerait
@@ -606,7 +616,25 @@ def _cerfa_raw_json(specs: List[Dict]) -> dict:
     }
 
 
-async def seed_cerfa(session: AsyncSession, project: Project) -> None:
+async def seed_cerfa(
+    session: AsyncSession,
+    project: Project,
+    pdf_path: Optional[Path],
+    fake_ocr: bool,
+) -> None:
+    """Schema CERFA, et selon le cas le document qui va avec.
+
+    Trois issues, de la plus fidele a la plus rapide :
+
+        --pdf <fichier>   un vrai CERFA depose sur le PVC, en statut RECEIVED.
+                          PageImageWorker en rend les pages, puis
+                          PrepopulationWorker appelle l'OCR et cree les champs.
+                          Les valeurs annotees sont alors celles du document.
+        --fake-ocr        un dossier fictif ecrit directement en base, sans PDF
+                          ni appel OCR. Rien a afficher dans le visualiseur.
+        par defaut        schema et lot seuls. C'est ce qu'il faut pour deposer
+                          ensuite un document par l'IHM ou par l'API.
+    """
     print("\n --- Mode : CERFA surendettement 13594*02 (champs de cerfa_v2.py) ---")
 
     print(" [4/8] DocSchema...")
@@ -668,7 +696,17 @@ async def seed_cerfa(session: AsyncSession, project: Project) -> None:
     await session.flush()
     print(f"        {dataset}")
 
-    print(" [7/8] File + Document...")
+    if pdf_path is not None:
+        await _seed_cerfa_real_pdf(session, dataset, pdf_path)
+        return
+    if not fake_ocr:
+        print("\n Schema et lot crees, sans document.")
+        print(" Deposer un CERFA dans ce lot, puis lancer les workers :")
+        print("     python -m adam_worker.main")
+        print(" Ou partir d'un PDF local : seed.py --pdf <fichier.pdf>")
+        return
+
+    print(" [7/8] File + Document (dossier fictif, sans appel OCR)...")
     raw_json = _cerfa_raw_json(specs)
     json_bytes = json.dumps(raw_json, ensure_ascii=False).encode("utf-8")
     file_ = File(
@@ -740,6 +778,84 @@ async def seed_cerfa(session: AsyncSession, project: Project) -> None:
     print(f"        {below} sous le seuil de confiance du dataset (0.8)")
 
 
+async def _seed_cerfa_real_pdf(session: AsyncSession, dataset: Dataset, pdf_path: Path) -> None:
+    """Depose un vrai CERFA dans le lot, et laisse les workers faire le reste.
+
+    Le document est cree en RECEIVED, sans le moindre champ : c'est
+    PageImageWorker qui en rendra les pages, puis PrepopulationWorker qui
+    appellera l'OCR et creera les DOCUMENT_FIELD depuis le schema. Ecrire ici
+    des champs vides les mettrait en concurrence avec ceux du worker, que la
+    contrainte d'unicite (document_id, field_spec_id, group_id) rejetterait.
+
+    Le PDF est copie sous le PVC, pas lu sur place : file_path est relatif a la
+    racine du PVC pour les workers comme pour l'API, et un chemin pointant hors
+    du volume serait introuvable des que l'un des deux tourne dans un conteneur.
+    """
+    print(" [7/8] Copie du PDF sur le PVC...")
+    pvc_root = Path(api_settings.pvc_mount_path)
+    relative_path = Path("cerfa") / pdf_path.name
+    destination = pvc_root / relative_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    pdf_bytes = pdf_path.read_bytes()
+    destination.write_bytes(pdf_bytes)
+    print(f"        {pdf_path} -> {destination}")
+
+    # Compte reel des pages : le worker le recalculera au rendu, mais page_count
+    # est non nul en base et un 1 provisoire ferait mentir toute lecture faite
+    # entre le seed et le premier cycle du worker.
+    page_count = _pdf_page_count(pdf_path)
+
+    print(" [8/8] File + Document (statut RECEIVED)...")
+    file_ = File(
+        file_path=str(relative_path).replace("\\", "/"),
+        storage_type="PVC",
+        mime_type="application/pdf",
+        page_count=page_count,
+        file_size_bytes=len(pdf_bytes),
+        sha256_checksum=sha256_bytes(pdf_bytes),
+    )
+    session.add(file_)
+    await session.flush()
+    document = Document(
+        dataset_id=dataset.id,
+        file_id=file_.id,
+        file_name=pdf_path.name,
+        metadata={
+            "source": "seed",
+            "document_type": CERFA_DOCUMENT_TYPE,
+            "origine": str(pdf_path),
+        },
+        status=DocumentStatus.RECEIVED.value,
+    )
+    session.add(document)
+    await session.flush()
+    print(f"        {file_}")
+    print(f"        {document}")
+
+    print(f"\n Document {document.id} depose, {page_count} page(s), aucun champ.")
+    print(" Lancer les workers pour le rendu des pages puis l'OCR :")
+    print("     python -m adam_worker.main")
+    print(f" Puis verifier ce que l'OCR a reellement rendu, palier par palier :")
+    print(f"     python scripts/diag_prepopulation.py {document.id}")
+
+
+def _pdf_page_count(pdf_path: Path) -> int:
+    """Nombre de pages du PDF, ou 1 si PyMuPDF n'est pas installe.
+
+    Le seed n'a pas besoin de rendre les pages, seulement de les compter : un
+    environnement sans moteur de rendu doit pouvoir seeder quand meme, quitte a
+    ce que le worker corrige le compte a son premier cycle.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        print("        PyMuPDF absent : page_count pose a 1, le worker le corrigera")
+        return 1
+    with fitz.open(pdf_path) as pdf:
+        return pdf.page_count
+
+
+
 # Helper partagé
 async def _seed_dataset_to_fields(
     session: AsyncSession,
@@ -805,7 +921,13 @@ async def _seed_dataset_to_fields(
     await session.flush()
     print(f"        {len(doc_fields)} DocumentFields crees")
 # Main
-async def main(reset: bool, json_path: Optional[Path], form_demo: bool) -> None:
+async def main(
+    reset: bool,
+    json_path: Optional[Path],
+    form_demo: bool,
+    pdf_path: Optional[Path],
+    fake_ocr: bool,
+) -> None:
     init_engine(settings.async_database_url, echo=False)
     await create_tables()
     factory = async_sessionmaker(bind=get_engine(), expire_on_commit=False)
@@ -818,7 +940,7 @@ async def main(reset: bool, json_path: Optional[Path], form_demo: bool) -> None:
        elif form_demo:
            await seed_hardcoded(session, project)
        else:
-           await seed_cerfa(session, project)
+           await seed_cerfa(session, project, pdf_path=pdf_path, fake_ocr=fake_ocr)
        await session.commit()
     await get_engine().dispose()
     print("\n Seed termine avec succes")
@@ -831,7 +953,34 @@ if __name__ == "__main__":
         action="store_true",
         help="Ancien formulaire synthetique hardcode, au lieu du CERFA surendettement",
     )
+    parser.add_argument(
+        "--pdf",
+        default=None,
+        help=(
+            "Chemin d'un vrai CERFA a deposer dans le lot. Il est copie sur le "
+            "PVC en statut RECEIVED : les workers en font le rendu puis l'OCR"
+        ),
+    )
+    parser.add_argument(
+        "--fake-ocr",
+        action="store_true",
+        help=(
+            "Remplit les champs avec un dossier fictif, sans PDF ni appel OCR. "
+            "Pratique pour une demo hors ligne, mais rien a afficher en regard"
+        ),
+    )
     args = parser.parse_args()
+
+    if args.pdf and args.fake_ocr:
+       print("--pdf et --fake-ocr s'excluent : l'un fait appeler l'OCR, l'autre l'evite")
+       sys.exit(1)
+
+    pdf_path = None
+    if args.pdf:
+       pdf_path = Path(args.pdf)
+       if not pdf_path.exists():
+           print(f"PDF introuvable : {args.pdf}")
+           sys.exit(1)
     json_path = None
     if args.json:
        json_path = Path(args.json)
@@ -848,9 +997,21 @@ if __name__ == "__main__":
        mode = "FORM JSON"
     elif args.form_demo:
        mode = "Formulaire demo hardcode"
+    elif pdf_path:
+       mode = f"CERFA surendettement 13594*02 + document reel ({pdf_path.name})"
+    elif args.fake_ocr:
+       mode = "CERFA surendettement 13594*02 + dossier fictif"
     else:
-       mode = "CERFA surendettement 13594*02"
+       mode = "CERFA surendettement 13594*02, schema seul"
     print(f" Mode : {mode}")
     print(SEPARATOR)
-    asyncio.run(main(reset=args.reset, json_path=json_path, form_demo=args.form_demo))
+    asyncio.run(
+       main(
+           reset=args.reset,
+           json_path=json_path,
+           form_demo=args.form_demo,
+           pdf_path=pdf_path,
+           fake_ocr=args.fake_ocr,
+       )
+    )
     print(SEPARATOR)
