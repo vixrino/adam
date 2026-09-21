@@ -53,6 +53,11 @@ from adam_core.models import (
 )
 from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
 
+# Le seed fabrique les DocumentField que le worker de pre-alimentation creerait
+# a partir d'un vrai PDF : reprendre sa constante de resolveur garde les deux
+# chemins indiscernables en base.
+from adam_worker.prepopulation.merger import OCR_RESOLVER
+
 # Le depliage des champs du CERFA en FieldSpec — sections repetables comprises —
 # vit dans seed_schema_cerfa.py, qui ne cree que le schema. Le reimporter ici
 # evite d'en tenir deux copies qui divergeraient des le prochain CERFA.
@@ -723,6 +728,9 @@ async def seed_cerfa(session: AsyncSession, project: Project) -> None:
                 status=DocumentFieldStatus.PENDING.value,
                 ocr_confidence=confidence,
                 consensus_reached=False,
+                # Meme marquage que le worker de pre-alimentation : un champ
+                # detecte porte ocr_system, un champ vide n'a pas de resolveur.
+                resolved_by=OCR_RESOLVER if value is not None else None,
             )
         )
     session.add_all(doc_fields)
