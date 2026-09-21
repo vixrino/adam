@@ -2,12 +2,16 @@
  scripts/seed.py
  ----------
  Seed unifie de la base ADAM.
- Deux modes :
-     - Sans JSON : donnees de test formulaire demo hardcodees
-     - Avec JSON : schema et champs derives d'un fichier format formulaire v0.3
+ Trois modes :
+     - Par defaut : CERFA surendettement, champs et groupes repetables derives
+       de adam_core.schemas.cerfa_v2, avec un dossier fictif complet
+     - --form-demo : ancien formulaire synthetique hardcode (demandeur, bien,
+       creance), conserve pour les tests qui s'y appuient
+     - --json : schema et champs derives d'un fichier format formulaire v0.3
 Usage :
     python scripts/seed.py
     python scripts/seed.py --reset
+    python scripts/seed.py --form-demo --reset
     python scripts/seed.py --json form_demo_v0.3.json
     python scripts/seed.py --json form_demo_v0.3.json --reset
 """
@@ -18,6 +22,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from adam_core.core.config import CoreSettings
@@ -46,6 +51,13 @@ from adam_core.models import (
     User,
     UserProject,
 )
+from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
+
+# Le depliage des champs du CERFA en FieldSpec — sections repetables comprises —
+# vit dans seed_schema_cerfa.py, qui ne cree que le schema. Le reimporter ici
+# evite d'en tenir deux copies qui divergeraient des le prochain CERFA.
+from seed_schema_cerfa import REPEATABLE_SECTIONS, SECTION_LABELS, build_specs
+
 settings = CoreSettings()
 SEPARATOR = "-" * 55
 # Reset
@@ -115,11 +127,12 @@ PROJECT_DESCRIPTION = "Annotation des CERFA 13594*02 recus par la direction"
 #: se retrouve par ce qu'il contient ; "Lot janvier 2024" obligeait a l'ouvrir
 #: pour savoir de quel formulaire il s'agissait.
 #:
-#: Deux noms parce que les deux modes du seed ne portent pas le meme formulaire.
-#: Le mode JSON derive ses champs de form_demo_v0.3.json, dont les sections sont
-#: bien celles du CERFA surendettement. Le mode hardcode, lui, decrit un
-#: formulaire synthetique — demandeur, bien, creance — qu'aucun CERFA ne
-#: reprend : lui donner un numero de CERFA serait faux.
+#: Deux noms parce que les modes du seed ne portent pas le meme formulaire. Les
+#: modes CERFA et JSON decrivent le meme formulaire — le premier depuis
+#: cerfa_v2.py, le second depuis form_demo_v0.3.json — et partagent donc le nom
+#: de lot. Le mode --form-demo, lui, decrit un formulaire synthetique —
+#: demandeur, bien, creance — qu'aucun CERFA ne reprend : lui donner un numero
+#: de CERFA serait faux.
 CERFA_DATASET_NAME = "cerfa_13594-02_v2"
 DEMO_DATASET_NAME = "form_demo_v2"
 
@@ -376,6 +389,349 @@ async def seed_from_form_json(
     if skipped:
        print(f"            {skipped} KVPairs ignores (fieldSpec manquant)")
     print(f"\n Resume : {len(field_specs)} FieldSpecs, {len(doc_fields)} DocumentFields, {form_doc.page_count}")
+# Mode 3 : CERFA surendettement (schema reel, champs de cerfa_v2.py)
+#
+# Le mode hardcode monte un formulaire synthetique — demandeur, bien, creance —
+# qui ne correspond a aucun CERFA. Pour une demonstration, l'ecran d'annotation
+# doit montrer les champs que l'operateur verra en production : ceux que
+# cerfa_v2.py declare page par page, avec leurs sections repetables. C'est le
+# role de ce mode, qui reprend la construction des FieldSpec de
+# seed_schema_cerfa.py au lieu de la dupliquer, et y ajoute un dossier fictif
+# complet : dataset, document, resultat OCR et valeurs annotees.
+
+CERFA_SCHEMA_NAME = "Declaration de surendettement (CERFA 13594*02)"
+CERFA_DOCUMENT_TYPE = "CERFA_SURENDETTEMENT_V2"
+CERFA_SCHEMA_VERSION = 2
+
+#: Dossier fictif. Les cles suivent la clef complete d'un FieldSpec :
+#: "<section_id>.<field_key>" pour une section simple,
+#: "<section_id>.<group_id>.<field_key>" pour une instance d'une section
+#: repetable. Un champ absent de cette table reste vide en base : c'est le cas
+#: normal du CERFA, ou la plupart des emplacements repetables ne sont pas
+#: remplis, et c'est ce que l'operateur doit voir.
+CERFA_DOSSIER: Dict[str, str] = {
+    # Page 1
+    "deposant.civilite_monsieur": "true",
+    "deposant.civilite_madame": "false",
+    "deposant.nom_naissance": "MOREAU",
+    "deposant.nom_usage": "MOREAU",
+    "deposant.prenoms": "Julien Pierre",
+    "deposant.date_naissance": "1979-04-12",
+    "deposant.lieu_naissance": "Meaux",
+    "deposant.dept_naissance": "77",
+    "deposant.pays_naissance": "France",
+    "co_deposant.civilite_monsieur": "false",
+    "co_deposant.civilite_madame": "true",
+    "co_deposant.nom_naissance": "LAMBERT",
+    "co_deposant.nom_usage": "MOREAU",
+    "co_deposant.prenoms": "Sophie Anne",
+    "co_deposant.date_naissance": "1982-09-30",
+    "co_deposant.lieu_naissance": "Melun",
+    "co_deposant.dept_naissance": "77",
+    "co_deposant.pays_naissance": "France",
+    "coordonnees_personnelles.batiment": "B",
+    "coordonnees_personnelles.escalier": "2",
+    "coordonnees_personnelles.etage": "3",
+    "coordonnees_personnelles.appartement": "312",
+    "coordonnees_personnelles.numero": "14",
+    "coordonnees_personnelles.voie": "rue des Lilas",
+    "coordonnees_personnelles.code_postal": "77100",
+    "coordonnees_personnelles.localite": "Meaux",
+    "coordonnees_personnelles.pays": "France",
+    "coordonnees_personnelles.telephone_deposant": "0612345678",
+    "coordonnees_personnelles.telephone_co_deposant": "0698765432",
+    "coordonnees_personnelles.courriel": "j.moreau@example.fr",
+    "coordonnees_personnelles.courriel_co_deposant": "s.moreau@example.fr",
+    "assist_travailleur_social.nom": "DUPONT",
+    "assist_travailleur_social.prenom": "Claire",
+    "assist_travailleur_social.adresse": "CCAS, 3 place de la Mairie, 77100 Meaux",
+    "assist_travailleur_social.telephone": "0164000000",
+    "assist_travailleur_social.courriel": "ccas.meaux@example.fr",
+    "certification.fait_a": "Meaux",
+    "certification.date": "2024-03-05",
+    "certification.signature_deposant": "true",
+    "certification.signature_codeposant": "true",
+    # Page 2
+    "dossier_precedent.non": "true",
+    "dossier_precedent.oui": "false",
+    "situation_familiale.marie": "true",
+    "situation_familiale.marie_date": "2006-06-17",
+    "situation_familiale.pacse": "false",
+    "situation_familiale.concubin": "false",
+    "situation_familiale.celibataire": "false",
+    "situation_familiale.separe": "false",
+    "situation_familiale.divorce": "false",
+    "situation_familiale.veuf": "false",
+    "personnes_a_charge.personne_1.lien_parente": "Fille",
+    "personnes_a_charge.personne_1.date_naissance": "2011-02-08",
+    "personnes_a_charge.personne_1.situation_garde": "Au domicile",
+    "personnes_a_charge.personne_1.ressources_oui": "false",
+    "personnes_a_charge.personne_1.ressources_non": "true",
+    "personnes_a_charge.personne_2.lien_parente": "Fils",
+    "personnes_a_charge.personne_2.date_naissance": "2014-11-22",
+    "personnes_a_charge.personne_2.situation_garde": "Garde alternee",
+    "personnes_a_charge.personne_2.ressources_oui": "false",
+    "personnes_a_charge.personne_2.ressources_non": "true",
+    "situation_logement_deposant.locataire": "false",
+    "situation_logement_deposant.expulsion_oui": "false",
+    "situation_logement_deposant.expulsion_non": "true",
+    "situation_logement_deposant.proprietaire": "true",
+    "situation_logement_deposant.saisie_immobiliere_oui": "false",
+    "situation_logement_deposant.saisie_immobiliere_non": "true",
+    # Page 6 : deux dettes remplies sur les quatre et cinq emplacements ouverts
+    "dettes_logement.dette_logement_1.nom_creancier": "Syndic Foncia Meaux",
+    "dettes_logement.dette_logement_1.adresse_creancier": "8 rue Saint-Remy, 77100 Meaux",
+    "dettes_logement.dette_logement_1.reference": "COPRO-2021-118",
+    "dettes_logement.dette_logement_1.montant_impaye": "2450.80",
+    "dettes_logement.dette_logement_1.poursuites_oui": "false",
+    "dettes_logement.dette_logement_1.poursuites_non": "true",
+    "dettes_courantes.dette_courante_1.nom_creancier": "EDF",
+    "dettes_courantes.dette_courante_1.adresse_creancier": "TSA 70254, 92919 La Defense",
+    "dettes_courantes.dette_courante_1.reference": "CT-4455-8821",
+    "dettes_courantes.dette_courante_1.montant_impaye": "612.35",
+    "dettes_courantes.dette_courante_1.poursuites_oui": "false",
+    "dettes_courantes.dette_courante_1.poursuites_non": "true",
+    "dettes_courantes.dette_courante_2.nom_creancier": "Tresor Public - SIP Meaux",
+    "dettes_courantes.dette_courante_2.adresse_creancier": "2 avenue Salvador Allende, 77100 Meaux",
+    "dettes_courantes.dette_courante_2.reference": "Taxe fonciere 2023",
+    "dettes_courantes.dette_courante_2.montant_impaye": "940.00",
+    "dettes_courantes.dette_courante_2.poursuites_oui": "true",
+    "dettes_courantes.dette_courante_2.poursuites_non": "false",
+    # Page 9
+    "credits_immobiliers.pret_immo_1.nom_creancier": "Credit Foncier Regional",
+    "credits_immobiliers.pret_immo_1.adresse_creancier": "19 boulevard Jourdan, 75014 Paris",
+    "credits_immobiliers.pret_immo_1.nom_assureur": "Assur'Pret SA, 5 rue du Port, 75012 Paris",
+    "credits_immobiliers.pret_immo_1.reference": "IMMO-2015-77321",
+    "credits_immobiliers.pret_immo_1.date_octroi": "2015-07-01",
+    "credits_immobiliers.pret_immo_1.capital_emprunte": "185000",
+    "credits_immobiliers.pret_immo_1.taux": "2,15 %",
+    "credits_immobiliers.pret_immo_1.mensualite": "842.60",
+    "credits_immobiliers.pret_immo_1.assurance_mensuelle": "46.20",
+    "credits_immobiliers.pret_immo_1.restant_du": "121450.00",
+    "credits_immobiliers.pret_immo_1.montant_impaye": "2527.80",
+    "credits_immobiliers.pret_immo_1.montant_exigible": "0",
+    "credits_immobiliers.pret_immo_1.poursuites_oui": "false",
+    "credits_immobiliers.pret_immo_1.poursuites_non": "true",
+    # Page 10 : deux prets a la consommation sur les six emplacements ouverts
+    "credits_consommation.pret_1.nom_creancier": "Sofinco",
+    "credits_consommation.pret_1.adresse_creancier": "1 boulevard de la Liberte, 59000 Lille",
+    "credits_consommation.pret_1.reference": "CONSO-2021-99812",
+    "credits_consommation.pret_1.date_octroi": "2021-03-15",
+    "credits_consommation.pret_1.capital_emprunte": "12000",
+    "credits_consommation.pret_1.taux": "5,90 %",
+    "credits_consommation.pret_1.mensualite": "245.10",
+    "credits_consommation.pret_1.restant_du": "6890.40",
+    "credits_consommation.pret_1.montant_impaye": "735.30",
+    "credits_consommation.pret_1.montant_exigible": "0",
+    "credits_consommation.pret_1.poursuites_oui": "false",
+    "credits_consommation.pret_1.poursuites_non": "true",
+    "credits_consommation.pret_2.nom_creancier": "Cetelem",
+    "credits_consommation.pret_2.adresse_creancier": "61 avenue Halley, 59650 Villeneuve-d'Ascq",
+    "credits_consommation.pret_2.reference": "CONSO-2022-33190",
+    "credits_consommation.pret_2.date_octroi": "2022-10-04",
+    "credits_consommation.pret_2.capital_emprunte": "5000",
+    "credits_consommation.pret_2.taux": "6,40 %",
+    "credits_consommation.pret_2.mensualite": "132.75",
+    "credits_consommation.pret_2.restant_du": "3410.00",
+    "credits_consommation.pret_2.montant_impaye": "398.25",
+    "credits_consommation.pret_2.montant_exigible": "398.25",
+    "credits_consommation.pret_2.poursuites_oui": "true",
+    "credits_consommation.pret_2.poursuites_non": "false",
+}
+
+#: Champs que l'OCR rend avec une confiance basse. Le dataset porte un seuil a
+#: 0.8 : ces champs passent donc en dessous, ce qui donne a la demonstration des
+#: cas a arbitrer au lieu d'un document uniformement vert. Les cles sont celles
+#: de CERFA_DOSSIER.
+CERFA_LOW_CONFIDENCE = {
+    "deposant.prenoms": 0.61,
+    "co_deposant.nom_naissance": 0.68,
+    "coordonnees_personnelles.telephone_co_deposant": 0.54,
+    "assist_travailleur_social.adresse": 0.72,
+    "dettes_logement.dette_logement_1.montant_impaye": 0.66,
+    "credits_immobiliers.pret_immo_1.taux": 0.58,
+    "credits_consommation.pret_2.reference": 0.71,
+}
+
+#: Confiance des champs lus sans difficulte.
+CERFA_DEFAULT_CONFIDENCE = 0.94
+
+
+def _cerfa_key(section_id: str, group_id: Optional[str], field_key: str) -> str:
+    """Clef de CERFA_DOSSIER pour un FieldSpec donne."""
+    if group_id:
+        return f"{section_id}.{group_id}.{field_key}"
+    return f"{section_id}.{field_key}"
+
+
+def _cerfa_raw_json(specs: List[Dict]) -> dict:
+    """Resultat OCR fictif, reconstruit depuis le dossier.
+
+    Le contenu reste volontairement minimal : le seed n'a pas de PDF a lire, et
+    raw_json ne sert ici qu'a ce que l'ecran de relecture trouve une trace de
+    l'appel OCR derriere les valeurs annotees.
+    """
+    pages: Dict[int, List[dict]] = {}
+    for spec in specs:
+        key = _cerfa_key(spec["section_id"], spec["group_id"], spec["field_key"])
+        value = CERFA_DOSSIER.get(key)
+        if value is None:
+            continue
+        pages.setdefault(spec["page"], []).append(
+            {
+                "section_id": spec["section_id"],
+                "group_id": spec["group_id"],
+                "field_key": spec["field_key"],
+                "extracted_value": value,
+                "confidence": CERFA_LOW_CONFIDENCE.get(key, CERFA_DEFAULT_CONFIDENCE),
+            }
+        )
+    return {
+        "smartdoc_version": "0.3",
+        "document_id": "cerfa_13594-02_000001",
+        "coordinate_unit": "pixel",
+        "page_count": 12,
+        "metadata": {
+            "ocr": {"provider": OcrProvider.MISTRAL.value, "processed_at": "2024-03-08T09:12:00Z"},
+            "document_type": CERFA_DOCUMENT_TYPE,
+        },
+        "pages": [
+            {"page_number": page, "fields": fields} for page, fields in sorted(pages.items())
+        ],
+    }
+
+
+async def seed_cerfa(session: AsyncSession, project: Project) -> None:
+    print("\n --- Mode : CERFA surendettement 13594*02 (champs de cerfa_v2.py) ---")
+
+    print(" [4/8] DocSchema...")
+    schema = DocSchema(
+        project_id=project.id,
+        version=CERFA_SCHEMA_VERSION,
+        name=CERFA_SCHEMA_NAME,
+        document_type=CERFA_DOCUMENT_TYPE,
+    )
+    session.add(schema)
+    await session.flush()
+    print(f"        {schema}")
+
+    print(" [5/8] FieldSpecs (derives de cerfa_v2.py)...")
+    specs = build_specs()
+    field_specs = [
+        FieldSpec(
+            schema_id=schema.id,
+            page=spec["page"],
+            section_id=spec["section_id"],
+            section_label=spec["section_label"],
+            group_id=spec["group_id"],
+            field_key=spec["field_key"],
+            display_label=spec["display_label"],
+            value_type=spec["value_type"],
+            required=spec["required"],
+            is_sensitive=spec["is_sensitive"],
+            display_order=spec["display_order"],
+        )
+        for spec in specs
+    ]
+    session.add_all(field_specs)
+    await session.flush()
+    grouped = sum(1 for spec in specs if spec["group_id"] is not None)
+    print(
+        f"        {len(field_specs)} FieldSpecs crees sur {len(CERFA_V2_PAGE_FIELDS)} pages, "
+        f"dont {grouped} dans une section repetable"
+    )
+    for section_id, (count, prefix, _) in REPEATABLE_SECTIONS.items():
+        per_instance = sum(1 for spec in specs if spec["section_id"] == section_id) // count
+        print(
+            f"            {SECTION_LABELS.get(section_id, section_id)} : "
+            f"{count} instances ({prefix}_1 a {prefix}_{count}), "
+            f"{per_instance} champs chacune"
+        )
+
+    print(" [6/8] Dataset...")
+    dataset = Dataset(
+        project_id=project.id,
+        schema_id=schema.id,
+        name=CERFA_DATASET_NAME,
+        description="Lot de declarations de surendettement",
+        ocr_provider=OcrProvider.MISTRAL.value,
+        status=DatasetStatus.ACTIVE.value,
+        required_operators=2,
+        configs={"confidence_threshold": 0.8, "export_format": "json_pdf"},
+    )
+    session.add(dataset)
+    await session.flush()
+    print(f"        {dataset}")
+
+    print(" [7/8] File + Document...")
+    raw_json = _cerfa_raw_json(specs)
+    json_bytes = json.dumps(raw_json, ensure_ascii=False).encode("utf-8")
+    file_ = File(
+        file_path="/pvc/dires-idf/cerfa/2024_03/cerfa_13594-02_000001.pdf",
+        storage_type="PVC",
+        mime_type="application/pdf",
+        page_count=raw_json["page_count"],
+        file_size_bytes=len(json_bytes),
+        sha256_checksum=sha256_bytes(json_bytes),
+    )
+    session.add(file_)
+    await session.flush()
+    document = Document(
+        dataset_id=dataset.id,
+        file_id=file_.id,
+        file_name="cerfa_13594-02_000001.pdf",
+        metadata={
+            "source": "PVC",
+            "lot": "2024-03",
+            "reception_date": "2024-03-07",
+            "document_type": CERFA_DOCUMENT_TYPE,
+        },
+        status=DocumentStatus.IN_PROGRESS.value,
+    )
+    session.add(document)
+    await session.flush()
+    print(f"        {file_}")
+    print(f"        {document}")
+
+    print(" [8/8] OcrResult + DocumentFields...")
+    ocr_result = OcrResult(
+        document_id=document.id,
+        dataset_id=dataset.id,
+        storage_mode=StorageMode.JSONB.value,
+        raw_json=raw_json,
+    )
+    session.add(ocr_result)
+    await session.flush()
+
+    doc_fields = []
+    filled = 0
+    for fs in field_specs:
+        key = _cerfa_key(fs.section_id, fs.group_id, fs.field_key)
+        value = CERFA_DOSSIER.get(key)
+        confidence = (
+            CERFA_LOW_CONFIDENCE.get(key, CERFA_DEFAULT_CONFIDENCE) if value is not None else None
+        )
+        if value is not None:
+            filled += 1
+        doc_fields.append(
+            DocumentField(
+                document_id=document.id,
+                field_spec_id=fs.id,
+                group_id=fs.group_id,
+                ocr_value=value,
+                resolved_value=value,
+                status=DocumentFieldStatus.PENDING.value,
+                ocr_confidence=confidence,
+                consensus_reached=False,
+            )
+        )
+    session.add_all(doc_fields)
+    await session.flush()
+    below = sum(1 for fs in field_specs if _cerfa_key(fs.section_id, fs.group_id, fs.field_key) in CERFA_LOW_CONFIDENCE)
+    print(f"        {len(doc_fields)} DocumentFields crees, dont {filled} renseignes par l'OCR")
+    print(f"        {below} sous le seuil de confiance du dataset (0.8)")
+
+
 # Helper partagé
 async def _seed_dataset_to_fields(
     session: AsyncSession,
@@ -441,7 +797,7 @@ async def _seed_dataset_to_fields(
     await session.flush()
     print(f"        {len(doc_fields)} DocumentFields crees")
 # Main
-async def main(reset: bool, json_path: Optional[Path]) -> None:
+async def main(reset: bool, json_path: Optional[Path], form_demo: bool) -> None:
     init_engine(settings.async_database_url, echo=False)
     await create_tables()
     factory = async_sessionmaker(bind=get_engine(), expire_on_commit=False)
@@ -451,8 +807,10 @@ async def main(reset: bool, json_path: Optional[Path]) -> None:
        _, admin, operator, project = await seed_infrastructure(session)
        if json_path:
            await seed_from_form_json(session, project, json_path)
-       else:
+       elif form_demo:
            await seed_hardcoded(session, project)
+       else:
+           await seed_cerfa(session, project)
        await session.commit()
     await get_engine().dispose()
     print("\n Seed termine avec succes")
@@ -460,6 +818,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Seed ADAM database")
     parser.add_argument("--reset", action="store_true", help="Vide les tables avant de seeder")
     parser.add_argument("--json", default=None, help="Chemin vers un fichier JSON format formulaire v0.3")
+    parser.add_argument(
+        "--form-demo",
+        action="store_true",
+        help="Ancien formulaire synthetique hardcode, au lieu du CERFA surendettement",
+    )
     args = parser.parse_args()
     json_path = None
     if args.json:
@@ -473,7 +836,13 @@ if __name__ == "__main__":
            sys.exit(1)
     print(SEPARATOR)
     print("Seed de la base de donnees")
-    print(f" Mode : {'FORM JSON' if json_path else 'Donnees hardcodees'}")
+    if json_path:
+       mode = "FORM JSON"
+    elif args.form_demo:
+       mode = "Formulaire demo hardcode"
+    else:
+       mode = "CERFA surendettement 13594*02"
+    print(f" Mode : {mode}")
     print(SEPARATOR)
-    asyncio.run(main(reset=args.reset, json_path=json_path))
+    asyncio.run(main(reset=args.reset, json_path=json_path, form_demo=args.form_demo))
     print(SEPARATOR)
