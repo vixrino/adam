@@ -295,7 +295,6 @@ async def seed_schema(session: AsyncSession, replace: bool, organisation_slug: s
             display_label=spec["display_label"],
             value_type=spec["value_type"],
             required=spec["required"],
-            is_sensitive=spec["is_sensitive"],
             display_order=spec["display_order"],
         )
         for spec in specs
