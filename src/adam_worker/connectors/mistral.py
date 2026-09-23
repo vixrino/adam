@@ -26,7 +26,7 @@ import asyncio
 import base64
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import httpx
 
@@ -65,7 +65,7 @@ class MistralOcrConnector(BaseOcrConnector):
         endpoint: str,
         *,
         model: str = "mistral-ocr-latest",
-        page_fields: Mapping[int, Mapping[str, FieldDef]] = CERFA_V2_PAGE_FIELDS,
+        page_fields: Optional[Mapping[int, Mapping[str, FieldDef]]] = None,
         timeout_seconds: float = 30.0,
         ca_bundle: Optional[str] = None,
         client: Optional[httpx.AsyncClient] = None,
@@ -76,7 +76,10 @@ class MistralOcrConnector(BaseOcrConnector):
             raise ValueError("endpoint Mistral absent : renseigner MISTRAL_OCR_ENDPOINT")
         self.endpoint = endpoint.rstrip("/")
         self.model = model
-        self.page_fields = page_fields
+        # Sentinelle plutot que la constante en valeur par defaut : un dict en
+        # defaut est partage par tous les appels, et les linters le signalent
+        # meme quand le type annonce, Mapping, interdit deja de l'ecrire.
+        self.page_fields = CERFA_V2_PAGE_FIELDS if page_fields is None else page_fields
         # Un client injecte appartient a l'appelant, qui gere sa fermeture.
         self._external_client = client is not None
         self._client = client or httpx.AsyncClient(
@@ -159,11 +162,20 @@ class MistralOcrConnector(BaseOcrConnector):
                     last_error = f"statut {response.status_code}"
                 elif response.is_success:
                     try:
-                        return response.json()
+                        body = response.json()
                     except ValueError as exc:
                         raise OcrConnectorError(
                             f"reponse non JSON pour la page {page_number} : {exc}"
                         ) from exc
+                    # Un JSON valide n'est pas forcement un objet : une reponse
+                    # reduite a une liste ou a une chaine passerait le decodage
+                    # et casserait plus loin, a la premiere lecture de cle.
+                    if not isinstance(body, dict):
+                        raise OcrConnectorError(
+                            f"reponse JSON non objet pour la page {page_number} : "
+                            f"{type(body).__name__}"
+                        )
+                    return body
                 else:
                     # 4xx : rejouer ne changera rien, la requete est en cause.
                     raise OcrConnectorError(
@@ -278,7 +290,7 @@ def _dimensions(data: Mapping[str, Any]) -> Dict[str, Any]:
     return {}
 
 
-def _iter_pairs(page: Page):
+def _iter_pairs(page: Page) -> Iterator[Tuple[int, Section, KVPair]]:
     for section in page.sections:
         for kv in section.kv_pairs:
             yield page.page_number, section, kv

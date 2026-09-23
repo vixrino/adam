@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from adam_worker.connectors.base import BaseOcrConnector
 
+if TYPE_CHECKING:
+    # Sous TYPE_CHECKING seulement : annoter le parametre ne doit pas faire
+    # dependre le simple import du paquet connecteurs de toute la config API.
+    from adam_api.core.config import Settings
 
-def connector_from_settings(settings) -> BaseOcrConnector:
+
+def connector_from_settings(settings: "Settings") -> BaseOcrConnector:
     """Connecteur dicte par la configuration : mock en dev, Mistral sinon.
 
     Les imports sont locaux pour que le simple import du paquet ne tire ni
