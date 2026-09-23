@@ -8,7 +8,7 @@ import pymupdf
 import pytest
 
 from adam_api.services.ingestion import (
-    _get_or_create_file,
+    get_or_create_file,
     ingest_pdf,
     looks_like_pdf,
     pvc_relative_path,
@@ -101,7 +101,7 @@ def test_pvc_relative_path_no_collision_same_name_same_day_different_content() -
 
 
 # ---------------------------------------------------------------------------
-# _get_or_create_file
+# get_or_create_file
 # ---------------------------------------------------------------------------
 
 _LOCATION_KWARGS = dict(
@@ -124,7 +124,7 @@ async def test_get_or_create_file_existing_on_disk(tmp_path: Path) -> None:
     mock_result.scalar_one_or_none.return_value = existing_file
     db.execute = AsyncMock(return_value=mock_result)
 
-    file_row, created = await _get_or_create_file(
+    file_row, created = await get_or_create_file(
         db, checksum="a" * 64, content=b"content", pvc_root=tmp_path, **_LOCATION_KWARGS
     )
     assert file_row is existing_file
@@ -140,7 +140,7 @@ async def test_get_or_create_file_existing_missing_from_disk(tmp_path: Path) -> 
     mock_result.scalar_one_or_none.return_value = existing_file
     db.execute = AsyncMock(return_value=mock_result)
 
-    file_row, created = await _get_or_create_file(
+    file_row, created = await get_or_create_file(
         db, checksum="b" * 64, content=b"restored", pvc_root=tmp_path, **_LOCATION_KWARGS
     )
     abs_path = tmp_path / existing_file.file_path
@@ -164,7 +164,7 @@ async def test_get_or_create_file_new(tmp_path: Path) -> None:
     db.execute = AsyncMock(side_effect=[select_result, insert_result])
     db.flush = AsyncMock()
 
-    file_row, created = await _get_or_create_file(
+    file_row, created = await get_or_create_file(
         db, checksum="c" * 64, content=b"new content", pvc_root=tmp_path, **_LOCATION_KWARGS
     )
     assert created is True
@@ -193,7 +193,7 @@ async def test_get_or_create_file_concurrent_insert_loses_race(tmp_path: Path) -
     db.execute = AsyncMock(side_effect=[select_result, insert_result, reselect_result])
     db.flush = AsyncMock()
 
-    file_row, created = await _get_or_create_file(
+    file_row, created = await get_or_create_file(
         db, checksum="d" * 64, content=b"content", pvc_root=tmp_path, **_LOCATION_KWARGS
     )
     assert file_row is winning_file
@@ -251,7 +251,7 @@ async def test_ingest_pdf_new_file_created(tmp_path: Path) -> None:
     file_mock.file_path = "dires/cerfa/2026_01_15/new.pdf"
 
     with patch(
-        "adam_api.services.ingestion._get_or_create_file", AsyncMock(return_value=(file_mock, True))
+        "adam_api.services.ingestion.get_or_create_file", AsyncMock(return_value=(file_mock, True))
     ):
         result = await ingest_pdf(
             db,
@@ -285,7 +285,7 @@ async def test_ingest_pdf_file_reused(tmp_path: Path) -> None:
     file_mock.file_path = "dires/cerfa/2025_06_01_0800/dup.pdf"
 
     with patch(
-        "adam_api.services.ingestion._get_or_create_file",
+        "adam_api.services.ingestion.get_or_create_file",
         AsyncMock(return_value=(file_mock, False)),
     ):
         result = await ingest_pdf(
