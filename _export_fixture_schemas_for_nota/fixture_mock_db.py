@@ -1,4 +1,5 @@
 # Fixture mock_db — REMPLACE integralement la fixture du meme nom
+# (bloc complet, `return db` compris)
 
 @pytest.fixture
 def mock_db() -> AsyncMock:
@@ -20,6 +21,7 @@ def mock_db() -> AsyncMock:
     result.scalar.return_value = None
     db.execute.return_value = result
     db.get.return_value = None
+    return db
 
 
 # Helper _unlocked_db — A AJOUTER, juste avant la premiere classe de test

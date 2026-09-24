@@ -1,57 +1,47 @@
-# field_spec cote NOTA : ce qui manque, et ce qu'il ne faut PAS faire
+# field_spec : ADAM et NOTA ont diverge, et c'est NOTA qui a raison
 
-## Ne pas copier le modele d'ADAM par-dessus le votre
+## Ne pas copier le modele d'ADAM par-dessus celui de NOTA
 
 Une version precedente de cette note disait de remplacer
 src/nota_core/models/field_spec.py par celui d'ADAM. C'etait faux, et les
-fichiers ont ete retires de cet export.
+fichiers ont ete retires de l'export.
 
-Les deux modeles ont diverge dans les DEUX sens :
+La MR !34 de NOTA — « Finalisation de la page de schema » — a tranche :
 
-    NOTA a une colonne `description` qu'ADAM n'a pas.
-    NOTA nomme la sensibilite `sensitive` ; ADAM la nomme `is_sensitive`.
+    is_sensitive  ->  sensitive          (renommage assume)
+    description                          (colonne ajoutee)
 
-Ecraser le fichier supprime donc `description` et casse tout ce qui lit
-`sensitive` — c'est exactement ce qui s'est produit :
+avec la migration 20260912_1803_add_description_sensitive_to_field_spec.
+Ecraser le fichier par celui d'ADAM supprime donc `description` et casse
+tous les lecteurs de `sensitive` :
 
     AttributeError: 'FieldSpec' has no attribute 'sensitive'; maybe 'is_sensitive'?
 
 Annuler : git checkout -- src/nota_core/models/field_spec.py
 
-## Le seul vrai ecart
+## C'est ADAM qui doit s'aligner, pas l'inverse
 
-La colonne de sensibilite existe des deux cotes, sous deux noms. Le test
-test_field_spec_porte_la_sensibilite attend `is_sensitive`, comme ADAM.
+NOTA a une migration, un router et des schemas Pydantic qui portent
+`sensitive` et `description`. ADAM n'a que `is_sensitive` et pas de
+description. Le retard est de ce cote-ci.
 
-Renommer dans NOTA, en touchant le modele ET ses lecteurs — les reperer
-d'abord, le champ est lu par les schemas de reponse et les routers :
+Cote NOTA il ne reste donc qu'un test a aligner sur le modele — c'est le
+test qui est en retard sur la MR, pas le modele :
 
-    grep -rn "sensitive" src/ tests/
+    tests/unit/test_recipe_models.py, test_field_spec_porte_la_sensibilite
 
-`description`, elle, ne bouge pas : c'est une colonne propre a NOTA, ADAM
-n'a rien a y redire.
+        - FieldSpec.__table__.c.is_sensitive
+        + FieldSpec.__table__.c.sensitive
 
-## Ce qui reste vrai de la note precedente
+## Le seed
 
-La base ne se met pas a jour toute seule. `alembic current` ne rend rien
-cote NOTA : le schema y a ete bati par `create_tables()` depuis les modeles.
-Or `Base.metadata.create_all` cree les tables absentes mais n'ALTERE jamais
-une table existante, et le `--reset` du seed fait un TRUNCATE, pas un DROP.
-Un renommage de colonne dans le modele n'atteindra donc la base qu'apres un
-DROP SCHEMA public CASCADE; CREATE SCHEMA public; — qui detruit toutes les
-donnees, a ne lancer que sur un poste de developpement.
-
-A noter tout de meme : les tests unitaires de routers bouchonnent
-entierement la base (AsyncMock sur get_db) et test_recipe_models inspecte
-la classe. Aucun des deux ne touche Postgres. Le DROP n'est necessaire que
-pour le seed et l'execution reelle, pas pour faire passer la suite.
-
-## Une fois la colonne renommee des deux cotes
-
-La ligne retiree en contournement peut revenir dans scripts/seed.py et
-scripts/seed_schema_cerfa.py, dans la construction de FieldSpec, apres
+scripts/seed.py et scripts/seed_schema_cerfa.py ne passent plus du tout la
+sensibilite a la construction des FieldSpec : la ligne en avait ete retiree
+quand la colonne semblait absente cote NOTA. Elle ne l'etait pas, elle avait
+change de nom. La ligne peut revenir, sous le nom de la MR !34, apres
 `required=` :
 
-    is_sensitive=spec["is_sensitive"],
+    sensitive=spec["is_sensitive"],
 
-build_specs() calcule deja la valeur.
+La clef du dict que rend build_specs() garde son nom, elle : c'est une clef
+interne au script, pas une colonne.
