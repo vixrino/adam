@@ -1,69 +1,57 @@
-# Export des modeles field_spec et document_field pour NOTA
+# field_spec cote NOTA : ce qui manque, et ce qu'il ne faut PAS faire
 
-Fichiers a copier TELS QUELS (imports deja renommes nota_*) — ne pas retaper :
+## Ne pas copier le modele d'ADAM par-dessus le votre
 
-    nota_core/models/field_spec.py      -> src/nota_core/models/field_spec.py
-    nota_core/models/document_field.py  -> src/nota_core/models/document_field.py
+Une version precedente de cette note disait de remplacer
+src/nota_core/models/field_spec.py par celui d'ADAM. C'etait faux, et les
+fichiers ont ete retires de cet export.
 
-Ces deux copies REMPLACENT integralement les versions precedentes cote NOTA.
+Les deux modeles ont diverge dans les DEUX sens :
 
-## Pourquoi
+    NOTA a une colonne `description` qu'ADAM n'a pas.
+    NOTA nomme la sensibilite `sensitive` ; ADAM la nomme `is_sensitive`.
 
-Onze tests echouaient cote NOTA, tous sur la meme cause : field_spec y est
-d'une generation anterieure.
+Ecraser le fichier supprime donc `description` et casse tout ce qui lit
+`sensitive` — c'est exactement ce qui s'est produit :
 
-    test_field_spec_porte_la_sensibilite    AttributeError: is_sensitive
-    9 x test_router_schemas                 409 au lieu de 201 / 200 / 204
-    test_ocr_polygon_persisted_and_returned polygon rendu None
+    AttributeError: 'FieldSpec' has no attribute 'sensitive'; maybe 'is_sensitive'?
 
-Trois manques, pas onze :
+Annuler : git checkout -- src/nota_core/models/field_spec.py
 
-1. `field_spec.is_sensitive` n'existe pas. La colonne arbitre le stockage de
-   comparison_result — valeurs en clair pour un champ ordinaire, HMAC pour une
-   donnee personnelle.
+## Le seul vrai ecart
 
-2. La contrainte d'unicite de field_spec ne porte pas group_id. Sans lui, deux
-   instances d'une meme section repetable — le pret n° 1 et le pret n° 3 du
-   CERFA — entrent en collision, d'ou les 409. La forme correcte est
-   UniqueConstraint(schema_id, section_id, group_id, field_key).
+La colonne de sensibilite existe des deux cotes, sous deux noms. Le test
+test_field_spec_porte_la_sensibilite attend `is_sensitive`, comme ADAM.
 
-3. document_field ne persiste pas ocr_polygon.
+Renommer dans NOTA, en touchant le modele ET ses lecteurs — les reperer
+d'abord, le champ est lu par les schemas de reponse et les routers :
 
-## La base ne se met pas a jour toute seule
+    grep -rn "sensitive" src/ tests/
 
-`alembic current` ne rend rien cote NOTA : aucune migration n'y a jamais ete
-appliquee, le schema a ete bati par `create_tables()` depuis les modeles.
+`description`, elle, ne bouge pas : c'est une colonne propre a NOTA, ADAM
+n'a rien a y redire.
 
-Consequence a ne pas manquer : `Base.metadata.create_all` cree les tables
-absentes mais n'ALTERE jamais une table existante, et le `--reset` du seed
-fait un TRUNCATE, pas un DROP. Copier les modeles ne suffit donc pas : tant
-que l'ancienne table field_spec est en base, la colonne n'apparaitra pas et
-les 409 resteront.
+## Ce qui reste vrai de la note precedente
 
-Il faut supprimer le schema pour que create_tables le rebatisse :
+La base ne se met pas a jour toute seule. `alembic current` ne rend rien
+cote NOTA : le schema y a ete bati par `create_tables()` depuis les modeles.
+Or `Base.metadata.create_all` cree les tables absentes mais n'ALTERE jamais
+une table existante, et le `--reset` du seed fait un TRUNCATE, pas un DROP.
+Un renommage de colonne dans le modele n'atteindra donc la base qu'apres un
+DROP SCHEMA public CASCADE; CREATE SCHEMA public; — qui detruit toutes les
+donnees, a ne lancer que sur un poste de developpement.
 
-    DROP SCHEMA public CASCADE;
-    CREATE SCHEMA public;
+A noter tout de meme : les tests unitaires de routers bouchonnent
+entierement la base (AsyncMock sur get_db) et test_recipe_models inspecte
+la classe. Aucun des deux ne touche Postgres. Le DROP n'est necessaire que
+pour le seed et l'execution reelle, pas pour faire passer la suite.
 
-ATTENTION : cette commande detruit toutes les donnees de la base. C'est sans
-consequence sur un poste de developpement, ou le seed reconstruit tout, et a
-ne jamais lancer ailleurs.
+## Une fois la colonne renommee des deux cotes
 
-## Sequence complete
-
-1. Copier les deux fichiers.
-2. DROP SCHEMA public CASCADE; CREATE SCHEMA public;
-3. uv run python scripts/seed.py --reset
-4. uv run pytest
-
-## Une fois que cela passe
-
-Le seed n'affecte plus is_sensitive a la creation des FieldSpec : c'est un
-contournement pose quand la colonne manquait cote NOTA. La colonne existant
-des deux cotes, la ligne peut revenir dans scripts/seed.py et dans
-scripts/seed_schema_cerfa.py :
+La ligne retiree en contournement peut revenir dans scripts/seed.py et
+scripts/seed_schema_cerfa.py, dans la construction de FieldSpec, apres
+`required=` :
 
     is_sensitive=spec["is_sensitive"],
 
-a remettre dans la construction de FieldSpec, apres `required=`.
-build_specs() calcule deja la valeur, rien d'autre a ecrire.
+build_specs() calcule deja la valeur.
