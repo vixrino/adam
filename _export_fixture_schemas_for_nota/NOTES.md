@@ -46,3 +46,45 @@ une fois les onze autres verts.
 ## Verification
 
     uv run pytest tests/unit/test_router_schemas.py -v
+
+---
+
+# Mise a jour : les neuf 409 restants
+
+Apres le retablissement du `return db`, trente tests repassent et il en reste
+neuf, tous en 409 sur add / patch / delete de field-specs. `_unlocked_db` dans
+sa premiere forme ne pouvait rien pour eux.
+
+## Ce que dit le message
+
+    {"detail": "Doc_schema : Schema 1 verrouille. Creer une nouvelle version
+                (POST /schemas/1/duplicate) pour reprendre l'edition."}
+
+Le prefixe « Doc_schema : » vient de `raise_conflict(DocSchema, ...)` :
+`_name()` lit `__tablename__`, soit `doc_schema`, et le capitalise
+(nota_core/utils/exceptions.py). Le verrou de NOTA fait donc la meme chose
+que celui d'ADAM, en 409 la ou ADAM rend 423.
+
+## La cause
+
+Le test pose UN bouchon que DEUX requetes consomment : la verification du
+verrou d'abord, la recuperation du schema ensuite. La premiere voit l'objet
+destine a la seconde, le trouve vrai, et conclut au verrou.
+
+## Le correctif
+
+unlocked_db.py, a cote de cette note, remplace integralement le helper. Il
+traite le premier execute() a part — celui du verrou, qui ne doit rien
+trouver — et laisse les suivants retomber sur le bouchon de la fixture.
+
+Le patron vient d'un test d'ADAM qui affronte le meme enchainement,
+test_409_when_referenced_by_document_field, ou le commentaire dit
+explicitement « premier execute : lock check ».
+
+## Reserve
+
+Ce correctif n'a pas pu etre execute : le routeur de NOTA n'existe pas dans
+ADAM, et c'est lui qui decide du nombre de requetes avant celle du schema. Si
+le verrou de NOTA en fait deux plutot qu'une, il faudra etendre `not_locked`
+aux deux premiers appels — la forme du helper ne change pas, seule la
+condition `calls["n"] == 1` devient `<= 2`.
