@@ -1,5 +1,6 @@
 """Tests unitaires launcher.py"""
 
+import io
 from typing import Any, Dict
 
 import pytest
@@ -46,17 +47,17 @@ def test_worker_swallows_keyboard_interrupt(monkeypatch: pytest.MonkeyPatch) -> 
     assert launcher.main(["worker"]) == 0
 
 
-@pytest.mark.parametrize("argv", [[], ["unknown"]])
-def test_rejects_missing_or_unknown_target(argv: list[str]) -> None:
+def test_rejects_unknown_target() -> None:
     with pytest.raises(SystemExit) as exc_info:
-        launcher.main(argv)
+        launcher.main(["unknown"])
     assert exc_info.value.code == 2
 
 
 class _FakeProcess:
     """Processus fils simule : `exit_after` appels a poll() avant de s'arreter."""
 
-    def __init__(self, exit_after: int | None, returncode: int = 0) -> None:
+    def __init__(self, exit_after: int | None, returncode: int = 0, output: bytes = b"") -> None:
+        self.stdout = io.BytesIO(output)
         self._exit_after = exit_after
         self._final_code = returncode
         self.returncode: int | None = None
@@ -88,7 +89,7 @@ def _patch_children(monkeypatch: pytest.MonkeyPatch, *children: _FakeProcess) ->
     commands: list[list[str]] = []
     remaining = list(children)
 
-    def fake_popen(command: list[str]) -> _FakeProcess:
+    def fake_popen(command: list[str], **_kwargs: Any) -> _FakeProcess:
         commands.append(command)
         return remaining.pop(0)
 
@@ -97,11 +98,29 @@ def _patch_children(monkeypatch: pytest.MonkeyPatch, *children: _FakeProcess) ->
     return commands
 
 
-def test_all_starts_api_and_worker_as_children(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("argv", [[], ["all"]])
+def test_all_starts_api_and_worker_as_children(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str]
+) -> None:
     commands = _patch_children(monkeypatch, _FakeProcess(0), _FakeProcess(0))
 
-    assert launcher.main(["all"]) == 0
+    assert launcher.main(argv) == 0
     assert [command[-1] for command in commands] == ["api", "worker"]
+
+
+def test_all_prefixes_each_child_output(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    api = _FakeProcess(0, output="Uvicorn démarre\n".encode())
+    worker = _FakeProcess(0, output=b"PageImageWorker demarre\r\nConsensusWorker demarre\n")
+    _patch_children(monkeypatch, api, worker)
+
+    launcher.main([])
+
+    lines = capsys.readouterr().out.splitlines()
+    assert "[api]    Uvicorn démarre" in lines
+    assert "[worker] PageImageWorker demarre" in lines
+    assert "[worker] ConsensusWorker demarre" in lines
 
 
 def test_all_stops_api_when_worker_crashes(monkeypatch: pytest.MonkeyPatch) -> None:
