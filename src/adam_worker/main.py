@@ -46,7 +46,7 @@ def _install_signal_handlers(workers: list[BaseWorker]) -> None:
             pass
 
 
-async def _main() -> None:
+async def main() -> None:
     core = get_core_settings()
     setup_logging(core)
     init_engine(core.async_database_url, echo=False)
@@ -62,4 +62,4 @@ async def _main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(_main())
+    asyncio.run(main())

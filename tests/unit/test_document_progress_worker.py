@@ -349,4 +349,4 @@ def test_le_worker_est_enregistre_dans_main() -> None:
         "adam_worker.main",
         reason="adam_worker.main depend des autres workers, absents de cette branche",
     )
-    assert "DocumentProgressWorker()" in inspect.getsource(main._main)
+    assert "DocumentProgressWorker()" in inspect.getsource(main.main)
