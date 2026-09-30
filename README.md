@@ -3,10 +3,4 @@
 
 SELECT count(*) total, count(ocr_value) remplis FROM document_field WHERE document_id = 4;   
 
-1. Création du projet.  
-2. Création du schéma (les champs à extraire).  
-3. Création du dataset et import des documents.  
-4. Affectation des annotateurs.  
-5. Lancement de la labellisation. 
-6. Consensus entre annotateurs. 
-7. Clôture de la campagne. 
+<img width="2120" height="1600" alt="image" src="https://github.com/user-attachments/assets/d0b54309-9525-45e2-815e-c18a6f81ae48" />
