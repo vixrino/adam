@@ -26,9 +26,21 @@ sans polygone et le merger retombe sur celui du FieldSpec, ce que la chaine de
 pre-alimentation prevoit deja pour les champs non detectes. Les dimensions de
 page, elles, restent celles que rend l'OCR.
 
-Les pages sans schema (pages d'information du CERFA) ne sont pas soumises :
-rien a y extraire, autant d'appels economises. Une page dont l'OCR ne rend
-aucun texte economise de meme son second appel.
+Le rang d'une image dans le PDF ne dit pas quelle page du CERFA elle porte :
+un deposant qui scanne dans le desordre, oublie une page ou en glisse une
+d'un autre formulaire ferait annoter une page avec le schema d'une autre, et
+les valeurs atterriraient dans les mauvais champs sans aucune erreur. Chaque
+page est donc d'abord identifiee : apres l'OCR, un appel court demande au
+modele d'annotation quelle page du CERFA porte ce texte, parmi celles qui ont
+un schema. C'est le schema de la page reconnue qui sert a l'annotation, quel
+que soit son rang. Tout ecart entre rang et page reconnue — page deplacee,
+page inattendue, page en double, page a champs introuvable — est journalise
+et rendu dans les metadonnees du document, sous "anomalies_pages".
+
+Consequence : toutes les pages passent a l'OCR, y compris les pages
+d'information, puisqu'une page a champs peut se trouver a n'importe quel
+rang. Une page reconnue comme sans champs n'est pas annotee, et une page dont
+l'OCR ne rend aucun texte n'est ni identifiee ni annotee.
 
 Erreurs : moteur injoignable, statut non-2xx epuisant les reprises, ou reponse
 illisible levent OcrConnectorError. Un moteur joignable qui ne detecte aucun
@@ -99,6 +111,9 @@ _CONSIGNE = (
     "meme si des chiffres ou des dates figurent ailleurs sur la page."
 )
 
+#: Nom du json_schema d'identification, distinct de celui de l'annotation.
+_IDENTIFICATION = "identification_page"
+
 
 class MistralOcrConnector(BaseOcrConnector):
     """Soumet chaque image de page a l'API OCR Mistral et assemble la reponse."""
@@ -128,6 +143,7 @@ class MistralOcrConnector(BaseOcrConnector):
         # defaut est partage par tous les appels, et les linters le signalent
         # meme quand le type annonce, Mapping, interdit deja de l'ecrire.
         self.page_fields = CERFA_V2_PAGE_FIELDS if page_fields is None else page_fields
+        self._consigne_identification = _consigne_identification(self.page_fields)
         # Un client injecte appartient a l'appelant, qui gere sa fermeture.
         self._external_client = client is not None
         self._client = client or httpx.AsyncClient(
@@ -144,15 +160,36 @@ class MistralOcrConnector(BaseOcrConnector):
 
     async def extract(self, images: Sequence[Path]) -> Optional[SmartdocDocument]:
         pages: List[Page] = []
+        anomalies: List[Dict[str, Any]] = []
+        #: page du CERFA reconnue -> rang de l'image qui la porte.
+        reconnues: Dict[int, int] = {}
         detected = 0
-        for page_number, image in enumerate(images, start=1):
-            fields = self.page_fields.get(page_number)
-            if not fields:
+        for rang, image in enumerate(images, start=1):
+            markdown, dims = await self._read_page(image, rang)
+            if not markdown.strip():
+                # Page illisible ou vide : rien a identifier ni a annoter.
                 continue
-            annotation, dims = await self._annotate(image, page_number, fields)
+            page_number = await self._identify(markdown, rang)
+            anomalie = _anomalie(rang, page_number, reconnues, self.page_fields)
+            if anomalie is not None:
+                logger.warning("page du CERFA inattendue : %s", anomalie)
+                anomalies.append(anomalie)
+                if anomalie["type"] == "page_en_double":
+                    continue
+            if page_number is None:
+                continue
+            reconnues[page_number] = rang
+            fields = self.page_fields[page_number]
+            annotation = await self._extract_fields(markdown, page_number, fields)
             page = self._build_page(page_number, fields, annotation, dims)
             detected += sum(1 for _, _, kv in _iter_pairs(page) if kv.value is not None)
             pages.append(page)
+
+        manquantes = sorted(set(self.page_fields) - set(reconnues))
+        if manquantes:
+            anomalie = {"type": "pages_manquantes", "pages": manquantes}
+            logger.warning("pages du CERFA introuvables : %s", manquantes)
+            anomalies.append(anomalie)
 
         if detected == 0:
             # Aucun champ vu sur aucune page : absence de resultat, pas d'erreur.
@@ -167,21 +204,11 @@ class MistralOcrConnector(BaseOcrConnector):
                 "provider": "mistral",
                 "model": self.model,
                 "annotation_model": self.annotation_model,
+                "anomalies_pages": anomalies,
             },
         )
 
     # -- Appel de l'API -----------------------------------------------------
-
-    async def _annotate(
-        self, image: Path, page_number: int, fields: Mapping[str, FieldDef]
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Deux passes sur une image, rend (annotation aplatie, dimensions)."""
-        markdown, dims = await self._read_page(image, page_number)
-        if not markdown.strip():
-            # Page illisible ou vide : rien a donner au modele d'annotation,
-            # autant lui epargner l'appel. Absence de texte, pas une erreur.
-            return {}, dims
-        return await self._extract_fields(markdown, page_number, fields), dims
 
     async def _read_page(self, image: Path, page_number: int) -> Tuple[str, Dict[str, Any]]:
         """Passe OCR nue : rend le markdown de la page et ses dimensions."""
@@ -196,6 +223,27 @@ class MistralOcrConnector(BaseOcrConnector):
             str(page.get("markdown") or "") for page in pages if isinstance(page, Mapping)
         )
         return markdown, _dimensions(data)
+
+    async def _identify(self, markdown: str, rang: int) -> Optional[int]:
+        """Rend la page du CERFA que porte ce texte, ou None si aucune page a
+        champs ne correspond. Une reponse hors des pages connues vaut None :
+        mieux vaut ne rien annoter qu'annoter avec le schema d'une autre page.
+        """
+        payload = {
+            "model": self.annotation_model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": self._consigne_identification},
+                {"role": "user", "content": markdown},
+            ],
+            "response_format": _identification_format(),
+        }
+        reponse = _contenu_json(await self._post("/v1/chat/completions", payload, rang), rang)
+        page = reponse.get("page")
+        # bool est un int en Python : True ne doit pas se lire page 1.
+        if isinstance(page, int) and not isinstance(page, bool) and page in self.page_fields:
+            return page
+        return None
 
     async def _extract_fields(
         self, markdown: str, page_number: int, fields: Mapping[str, FieldDef]
@@ -216,25 +264,7 @@ class MistralOcrConnector(BaseOcrConnector):
             "response_format": _annotation_format(page_number, fields),
         }
         data = await self._post("/v1/chat/completions", payload, page_number)
-
-        choices = data.get("choices") or []
-        if not choices:
-            return {}
-        raw = (choices[0].get("message") or {}).get("content")
-        if raw is None or raw == "":
-            return {}
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except ValueError as exc:
-                raise OcrConnectorError(
-                    f"annotation illisible pour la page {page_number} : {exc}"
-                ) from exc
-        if not isinstance(raw, dict):
-            raise OcrConnectorError(
-                f"annotation de la page {page_number} : objet attendu, recu {type(raw).__name__}"
-            )
-        return _flatten(raw, set(fields))
+        return _flatten(_contenu_json(data, page_number), set(fields))
 
     async def _post(self, path: str, payload: Dict[str, Any], page_number: int) -> Dict[str, Any]:
         """POST avec reprises sur erreurs reseau et 5xx, comme ApiClient."""
@@ -317,6 +347,97 @@ class MistralOcrConnector(BaseOcrConnector):
                 for section_id, pairs in sections.items()
             ],
         )
+
+
+def _contenu_json(data: Mapping[str, Any], page_number: int) -> Dict[str, Any]:
+    """Objet JSON rendu par une completion ; {} si elle ne rend rien."""
+    choices = data.get("choices") or []
+    if not choices:
+        return {}
+    raw = (choices[0].get("message") or {}).get("content")
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError as exc:
+            raise OcrConnectorError(
+                f"reponse du modele illisible pour la page {page_number} : {exc}"
+            ) from exc
+    if not isinstance(raw, dict):
+        raise OcrConnectorError(
+            f"reponse du modele pour la page {page_number} : objet attendu, recu {type(raw).__name__}"
+        )
+    return raw
+
+
+def _consigne_identification(page_fields: Mapping[int, Mapping[str, FieldDef]]) -> str:
+    """Consigne d'identification, derivee du schema plutot que redigee.
+
+    Chaque page a champs y est decrite par ses rubriques, c'est-a-dire le
+    premier segment de ses cles : ajouter une page au schema l'ajoute ici.
+    """
+    lignes = []
+    for page_number in sorted(page_fields):
+        rubriques = dict.fromkeys(key.split(".", 1)[0] for key in page_fields[page_number])
+        noms = ", ".join(r.replace("_", " ") for r in rubriques)
+        lignes.append(f"- page {page_number} : {noms}")
+    return (
+        "Tu recois la transcription d'une page du formulaire CERFA de depot "
+        "d'un dossier de surendettement. Dis quelle page du formulaire elle "
+        "porte, parmi celles-ci, decrites par leurs rubriques :\n"
+        + "\n".join(lignes)
+        + "\nUn numero de page imprime sur la page est l'indice le plus sur ; "
+        "a defaut, reconnais les rubriques. Rends null si la page n'est aucune "
+        "de celles-ci : page de notice ou d'information, autre page du "
+        "formulaire, autre document. Ne choisis pas la plus proche par defaut : "
+        "une page attribuee a tort fait relever ses valeurs dans les champs "
+        "d'une autre."
+    )
+
+
+def _identification_format() -> Dict[str, Any]:
+    """json_schema strict d'une seule propriete, le numero de page ou null."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": _IDENTIFICATION,
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"page": {"type": ["integer", "null"]}},
+                "required": ["page"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _anomalie(
+    rang: int,
+    page_number: Optional[int],
+    reconnues: Mapping[int, int],
+    page_fields: Mapping[int, Any],
+) -> Optional[Dict[str, Any]]:
+    """Ecart entre le rang d'une image et la page qu'elle porte, s'il y en a.
+
+    Une page d'information a son rang (None hors des pages a champs) n'en est
+    pas un : c'est le cas nominal des pages sans schema.
+    """
+    if page_number is None:
+        if rang in page_fields:
+            return {"type": "page_inattendue", "rang": rang, "page_attendue": rang}
+        return None
+    if page_number in reconnues:
+        return {
+            "type": "page_en_double",
+            "rang": rang,
+            "page_reconnue": page_number,
+            "rang_retenu": reconnues[page_number],
+        }
+    if page_number != rang:
+        return {"type": "page_deplacee", "rang": rang, "page_reconnue": page_number}
+    return None
 
 
 def _nullable(spec: FieldDef) -> Dict[str, Any]:

@@ -1,9 +1,10 @@
 """Tests unitaires du connecteur OCR Mistral.
 
 Le transport HTTP est simule par httpx.MockTransport : aucun appel reseau. Le
-connecteur passe deux appels par page — /v1/ocr pour le markdown, puis
-/v1/chat/completions pour en extraire les champs — donc le faux transport
-route sur le chemin plutot que de compter les requetes.
+connecteur passe jusqu'a trois appels par page — /v1/ocr pour le markdown, puis
+deux /v1/chat/completions, l'un pour identifier la page du CERFA, l'autre pour
+en extraire les champs — donc le faux transport route sur le chemin et sur le
+nom du json_schema plutot que de compter les requetes.
 
 Les criteres d'acceptation du ticket T5 couverts ici :
 
@@ -27,7 +28,7 @@ import pytest
 from adam_worker.connectors import connector_from_settings
 from adam_worker.connectors.base import OcrConnectorError
 from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
-from adam_worker.connectors.mistral import _CONSIGNE, MistralOcrConnector
+from adam_worker.connectors.mistral import _CONSIGNE, _IDENTIFICATION, MistralOcrConnector
 from adam_worker.connectors.mock import MockOcrConnector
 
 ENDPOINT = "https://mistral.test"
@@ -56,12 +57,15 @@ def _routeur(
     annotations: Callable[[int], Any],
     markdown: str = MARKDOWN,
     journal: Optional[List[httpx.Request]] = None,
+    identification: Callable[[int], Any] = lambda rang: rang,
 ) -> Callable[[httpx.Request], httpx.Response]:
-    """Faux endpoint : /v1/ocr rend du markdown, /v1/chat/completions annote.
+    """Faux endpoint : /v1/ocr rend du markdown, /v1/chat/completions identifie
+    la page ou l'annote selon le json_schema recu.
 
-    `annotations` recoit le rang de la page soumise (1 pour la premiere page
-    porteuse de champs, 2 pour la suivante...) et rend l'objet d'annotation,
-    ou None pour une reponse sans contenu.
+    `annotations` et `identification` recoivent le rang de l'image dans le PDF
+    (1 pour la premiere). `identification` rend la page du CERFA reconnue — par
+    defaut le rang, document dans l'ordre — et `annotations` l'objet
+    d'annotation, ou None pour une reponse sans contenu.
     """
     soumises = {"n": 0}
 
@@ -73,6 +77,12 @@ def _routeur(
             return httpx.Response(
                 200,
                 json={"pages": [{"index": 0, "markdown": markdown, "dimensions": DIMENSIONS}]},
+            )
+        corps = json.loads(request.content)
+        if corps["response_format"]["json_schema"]["name"] == _IDENTIFICATION:
+            page = identification(soumises["n"])
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": json.dumps({"page": page})}}]}
             )
         annotation = annotations(soumises["n"])
         contenu = None if annotation is None else json.dumps(annotation)
@@ -100,13 +110,15 @@ def test_extract_rend_un_document_conforme(tmp_path: Path) -> None:
         return {"situation_familiale": {"situation_familiale.celibataire": False}}
 
     requetes: List[httpx.Request] = []
-    doc = asyncio.run(_connector(_routeur(annotations, journal=requetes)).extract(_images(tmp_path, 2)))
+    doc = asyncio.run(
+        _connector(_routeur(annotations, journal=requetes)).extract(_images(tmp_path, 2))
+    )
 
     assert doc is not None
     assert doc.smartdoc_version == "0.3"
     assert doc.page_count == 2
-    # Deux pages porteuses de champs, deux appels chacune.
-    assert len(requetes) == 4
+    # Deux pages porteuses de champs, trois appels chacune.
+    assert len(requetes) == 6
 
     by_id = {kv.id: kv for _, _, kv in doc.iter_kv_pairs()}
     assert by_id["deposant.nom_naissance"].value.type == "text"
@@ -133,7 +145,7 @@ def test_les_deux_appels_portent_image_puis_schema(tmp_path: Path) -> None:
     handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
     asyncio.run(_connector(handler).extract(_images(tmp_path, 1)))
 
-    ocr, annotation = requetes
+    ocr, _identification, annotation = requetes
     assert str(ocr.url) == f"{ENDPOINT}/v1/ocr"
     assert ocr.headers.get("Authorization") == "Bearer cle-test"
     corps_ocr = json.loads(ocr.content)
@@ -163,7 +175,7 @@ def test_le_schema_autorise_null_sur_chaque_champ(tmp_path: Path) -> None:
     handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
     asyncio.run(_connector(handler).extract(_images(tmp_path, 1)))
 
-    schema = json.loads(requetes[1].content)["response_format"]["json_schema"]["schema"]
+    schema = json.loads(requetes[2].content)["response_format"]["json_schema"]["schema"]
     proprietes = schema["properties"]
     assert all("null" in p["type"] for p in proprietes.values())
     # Le type du contrat survit a cote de null, il n'est pas remplace.
@@ -172,16 +184,124 @@ def test_le_schema_autorise_null_sur_chaque_champ(tmp_path: Path) -> None:
     assert set(schema["required"]) == set(proprietes)
 
 
-def test_pages_sans_schema_ne_sont_pas_soumises(tmp_path: Path) -> None:
-    """Le CERFA n'a de champs qu'en pages 1, 2, 6 et 10 : 4 pages sur 10."""
+def test_pages_sans_schema_ne_sont_pas_annotees(tmp_path: Path) -> None:
+    """Toutes les pages passent a l'OCR et a l'identification, puisqu'une page
+    a champs peut etre a n'importe quel rang ; seules les pages a champs sont
+    annotees."""
     requetes: List[httpx.Request] = []
-    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
+    handler = _routeur(
+        lambda _: {"deposant.prenoms": "Jean"},
+        journal=requetes,
+        identification=lambda rang: rang if rang in CERFA_V2_PAGE_FIELDS else None,
+    )
     doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 10)))
 
-    assert len(requetes) == 2 * len(CERFA_V2_PAGE_FIELDS)
+    assert len(requetes) == 2 * 10 + len(CERFA_V2_PAGE_FIELDS)
     assert doc is not None
     assert doc.page_count == 10
     assert [p.page_number for p in doc.pages] == sorted(CERFA_V2_PAGE_FIELDS)
+    # Document dans l'ordre et complet : rien a signaler.
+    assert doc.metadata["anomalies_pages"] == []
+
+
+# -- Identification des pages -----------------------------------------------
+
+
+def _schema_annote(requete: httpx.Request) -> set:
+    return set(
+        json.loads(requete.content)["response_format"]["json_schema"]["schema"]["properties"]
+    )
+
+
+def test_pages_inversees_sont_annotees_avec_leur_propre_schema(tmp_path: Path) -> None:
+    """Pages 1 et 2 scannees dans l'ordre inverse : l'image 1 porte la page 2
+    et doit etre annotee avec le schema de la page 2, pas celui de son rang."""
+    requetes: List[httpx.Request] = []
+    handler = _routeur(
+        lambda _: {"deposant.prenoms": "Jean"},
+        journal=requetes,
+        identification=lambda rang: {1: 2, 2: 1}[rang],
+    )
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 2)))
+
+    annotations = [
+        r
+        for r in requetes
+        if json.loads(r.content).get("response_format", {}).get("json_schema", {}).get("name")
+        not in (None, _IDENTIFICATION)
+    ]
+    assert _schema_annote(annotations[0]) == set(CERFA_V2_PAGE_FIELDS[2])
+    assert _schema_annote(annotations[1]) == set(CERFA_V2_PAGE_FIELDS[1])
+    assert doc is not None
+    assert [p.page_number for p in doc.pages] == [2, 1]
+    assert doc.metadata["anomalies_pages"][:2] == [
+        {"type": "page_deplacee", "rang": 1, "page_reconnue": 2},
+        {"type": "page_deplacee", "rang": 2, "page_reconnue": 1},
+    ]
+
+
+def test_page_inattendue_n_est_pas_annotee(tmp_path: Path) -> None:
+    """Une page etrangere au rang d'une page a champs est signalee, et surtout
+    pas annotee avec le schema de ce rang."""
+    requetes: List[httpx.Request] = []
+    handler = _routeur(
+        lambda _: {"deposant.prenoms": "Jean"},
+        journal=requetes,
+        identification=lambda rang: None if rang == 2 else rang,
+    )
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 2)))
+
+    # Image 2 : OCR et identification, pas d'annotation.
+    assert len(requetes) == 3 + 2
+    assert doc is not None
+    assert [p.page_number for p in doc.pages] == [1]
+    anomalies = doc.metadata["anomalies_pages"]
+    assert {"type": "page_inattendue", "rang": 2, "page_attendue": 2} in anomalies
+    manquantes = next(a for a in anomalies if a["type"] == "pages_manquantes")
+    assert manquantes["pages"] == sorted(set(CERFA_V2_PAGE_FIELDS) - {1})
+
+
+def test_page_en_double_n_est_annotee_qu_une_fois(tmp_path: Path) -> None:
+    """La meme page scannee deux fois : la premiere est retenue."""
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, identification=lambda _: 1)
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 2)))
+
+    assert doc is not None
+    assert [p.page_number for p in doc.pages] == [1]
+    assert {
+        "type": "page_en_double",
+        "rang": 2,
+        "page_reconnue": 1,
+        "rang_retenu": 1,
+    } in doc.metadata["anomalies_pages"]
+
+
+def test_page_hors_schema_rendue_par_le_modele_vaut_none(tmp_path: Path) -> None:
+    """Un numero inconnu du schema, ou un booleen, ne doit pas choisir de schema."""
+    for reponse in (7, True, "1"):
+        requetes: List[httpx.Request] = []
+        handler = _routeur(
+            lambda _: {"deposant.prenoms": "Jean"},
+            journal=requetes,
+            identification=lambda _, r=reponse: r,
+        )
+        assert asyncio.run(_connector(handler).extract(_images(tmp_path, 1))) is None
+        assert len(requetes) == 2
+
+
+def test_la_consigne_d_identification_decrit_les_pages_du_schema(tmp_path: Path) -> None:
+    requetes: List[httpx.Request] = []
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
+    asyncio.run(_connector(handler).extract(_images(tmp_path, 1)))
+
+    corps = json.loads(requetes[1].content)
+    consigne = corps["messages"][0]["content"]
+    assert corps["temperature"] == 0
+    assert corps["messages"][-1]["content"] == MARKDOWN
+    for page_number in CERFA_V2_PAGE_FIELDS:
+        assert f"- page {page_number} :" in consigne
+    assert "credits consommation" in consigne
+    assert "Rends null si la page n'est aucune" in consigne
 
 
 def test_page_sans_texte_economise_l_annotation(tmp_path: Path) -> None:
