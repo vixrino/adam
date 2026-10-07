@@ -61,6 +61,11 @@ async def _main() -> None:
         print("Normal sur un document vierge ; suspect sur un CERFA rempli.")
         return
 
+    anomalies = doc.metadata.get("anomalies_pages", [])
+    print(f"\n{len(anomalies)} anomalie(s) de pages")
+    for anomalie in anomalies:
+        print(f"  {anomalie}")
+
     detected = [(page, kv) for page, _, kv in doc.iter_kv_pairs() if kv.value is not None]
     empty = sum(1 for _, _, kv in doc.iter_kv_pairs() if kv.value is None)
     print(f"\n{len(detected)} champ(s) detecte(s), {empty} attendu(s) sans valeur\n")

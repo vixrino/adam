@@ -418,3 +418,44 @@ CERFA_V2_PAGE_FIELDS: Dict[int, Dict[str, FieldDef]] = {
     9: _PAGE_9,
     10: _PAGE_10,
 }
+
+#: Rubriques imprimees de chaque page, pour reconnaitre une page a son contenu
+#: et non a son rang : un CERFA reel est arrive pages 9 et 10 inversees.
+#: Releves sur ce CERFA, pages 1 a 12.
+#: Les pages 10 et 11 ouvrent sur le meme titre ; la page 11 seule porte
+#: ensuite les rubriques autres prets et cause du surendettement. Les pages sans
+#: champs y figurent aussi : les reconnaitre permet de distinguer une page
+#: deplacee d'une page etrangere au formulaire.
+CERFA_V2_PAGE_TITLES: Dict[int, str] = {
+    1: (
+        "Deposant ; Co-deposant ; Coordonnees personnelles ; Vous etes assiste(e) "
+        "par un travailleur social ; Declaration sur l'honneur"
+    ),
+    2: (
+        "Vous avez deja depose un dossier de surendettement ; Situation familiale "
+        "actuelle ; Enfant(s) et/ou autre(s) personne(s) vivant a votre domicile ; "
+        "Situation logement ; Prestations familiales"
+    ),
+    3: "Situation professionnelle ; Montant des ressources mensuelles",
+    4: "Montant des charges mensuelles ; Gestion du budget ; Vehicule(s)",
+    5: "Patrimoine",
+    6: (
+        "Dettes de logement ; Dettes de charges courantes (impots, EDF, dettes "
+        "sociales, assurances...)"
+    ),
+    7: "Dettes diverses ; Dettes de pension alimentaire, amendes",
+    8: "Decouverts bancaires ; Locations diverses",
+    9: (
+        "Credits immobiliers. Tableau de prets avec les colonnes assureur du pret "
+        "et montant mensuel de l'assurance"
+    ),
+    10: (
+        "Credits a la consommation (credits renouvelables, prets personnels...), "
+        "et aucune autre rubrique"
+    ),
+    11: (
+        "Credits a la consommation (suite du tableau de la page 10) ; Autres "
+        "prets et cautionnements ; Cause de votre situation de surendettement"
+    ),
+    12: "Avertissement : adresse a laquelle renvoyer le dossier",
+}
