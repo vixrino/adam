@@ -36,6 +36,10 @@ class Settings(CoreSettings):
     mistral_api_key: str = ""
     mistral_ocr_endpoint: str = ""
     mistral_ocr_model: str = "mistral-ocr-latest"
+    #: Modele qui extrait les champs du markdown rendu par l'OCR. L'endpoint
+    #: choisit seul le sien quand on lui delegue l'annotation, et son defaut
+    #: n'est pas deploye partout : on le nomme ici plutot que de le subir.
+    mistral_annotation_model: str = "mistral-medium-latest"
     #: Chemin d'un truststore PEM pour un endpoint prive ; vide = CA systeme.
     mistral_ca_bundle: str = ""
 
