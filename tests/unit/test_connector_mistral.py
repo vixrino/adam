@@ -189,11 +189,7 @@ def test_pages_sans_schema_ne_sont_pas_annotees(tmp_path: Path) -> None:
     a champs peut etre a n'importe quel rang ; seules les pages a champs sont
     annotees."""
     requetes: List[httpx.Request] = []
-    handler = _routeur(
-        lambda _: {"deposant.prenoms": "Jean"},
-        journal=requetes,
-        identification=lambda rang: rang if rang in CERFA_V2_PAGE_FIELDS else None,
-    )
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
     doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 10)))
 
     assert len(requetes) == 2 * 10 + len(CERFA_V2_PAGE_FIELDS)
@@ -278,7 +274,7 @@ def test_page_en_double_n_est_annotee_qu_une_fois(tmp_path: Path) -> None:
 
 def test_page_hors_schema_rendue_par_le_modele_vaut_none(tmp_path: Path) -> None:
     """Un numero inconnu du schema, ou un booleen, ne doit pas choisir de schema."""
-    for reponse in (7, True, "1"):
+    for reponse in (12, True, "1"):
         requetes: List[httpx.Request] = []
         handler = _routeur(
             lambda _: {"deposant.prenoms": "Jean"},
@@ -300,8 +296,65 @@ def test_la_consigne_d_identification_decrit_les_pages_du_schema(tmp_path: Path)
     assert corps["messages"][-1]["content"] == MARKDOWN
     for page_number in CERFA_V2_PAGE_FIELDS:
         assert f"- page {page_number} :" in consigne
-    assert "credits consommation" in consigne
+    # Les pages sans champs sont decrites aussi, par leurs rubriques imprimees.
+    assert "- page 5 : Patrimoine" in consigne
+    assert "Credits a la consommation" in consigne
     assert "Rends null si la page n'est aucune" in consigne
+
+
+def test_la_consigne_d_identification_ecarte_le_rang() -> None:
+    """Un CERFA reel est arrive pages 9 et 10 inversees, et un modele qui
+    numerotait les pages dans l'ordre de reception s'y est trompe."""
+    consigne = _connector(lambda _: httpx.Response(500))._consigne_identification
+    assert "scanne dans le desordre" in consigne
+    assert "Identifie la page par ses titres de rubrique uniquement" in consigne
+    # Le pied de page "300 BdF 1947 - DIRCOM - 30/04/2020" est commun a toutes.
+    assert "la meme sur toutes les pages" in consigne
+    assert "seul leur titre les distingue" in consigne
+
+
+def test_pages_9_et_10_inversees_comme_sur_le_cerfa_reel(tmp_path: Path) -> None:
+    """Ordre reel 1..8, 10, 9 : chaque tableau de prets garde son schema."""
+    ordre = [1, 2, 3, 4, 5, 6, 7, 8, 10, 9]
+    requetes: List[httpx.Request] = []
+    handler = _routeur(
+        lambda _: {"deposant.prenoms": "Jean"},
+        journal=requetes,
+        identification=lambda rang: ordre[rang - 1],
+    )
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 10)))
+
+    annotations = [
+        _schema_annote(r)
+        for r in requetes
+        if json.loads(r.content).get("response_format", {}).get("json_schema", {}).get("name")
+        not in (None, _IDENTIFICATION)
+    ]
+    assert annotations[-2] == set(CERFA_V2_PAGE_FIELDS[10])
+    assert annotations[-1] == set(CERFA_V2_PAGE_FIELDS[9])
+    assert doc is not None
+    assert doc.metadata["anomalies_pages"] == [
+        {"type": "page_deplacee", "rang": 9, "page_reconnue": 10},
+        {"type": "page_deplacee", "rang": 10, "page_reconnue": 9},
+    ]
+
+
+def test_page_sans_champs_reconnue_n_est_pas_annotee(tmp_path: Path) -> None:
+    """Une page 3 a son rang : reconnue, rien a annoter, rien a signaler."""
+    requetes: List[httpx.Request] = []
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 3)))
+
+    assert len(requetes) == 3 + 3 + 2
+    assert doc is not None
+    assert not any(a["type"] != "pages_manquantes" for a in doc.metadata["anomalies_pages"])
+
+
+def test_la_consigne_ne_complete_pas_une_date_partielle() -> None:
+    """« Depuis le : 2018 » : field_parser n'accepte que jj/mm/aaaa, et un
+    modele somme de rendre une date complete inventerait 2018-01-01."""
+    assert "Une date incomplete" in _CONSIGNE
+    assert "ne complete jamais un jour ou un mois" in _CONSIGNE
 
 
 def test_page_sans_texte_economise_l_annotation(tmp_path: Path) -> None:
