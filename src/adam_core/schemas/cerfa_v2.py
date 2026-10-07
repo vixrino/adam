@@ -421,8 +421,9 @@ CERFA_V2_PAGE_FIELDS: Dict[int, Dict[str, FieldDef]] = {
 
 #: Rubriques imprimees de chaque page, pour reconnaitre une page a son contenu
 #: et non a son rang : un CERFA reel est arrive pages 9 et 10 inversees.
-#: Releves sur ce CERFA, pages 1 a 10 ; la page 11 est connue par le prompt
-#: d'extraction de nota ; la page 12 n'est pas encore relevee. Les pages sans
+#: Releves sur ce CERFA, pages 1 a 11 ; la page 12 n'est pas encore relevee.
+#: Les pages 10 et 11 portent le meme titre : seule la numerotation des prets
+#: les distingue, n° 1 a 6 puis 7 et 8, d'apres le prompt d'extraction de nota. Les pages sans
 #: champs y figurent aussi : les reconnaitre permet de distinguer une page
 #: deplacee d'une page etrangere au formulaire.
 CERFA_V2_PAGE_TITLES: Dict[int, str] = {
@@ -449,8 +450,12 @@ CERFA_V2_PAGE_TITLES: Dict[int, str] = {
         "et montant mensuel de l'assurance"
     ),
     10: (
-        "Credits a la consommation. Tableau de prets sans colonne d'assureur ni "
-        "d'assurance mensuelle"
+        "Credits a la consommation (credits renouvelables, prets personnels...). "
+        "Tableau des prets n° 1 a 6, sans colonne d'assureur ni d'assurance "
+        "mensuelle"
     ),
-    11: "Suite du tableau des credits a la consommation, derniers prets",
+    11: (
+        "Credits a la consommation (credits renouvelables, prets personnels...). "
+        "Suite du tableau de la page 10 : prets n° 7 et 8"
+    ),
 }
