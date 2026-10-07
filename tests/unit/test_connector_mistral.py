@@ -274,7 +274,7 @@ def test_page_en_double_n_est_annotee_qu_une_fois(tmp_path: Path) -> None:
 
 def test_page_hors_schema_rendue_par_le_modele_vaut_none(tmp_path: Path) -> None:
     """Un numero inconnu du schema, ou un booleen, ne doit pas choisir de schema."""
-    for reponse in (12, True, "1"):
+    for reponse in (13, True, "1"):
         requetes: List[httpx.Request] = []
         handler = _routeur(
             lambda _: {"deposant.prenoms": "Jean"},
