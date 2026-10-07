@@ -81,7 +81,7 @@ def pvc_relative_path(
     return Path(organisation_slug) / document_type / timestamp / str(file_id) / safe_name
 
 
-async def _get_or_create_file(
+async def get_or_create_file(
     db: AsyncSession,
     *,
     checksum: str,
@@ -185,7 +185,7 @@ async def ingest_pdf(
             "file_path": existing_file_path,
         }
 
-    file_row, file_created = await _get_or_create_file(
+    file_row, file_created = await get_or_create_file(
         db,
         checksum=checksum,
         content=content,

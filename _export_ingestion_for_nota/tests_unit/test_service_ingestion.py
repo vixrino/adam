@@ -1,4 +1,4 @@
-"""Tests unitaires pour adam_api.services.ingestion."""
+"""Tests unitaires pour nota_api.services.ingestion."""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pymupdf
 import pytest
 
-from adam_api.services.ingestion import (
+from nota_api.services.ingestion import (
     get_or_create_file,
     ingest_pdf,
     looks_like_pdf,
@@ -251,7 +251,7 @@ async def test_ingest_pdf_new_file_created(tmp_path: Path) -> None:
     file_mock.file_path = "dires/cerfa/2026_01_15/new.pdf"
 
     with patch(
-        "adam_api.services.ingestion.get_or_create_file", AsyncMock(return_value=(file_mock, True))
+        "nota_api.services.ingestion.get_or_create_file", AsyncMock(return_value=(file_mock, True))
     ):
         result = await ingest_pdf(
             db,
@@ -285,7 +285,7 @@ async def test_ingest_pdf_file_reused(tmp_path: Path) -> None:
     file_mock.file_path = "dires/cerfa/2025_06_01_0800/dup.pdf"
 
     with patch(
-        "adam_api.services.ingestion.get_or_create_file",
+        "nota_api.services.ingestion.get_or_create_file",
         AsyncMock(return_value=(file_mock, False)),
     ):
         result = await ingest_pdf(

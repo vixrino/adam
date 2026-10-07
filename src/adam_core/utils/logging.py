@@ -13,7 +13,9 @@ try:
     # la, et une configuration qui signale les ignores inutiles echouait dessus.
     from exa.logger.formatter import JsonFormatter
 
-    _JSON_CLASS = "exa.logger.formatter.JsonFormatter"
+    # Le chemin est derive du symbole importe, et non reecrit en chaine : il
+    # suit un deplacement de la classe, et l'import cesse d'etre inutilise.
+    _JSON_CLASS = f"{JsonFormatter.__module__}.{JsonFormatter.__qualname__}"
 except ImportError:
     _JSON_CLASS = "stubs.exa_logger.formatter.JsonFormatter"
 
