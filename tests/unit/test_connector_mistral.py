@@ -310,8 +310,9 @@ def test_la_consigne_d_identification_ecarte_le_rang() -> None:
     assert "Identifie la page par ses titres de rubrique uniquement" in consigne
     # Le pied de page "300 BdF 1947 - DIRCOM - 30/04/2020" est commun a toutes.
     assert "la meme sur toutes les pages" in consigne
-    # Pages 10 et 11 : meme titre, seuls les numeros de pret les distinguent.
-    assert "1 a 6 en page 10, 7 et 8 en page 11" in consigne
+    # Pages 10 et 11 : meme titre, la 11 porte en plus deux autres rubriques.
+    assert "Autres prets et cautionnements" in consigne
+    assert "sans elles, c'est la page 10" in consigne
 
 
 def test_pages_9_et_10_inversees_comme_sur_le_cerfa_reel(tmp_path: Path) -> None:
