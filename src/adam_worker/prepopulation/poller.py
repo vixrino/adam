@@ -77,7 +77,10 @@ def default_pages_dir(file_id: int) -> Path:
 #: Adresses d'ecoute qui ne designent aucun hote joignable. `0.0.0.0` et `::`
 #: signifient "toutes les interfaces locales" : elles disent a un serveur ou se
 #: mettre, pas a un client ou aller.
-_WILDCARD_HOSTS = {"0.0.0.0", "::", "[::]", ""}
+#: nosec B104 : bandit y voit une ecoute sur toutes les interfaces, mais rien
+#: n'ecoute ici. Ces valeurs sont reconnues pour etre remplacees par 127.0.0.1
+#: dans _api_origin, ce qui est precisement l'inverse d'un bind.
+_WILDCARD_HOSTS = {"0.0.0.0", "::", "[::]", ""}  # nosec B104
 
 
 def _api_origin() -> str:
