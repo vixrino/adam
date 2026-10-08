@@ -80,7 +80,24 @@ SECTION_LABELS: Dict[str, str] = {
     "dossier_precedent": "Dossier precedent",
     "situation_familiale": "Situation familiale",
     "personnes_a_charge": "Personnes vivant au domicile",
-    "situation_logement_deposant": "Situation de logement",
+    "situation_logement_deposant": "Situation de logement du deposant",
+    "situation_logement_co_deposant": "Situation de logement du co-deposant",
+    "prestations_familiales": "Prestations familiales",
+    "situation_professionnelle": "Situation professionnelle",
+    "ressources_mensuelles": "Ressources mensuelles",
+    "charges_mensuelles": "Charges mensuelles",
+    "vehicules": "Vehicules",
+    "gestion_budget": "Gestion du budget",
+    "patrimoine_immobilier": "Patrimoine immobilier",
+    "epargne": "Epargne",
+    "patrimoine": "Autre patrimoine",
+    "dettes_diverses": "Dettes diverses",
+    "dettes_pension_amendes": "Dettes de pension alimentaire, amendes et condamnations",
+    "decouverts_bancaires": "Decouverts bancaires",
+    "locations_diverses": "Locations diverses",
+    "cause_surendettement": "Cause du surendettement",
+    "autres_prets": "Autres prets",
+    "cautionnement": "Cautionnement",
     "dettes_logement": "Dettes de logement",
     "dettes_courantes": "Dettes de charges courantes",
     "credits_immobiliers": "Credits immobiliers",
@@ -90,9 +107,16 @@ SECTION_LABELS: Dict[str, str] = {
 #: Sections repetables : (nombre d'emplacements, prefixe de group_id, libelle
 #: de l'instance). Les valeurs suivent le nombre de cases du formulaire papier.
 REPEATABLE_SECTIONS: Dict[str, Tuple[int, str, str]] = {
-    "personnes_a_charge": (5, "personne", "Personne n° {n}"),
+    "personnes_a_charge": (6, "personne", "Personne n° {n}"),
     "dettes_logement": (4, "dette_logement", "Dette n° {n}"),
-    "dettes_courantes": (5, "dette_courante", "Dette n° {n}"),
+    "dettes_courantes": (6, "dette_courante", "Dette n° {n}"),
+    "vehicules": (4, "vehicule", "Vehicule n° {n}"),
+    "dettes_diverses": (6, "dette_diverse", "Dette n° {n}"),
+    "dettes_pension_amendes": (4, "dette_pension", "Dette n° {n}"),
+    "decouverts_bancaires": (4, "compte", "Compte n° {n}"),
+    "locations_diverses": (4, "contrat", "Contrat n° {n}"),
+    "autres_prets": (2, "autre_pret", "Pret n° {n}"),
+    "cautionnement": (2, "caution", "Dette n° {n}"),
     "credits_immobiliers": (4, "pret_immo", "Pret n° {n}"),
     "credits_consommation": (6, "pret", "Pret n° {n}"),
 }
@@ -106,6 +130,7 @@ _SENSITIVE_SUFFIXES = (
     "prenoms",
     "date_naissance",
     "lieu_naissance",
+    "iban",
 )
 
 
