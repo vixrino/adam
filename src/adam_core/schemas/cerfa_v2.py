@@ -428,14 +428,164 @@ _PAGE_10: Dict[str, FieldDef] = {
     },
 }
 
-#: Champs attendus par numero de page (1-indexe). Une page absente de cette
-#: table ne porte aucun champ a extraire et n'est pas soumise a l'OCR.
+# -- Pages 3, 4, 5, 7, 8 et 11 ----------------------------------------------
+#
+# Ajoutees d'apres un CERFA reel rempli, transcrit page par page. Une
+# transcription ne rend que les lignes remplies : chaque champ ci-dessous est
+# atteste sur ce CERFA, ou reprend une structure deja qualifiee (les colonnes
+# des tableaux de dettes de la page 6). Les lignes laissees vides par le
+# deposant — un poste de ressources non percu, par exemple — n'y figurent donc
+# pas encore, et sont a relever sur un formulaire vierge.
+
+
+def _personnes(prefixe: str, champs: Dict[str, FieldDef]) -> Dict[str, FieldDef]:
+    """Double une rubrique a deux colonnes, deposant et co-deposant."""
+    doubles: Dict[str, FieldDef] = {}
+    for personne, colonne in (("deposant", "Deposant"), ("co_deposant", "Co-deposant")):
+        for cle, spec in champs.items():
+            doubles[f"{prefixe}.{personne}_{cle}"] = {
+                **spec,
+                "description": f"Colonne {colonne}. {spec['description']}",
+            }
+    return doubles
+
+
+def _ressource(libelle: str) -> Dict[str, FieldDef]:
+    """Une ligne de ressource : sa nature precisee a la main, puis son montant."""
+    return {
+        "nature": {
+            "description": f"{libelle} : nature precisee a la main",
+            "type": "string",
+        },
+        "montant": {"description": f"{libelle} : montant mensuel", "type": "number"},
+    }
+
+
+def _dettes(section: str, libelle: str) -> Dict[str, FieldDef]:
+    """Colonnes d'un tableau de dettes, celles de la page 6."""
+    return {
+        f"{section}.nom_creancier": {
+            "description": f"Nom du creancier, {libelle}",
+            "type": "string",
+        },
+        f"{section}.adresse_creancier": {
+            "description": f"Adresse du creancier, {libelle}",
+            "type": "string",
+        },
+        f"{section}.reference": {"description": f"Reference, {libelle}", "type": "string"},
+        f"{section}.montant_impaye": {
+            "description": f"Montant impaye, {libelle}",
+            "type": "number",
+        },
+        f"{section}.poursuites_oui": {
+            "description": f"Poursuites en cours, {libelle}",
+            "type": "boolean",
+        },
+        f"{section}.poursuites_non": {
+            "description": f"Aucune poursuite, {libelle}",
+            "type": "boolean",
+        },
+    }
+
+
+#: Page 3, situation professionnelle et ressources. Sur le CERFA de test :
+#: statut « Autre », precise « Invalidite », depuis 2019 ; reversion 493,21,
+#: prevoyance 458,37, indemnites journalieres d'invalidite 838,88.
+_PAGE_3: Dict[str, FieldDef] = {
+    **_personnes(
+        "situation_professionnelle",
+        {
+            "statut": {
+                "description": "Libelle de la case cochee pour le statut professionnel",
+                "type": "string",
+            },
+            "statut_precision": {
+                "description": "Precision ecrite a cote de la case Autre du statut professionnel",
+                "type": "string",
+            },
+            "depuis": {
+                "description": "Date depuis laquelle dure la situation professionnelle",
+                "type": "string",
+                "format": "date",
+            },
+        },
+    ),
+    **_personnes(
+        "ressources_mensuelles",
+        {
+            **{f"autres_pensions_{k}": v for k, v in _ressource("Autres pensions").items()},
+            **{f"autres_allocations_{k}": v for k, v in _ressource("Autres allocations").items()},
+            **{
+                f"indemnites_journalieres_{k}": v
+                for k, v in _ressource("Indemnites journalieres").items()
+            },
+        },
+    ),
+}
+
+#: Page 4, charges, gestion du budget et vehicules. La rubrique gestion du
+#: budget etait masquee sur le CERFA de test : aucun champ n'en est releve.
+_PAGE_4: Dict[str, FieldDef] = {
+    **_personnes(
+        "charges_mensuelles",
+        {"loyer": {"description": "Loyer mensuel", "type": "number"}},
+    ),
+    "vehicules.type": {"description": "Type ou modele du vehicule", "type": "string"},
+    "vehicules.loa_lld_oui": {
+        "description": "Vehicule en location avec option d'achat (LOA) ou LLD : oui",
+        "type": "boolean",
+    },
+    "vehicules.loa_lld_non": {
+        "description": "Vehicule en location avec option d'achat (LOA) ou LLD : non",
+        "type": "boolean",
+    },
+}
+
+#: Page 5, patrimoine. Seule la case d'absence de patrimoine est attestee.
+_PAGE_5: Dict[str, FieldDef] = {
+    "patrimoine.aucun": {
+        "description": "Case « si vous n'avez pas de patrimoine cochez cette case »",
+        "type": "boolean",
+    },
+}
+
+#: Page 7, dettes diverses et dettes de pension alimentaire ou d'amendes.
+_PAGE_7: Dict[str, FieldDef] = {
+    **_dettes("dettes_diverses", "dette diverse"),
+    **_dettes("dettes_pension_amendes", "dette de pension alimentaire ou amende"),
+}
+
+#: Page 8, decouverts bancaires et locations diverses.
+_PAGE_8: Dict[str, FieldDef] = {
+    **_dettes("decouverts_bancaires", "decouvert bancaire"),
+    **_dettes("locations_diverses", "location diverse"),
+}
+
+#: Page 11. La suite du tableau des credits a la consommation (prets 7 et 8)
+#: n'y est pas declaree : ses cles sont celles de la page 10, et deux pages ne
+#: peuvent porter la meme cle tant que les repetables (T7) ne sont pas la.
+_PAGE_11: Dict[str, FieldDef] = {
+    **_dettes("autres_prets_cautionnements", "autre pret ou cautionnement"),
+    "cause_surendettement.texte": {
+        "description": "Cause de la situation de surendettement, telle qu'ecrite",
+        "type": "string",
+    },
+}
+
+#: Champs attendus par numero de page (1-indexe). La page 12, avertissement
+#: portant l'adresse de renvoi du dossier, n'en a aucun.
 CERFA_V2_PAGE_FIELDS: Dict[int, Dict[str, FieldDef]] = {
     1: _PAGE_1,
     2: _PAGE_2,
+    3: _PAGE_3,
+    4: _PAGE_4,
+    5: _PAGE_5,
     6: _PAGE_6,
+    7: _PAGE_7,
+    8: _PAGE_8,
     9: _PAGE_9,
     10: _PAGE_10,
+    11: _PAGE_11,
 }
 
 #: Rubriques imprimees de chaque page, pour reconnaitre une page a son contenu

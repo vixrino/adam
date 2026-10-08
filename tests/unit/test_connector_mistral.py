@@ -197,11 +197,13 @@ def test_pages_sans_schema_ne_sont_pas_annotees(tmp_path: Path) -> None:
     annotees."""
     requetes: List[httpx.Request] = []
     handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
-    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 10)))
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 12)))
 
-    assert len(requetes) == 2 * 10 + len(CERFA_V2_PAGE_FIELDS)
+    # Page 12, l'avertissement d'envoi, n'a pas de champs : OCR et
+    # identification seulement.
+    assert len(requetes) == 2 * 12 + len(CERFA_V2_PAGE_FIELDS)
     assert doc is not None
-    assert doc.page_count == 10
+    assert doc.page_count == 12
     assert [p.page_number for p in doc.pages] == sorted(CERFA_V2_PAGE_FIELDS)
     # Document dans l'ordre et complet : rien a signaler.
     assert doc.metadata["anomalies_pages"] == []
@@ -323,15 +325,15 @@ def test_la_consigne_d_identification_ecarte_le_rang() -> None:
 
 
 def test_pages_9_et_10_inversees_comme_sur_le_cerfa_reel(tmp_path: Path) -> None:
-    """Ordre reel 1..8, 10, 9 : chaque tableau de prets garde son schema."""
-    ordre = [1, 2, 3, 4, 5, 6, 7, 8, 10, 9]
+    """Ordre reel 1..8, 10, 9, 11, 12 : chaque tableau de prets garde son schema."""
+    ordre = [1, 2, 3, 4, 5, 6, 7, 8, 10, 9, 11, 12]
     requetes: List[httpx.Request] = []
     handler = _routeur(
         lambda _: {"deposant.prenoms": "Jean"},
         journal=requetes,
         identification=lambda rang: ordre[rang - 1],
     )
-    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 10)))
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 12)))
 
     annotations = [
         _schema_annote(r)
@@ -339,8 +341,9 @@ def test_pages_9_et_10_inversees_comme_sur_le_cerfa_reel(tmp_path: Path) -> None
         if json.loads(r.content).get("response_format", {}).get("json_schema", {}).get("name")
         not in (None, _IDENTIFICATION)
     ]
-    assert annotations[-2] == set(CERFA_V2_PAGE_FIELDS[10])
-    assert annotations[-1] == set(CERFA_V2_PAGE_FIELDS[9])
+    # Rangs 9 et 10 : 9e et 10e annotations, toutes les pages 1 a 11 ayant des champs.
+    assert annotations[8] == set(CERFA_V2_PAGE_FIELDS[10])
+    assert annotations[9] == set(CERFA_V2_PAGE_FIELDS[9])
     assert doc is not None
     assert doc.metadata["anomalies_pages"] == [
         {"type": "page_deplacee", "rang": 9, "page_reconnue": 10},
@@ -349,14 +352,22 @@ def test_pages_9_et_10_inversees_comme_sur_le_cerfa_reel(tmp_path: Path) -> None
 
 
 def test_page_sans_champs_reconnue_n_est_pas_annotee(tmp_path: Path) -> None:
-    """Une page 3 a son rang : reconnue, rien a annoter, rien a signaler."""
+    """La page 12 placee en tete : reconnue et signalee, jamais annotee."""
     requetes: List[httpx.Request] = []
-    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
-    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 3)))
+    handler = _routeur(
+        lambda _: {"deposant.prenoms": "Jean"},
+        journal=requetes,
+        identification=lambda rang: {1: 12, 2: 1}[rang],
+    )
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 2)))
 
-    assert len(requetes) == 3 + 3 + 2
+    # Image 1 : OCR et identification ; image 2 : les trois appels.
+    assert len(requetes) == 2 + 3
     assert doc is not None
-    assert not any(a["type"] != "pages_manquantes" for a in doc.metadata["anomalies_pages"])
+    assert [p.page_number for p in doc.pages] == [1]
+    assert {"type": "page_deplacee", "rang": 1, "page_reconnue": 12} in doc.metadata[
+        "anomalies_pages"
+    ]
 
 
 def test_la_consigne_ne_complete_pas_une_date_partielle() -> None:
@@ -520,3 +531,18 @@ def test_personnes_a_charge_ont_une_colonne_nom() -> None:
     assert "personnes_a_charge.nom_prenom" in page_2
     assert "jamais un nom" in page_2["personnes_a_charge.lien_parente"]["description"]
     assert "prestations_familiales.numero_allocataire_deposant" in page_2
+
+
+def test_aucune_cle_partagee_entre_deux_pages() -> None:
+    """Le merger rapproche par cle seule : une cle declaree sur deux pages
+    recevrait la valeur de l'une dans les champs de l'autre."""
+    vues: dict = {}
+    for page_number, fields in CERFA_V2_PAGE_FIELDS.items():
+        for key in fields:
+            assert key not in vues, f"{key} en page {vues.get(key)} et {page_number}"
+            vues[key] = page_number
+
+
+def test_le_schema_couvre_les_pages_a_champs_du_cerfa() -> None:
+    """Pages 1 a 11 ; la 12 n'est qu'un avertissement d'envoi."""
+    assert sorted(CERFA_V2_PAGE_FIELDS) == list(range(1, 12))
