@@ -377,3 +377,18 @@ async def test_sans_nombre_de_pages_configure_aucun_controle(tmp_path: Path) -> 
     result, document = await _ingest(tmp_path, _pdf(3), expected=0)
     assert result["status"] == "created"
     assert document.status == "RECEIVED"
+
+
+def test_metadata_none_s_ecrit_en_null_sql() -> None:
+    """La colonne metadata ne contient que NULL ou un objet JSON : None doit
+    partir en NULL SQL, pas en JSON null, que PostgreSQL concatene a un objet
+    en tableau [null, {...}]."""
+    from sqlalchemy.dialects import postgresql
+
+    from adam_core.models import Document
+
+    colonne = Document.__table__.c.metadata
+    assert colonne.type.none_as_null is True
+    traite = colonne.type.bind_processor(postgresql.dialect())
+    valeur = traite(None) if traite else None
+    assert valeur is None

@@ -314,9 +314,9 @@ class PrepopulationWorker(BaseWorker):
     ) -> None:
         """Ajoute des cles a metadata sans ecraser les autres (concatenation JSONB).
 
-        Seul un objet est conserve comme base. NULL SQL, mais aussi JSON null —
-        ce qu'ecrit SQLAlchemy pour metadata_=None — repartent d'un objet vide :
-        en JSONB, null || {...} ne fusionne pas, il rend le tableau [null, {...}],
+        Seul un objet est conserve comme base. NULL SQL, mais aussi un JSON null
+        ecrit avant que la colonne ne l'interdise, repartent d'un objet vide : en
+        JSONB, null || {...} ne fusionne pas, il rend le tableau [null, {...}],
         et la reponse de l'API, qui attend un objet, echoue alors en 500.
         """
         base = case(
