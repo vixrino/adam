@@ -412,7 +412,10 @@ class TestPollerSelection:
 class TestPollerSucces:
     @pytest.mark.asyncio
     async def test_document_passe_en_in_progress(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient()).poll()
         assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
@@ -421,7 +424,10 @@ class TestPollerSucces:
     async def test_tous_les_champs_du_schema_sont_envoyes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         api = _FakeApiClient()
         await _worker(api).poll()
@@ -430,7 +436,10 @@ class TestPollerSucces:
     @pytest.mark.asyncio
     async def test_ocr_indisponible_reste_un_succes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Un OCR muet n'est pas une erreur : champs vides, document utilisable."""
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         api = _FakeApiClient()
         await _worker(api, connector=MockOcrConnector(available=False)).poll()
@@ -441,28 +450,40 @@ class TestPollerSucces:
 class TestPollerEchecs:
     @pytest.mark.asyncio
     async def test_connecteur_en_echec_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
 
     @pytest.mark.asyncio
     async def test_schema_injoignable_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(specs_error=True)).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
 
     @pytest.mark.asyncio
     async def test_bulk_refuse_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(bulk_error=True)).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
 
     @pytest.mark.asyncio
     async def test_schema_vide_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(field_specs=[])).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
@@ -472,7 +493,10 @@ class TestPollerEchecs:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """CA : le document suivant doit etre traite malgre l'echec du precedent."""
-        db = _FakeDb(candidates=[1, 2, 3], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1, 2, 3],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(specs_error=True)).poll()
         assert _statuses(db).count(DocumentStatus.ERROR.value) == 3
@@ -484,7 +508,10 @@ class TestPollerConfidentialite:
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """CA : ni IBAN ni NIR ne doivent apparaitre, donc aucune valeur du tout."""
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         secret = "FR7630006000011234567890189"
         connector = MockOcrConnector(["demandeur.nom"], value=secret)
@@ -496,7 +523,10 @@ class TestPollerConfidentialite:
     async def test_le_log_porte_les_comptages(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         with caplog.at_level(logging.INFO):
             await _worker(_FakeApiClient()).poll()
@@ -582,7 +612,10 @@ class TestPollerNonConforme:
     async def test_aucune_page_reconnue_met_en_error_avec_motif(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         anomalies = [{"type": "pages_manquantes", "pages": [1, 2]}]
         connecteur = _ConnecteurFige(
@@ -601,7 +634,10 @@ class TestPollerNonConforme:
 
     @pytest.mark.asyncio
     async def test_pages_manquantes_mettent_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
         assert ocr is not None
@@ -616,7 +652,10 @@ class TestPollerNonConforme:
     @pytest.mark.asyncio
     async def test_page_deplacee_ne_bloque_pas(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Une page deplacee est remise en ordre par le connecteur : pas d'ERROR."""
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
         assert ocr is not None
@@ -630,7 +669,10 @@ class TestPollerNonConforme:
     async def test_l_erreur_technique_ecrit_aussi_son_motif(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
         assert "connecteur OCR en echec" in _metadata_erreur(db)["message"]
@@ -676,7 +718,10 @@ class TestPollerRemiseEnOrdre:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         dossier = self._pages(tmp_path, 3)
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
         assert ocr is not None
@@ -696,7 +741,10 @@ class TestPollerRemiseEnOrdre:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         dossier = self._pages(tmp_path, 3)
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
         assert ocr is not None
@@ -716,10 +764,112 @@ class TestMetadataJsonNull:
         SQL. En JSONB, null || {...} rend [null, {...}], et GET /documents
         tombait en 500 sur ce tableau. La base de la fusion doit donc etre
         testee sur son type, pas seulement sur NULL."""
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
 
         update_sql = next(str(s) for s in reversed(db.statements) if str(s).startswith("UPDATE"))
         assert "jsonb_typeof(document.metadata)" in update_sql
         assert "coalesce" not in update_sql.lower()
+
+
+# ---------------------------------------------------------------------------
+# poller : PDF regenere dans l'ordre du formulaire
+# ---------------------------------------------------------------------------
+
+
+def _pdf_textes(chemin: Path) -> List[str]:
+    import pymupdf
+
+    with pymupdf.open(str(chemin)) as doc:
+        return [page.get_text().strip() for page in doc]
+
+
+def _ecrire_pdf(chemin: Path, textes: List[str]) -> None:
+    import pymupdf
+
+    chemin.parent.mkdir(parents=True, exist_ok=True)
+    doc = pymupdf.open()
+    for texte in textes:
+        doc.new_page().insert_text((72, 72), texte)
+    doc.save(str(chemin))
+    doc.close()
+
+
+class TestReorderPdf:
+    def test_pages_ecrites_dans_l_ordre_demande(self, tmp_path: Path) -> None:
+        from adam_core.utils.pdf_render import reorder_pdf
+
+        source = tmp_path / "scan.pdf"
+        _ecrire_pdf(source, ["scan-1", "scan-2", "scan-3"])
+        reorder_pdf(source, tmp_path / "ordonne.pdf", [1, 3, 2])
+        assert _pdf_textes(tmp_path / "ordonne.pdf") == ["scan-1", "scan-3", "scan-2"]
+        # L'original n'est pas touche.
+        assert _pdf_textes(source) == ["scan-1", "scan-2", "scan-3"]
+
+    def test_ordre_incompatible_ne_laisse_aucun_fichier(self, tmp_path: Path) -> None:
+        from adam_core.utils.pdf_render import PdfRenderError, reorder_pdf
+
+        source = tmp_path / "scan.pdf"
+        _ecrire_pdf(source, ["scan-1", "scan-2"])
+        with pytest.raises(PdfRenderError):
+            reorder_pdf(source, tmp_path / "ordonne.pdf", [1, 3])
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["scan.pdf"]
+
+
+class TestPollerPdfOrdonne:
+    @pytest.mark.asyncio
+    async def test_pdf_regenere_et_file_pointe_dessus(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _ecrire_pdf(tmp_path / "org/cerfa/doc.pdf", ["scan-1", "scan-2", "scan-3"])
+        dossier = TestPollerRemiseEnOrdre._pages(tmp_path, 3)
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        ocr.metadata["ordre_pages"] = {"1": 1, "3": 2, "2": 3}
+        await _worker(
+            _FakeApiClient(), connector=_ConnecteurFige(rendu=ocr), tmp_path=tmp_path
+        ).poll()
+
+        # PDF et images suivent le meme ordre, celui du formulaire.
+        assert _pdf_textes(tmp_path / "org/cerfa/doc_ordonne.pdf") == [
+            "scan-1",
+            "scan-3",
+            "scan-2",
+        ]
+        assert (dossier / "0002.png").read_text() == "scan-3"
+        # L'original reste, trace du scan tel que recu.
+        assert _pdf_textes(tmp_path / "org/cerfa/doc.pdf") == ["scan-1", "scan-2", "scan-3"]
+        # Le FILE pointe sur la copie ordonnee.
+        maj_file = [s.compile().params for s in db.statements if str(s).startswith("UPDATE file")]
+        assert maj_file and maj_file[0]["file_path"] == "org/cerfa/doc_ordonne.pdf"
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
+
+    @pytest.mark.asyncio
+    async def test_pdf_absent_n_empeche_pas_les_images(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        dossier = TestPollerRemiseEnOrdre._pages(tmp_path, 3)
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        ocr.metadata["ordre_pages"] = {"1": 1, "3": 2, "2": 3}
+        await _worker(
+            _FakeApiClient(), connector=_ConnecteurFige(rendu=ocr), tmp_path=tmp_path
+        ).poll()
+
+        assert (dossier / "0002.png").read_text() == "scan-3"
+        assert not any(str(s).startswith("UPDATE file") for s in db.statements)
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)

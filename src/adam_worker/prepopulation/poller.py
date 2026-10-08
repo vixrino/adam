@@ -34,6 +34,13 @@ la page 9 poses sur l'image de la page 10. Les images appartiennent au FILE,
 partage entre documents de meme contenu : ce contenu-la est dans le meme
 desordre, la remise en ordre vaut pour tous.
 
+Le PDF suit : une copie aux pages remises en ordre est ecrite a cote de
+l'original, sous <nom>_ordonne.pdf, et FILE.file_path pointe desormais vers
+elle — c'est elle que sert /files/{id}/content. L'original reste sur le PVC,
+trace du scan tel que recu. sha256_checksum reste celui de l'upload : c'est
+la cle de deduplication, et le meme PDF redepose retrouve un FILE deja en
+ordre.
+
 Confidentialite des logs
 ------------------------
 Aucune valeur de champ n'est loguee, jamais. Les documents traites contiennent
@@ -43,6 +50,7 @@ des comptages, dont le nombre de champs detectes, qui suffit au diagnostic.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -52,8 +60,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from adam_api.core.config import API_PREFIX, settings
 from adam_core.db.session import get_async_session
 from adam_core.enums.status import DocumentStatus
-from adam_core.models import Document
+from adam_core.models import Document, File
 from adam_core.schemas.interface_contract import SmartdocDocument
+from adam_core.utils.pdf_render import PdfRenderError, reorder_pdf
 from adam_worker.base_worker import BaseWorker
 from adam_worker.connectors import connector_from_settings
 from adam_worker.connectors.base import (
@@ -71,11 +80,8 @@ _DEFAULT_POLL_INTERVAL = 30.0
 def default_pages_dir(file_id: int) -> Path:
     """Repertoire des images de page, relatif a la racine du PVC.
 
-    La convention est celle du pipeline d'ingestion : file_id/pages/. Elle est
-    redefinie ici plutot qu'importee de utils.pdf_render, ou elle vit aussi :
-    ce module la importe PyMuPDF, et faire dependre la pre-alimentation d'un
-    moteur de rendu PDF pour une concatenation de chemin serait une dette
-    gratuite — le worker ne rend aucune image, il les lit.
+    La convention est celle du pipeline d'ingestion : file_id/pages/, que
+    utils.pdf_render definit aussi.
 
     Le resolveur est injectable via `pages_dir` : si la convention change, ou
     differe entre deux deploiements, elle se surcharge sans toucher au worker.
@@ -209,12 +215,12 @@ class PrepopulationWorker(BaseWorker):
     # -- Traitement d'un document -------------------------------------------
 
     async def _process_one(self, document_id: int) -> None:
-        dataset_id, file_id = await self._load_context(document_id)
+        dataset_id, file_id, file_path = await self._load_context(document_id)
         images = self._page_images(file_id)
 
         ocr = await self._run_ocr(images, document_id)
         _controle_pages(ocr)
-        await self._reordonner_images(document_id, images, ocr)
+        await self._remettre_en_ordre(document_id, file_id, file_path, images, ocr)
         field_specs = await self._load_field_specs(dataset_id, document_id)
 
         payloads = merge(field_specs, ocr)
@@ -239,16 +245,18 @@ class PrepopulationWorker(BaseWorker):
             "oui" if ocr is not None else "non",
         )
 
-    async def _load_context(self, document_id: int) -> Tuple[int, int]:
+    async def _load_context(self, document_id: int) -> Tuple[int, int, str]:
         async with get_async_session() as db:
             row = (
                 await db.execute(
-                    select(Document.dataset_id, Document.file_id).where(Document.id == document_id)
+                    select(Document.dataset_id, Document.file_id, File.file_path)
+                    .join(File, Document.file_id == File.id)
+                    .where(Document.id == document_id)
                 )
             ).one_or_none()
         if row is None:
             raise PrepopulationError("document introuvable")
-        return int(row.dataset_id), int(row.file_id)
+        return int(row.dataset_id), int(row.file_id), str(row.file_path)
 
     def _page_images(self, file_id: int) -> List[Path]:
         """Images de page ecrites par le pipeline d'ingestion.
@@ -329,23 +337,81 @@ class PrepopulationWorker(BaseWorker):
         async with get_async_session() as db:
             await db.execute(update(Document).where(Document.id == document_id).values(**values))
 
-    async def _reordonner_images(
+    async def _remettre_en_ordre(
         self,
         document_id: int,
+        file_id: int,
+        file_path: str,
         images: Sequence[Path],
         ocr: Optional[SmartdocDocument],
     ) -> None:
-        """Renomme les images pour que l'image N porte la page N du formulaire.
+        """Remet PDF et images dans l'ordre du formulaire, si l'OCR l'a trouve
+        different de l'ordre du scan.
 
-        Les noms cibles sont ceux des images existantes : l'image de rang r
-        prend le nom de l'image de rang p, ou p est la page qu'elle porte. Le
-        worker n'a ainsi pas a connaitre la convention de nommage du rendu.
+        Le PDF passe en premier : s'il echoue, le document part en ERROR avec
+        des images encore intactes, plutot qu'avec des images deplacees et un
+        PDF qui ne l'est pas.
         """
         if ocr is None:
             return
         permutation = _permutation(ocr.metadata.get("ordre_pages"), len(images))
         if not permutation:
             return
+        pdf_ordonne = await self._reordonner_pdf(file_id, file_path, permutation, len(images))
+        self._reordonner_images(images, permutation)
+
+        deplacees = [{"page": page, "rang_origine": rang} for rang, page in permutation.items()]
+        self.logger.warning(
+            "pages remises dans l'ordre du formulaire [document_id=%s pdf=%s] : %s",
+            document_id,
+            pdf_ordonne or "non regenere",
+            deplacees,
+        )
+        trace: Dict[str, Any] = {"pages_reordonnees": deplacees}
+        if pdf_ordonne:
+            trace["pdf_origine"] = file_path
+        await self._update_metadata(document_id, trace)
+
+    async def _reordonner_pdf(
+        self, file_id: int, file_path: str, permutation: Mapping[int, int], nombre: int
+    ) -> Optional[str]:
+        """Ecrit <nom>_ordonne.pdf et y fait pointer le FILE ; rend son chemin.
+
+        Un PDF absent du PVC n'empeche pas la remise en ordre des images : il
+        est signale et ignore. Rend None dans ce cas.
+        """
+        source = self.pvc_root / file_path
+        if not source.is_file():
+            self.logger.warning("PDF absent du PVC, non remis en ordre [file_id=%s]", file_id)
+            return None
+        # ordre[page - 1] = rang de l'image qui porte cette page.
+        ordre = list(range(1, nombre + 1))
+        for rang, page in permutation.items():
+            ordre[page - 1] = rang
+        stem = source.stem.removesuffix("_ordonne")
+        destination = source.with_name(f"{stem}_ordonne.pdf")
+        try:
+            await asyncio.to_thread(reorder_pdf, source, destination, ordre)
+        except PdfRenderError as exc:
+            raise PrepopulationError(f"PDF non remis en ordre : {exc}") from exc
+
+        nouveau = str(Path(file_path).with_name(destination.name).as_posix())
+        async with get_async_session() as db:
+            await db.execute(
+                update(File)
+                .where(File.id == file_id)
+                .values(file_path=nouveau, file_size_bytes=destination.stat().st_size)
+            )
+        return nouveau
+
+    @staticmethod
+    def _reordonner_images(images: Sequence[Path], permutation: Mapping[int, int]) -> None:
+        """Renomme les images pour que l'image N porte la page N du formulaire.
+
+        Les noms cibles sont ceux des images existantes : l'image de rang r
+        prend le nom de l'image de rang p, ou p est la page qu'elle porte. Le
+        worker n'a ainsi pas a connaitre la convention de nommage du rendu.
+        """
         # Deux passes, pour qu'aucun renommage n'ecrase une image pas encore
         # deplacee : d'abord vers un nom temporaire, puis vers le nom cible.
         temporaires = {}
@@ -356,14 +422,6 @@ class PrepopulationWorker(BaseWorker):
             temporaires[rang] = temporaire
         for rang, page in permutation.items():
             temporaires[rang].rename(images[page - 1])
-
-        deplacees = [{"page": page, "rang_origine": rang} for rang, page in permutation.items()]
-        self.logger.warning(
-            "images de page remises dans l'ordre du formulaire [document_id=%s] : %s",
-            document_id,
-            deplacees,
-        )
-        await self._update_metadata(document_id, {"pages_reordonnees": deplacees})
 
 
 def _permutation(ordre_pages: Any, nombre_images: int) -> Dict[int, int]:
