@@ -26,9 +26,14 @@ import httpx
 import pytest
 
 from adam_worker.connectors import connector_from_settings
-from adam_worker.connectors.base import OcrConnectorError
+from adam_worker.connectors.base import DocumentNonConforme, OcrConnectorError
 from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
-from adam_worker.connectors.mistral import _CONSIGNE, _IDENTIFICATION, MistralOcrConnector
+from adam_worker.connectors.mistral import (
+    _CONSIGNE,
+    _IDENTIFICATION,
+    MistralOcrConnector,
+    _to_kv_value,
+)
 from adam_worker.connectors.mock import MockOcrConnector
 
 ENDPOINT = "https://mistral.test"
@@ -102,7 +107,7 @@ def test_extract_rend_un_document_conforme(tmp_path: Path) -> None:
             return {
                 "deposant.nom_naissance": "MARTIN",
                 "deposant.date_naissance": "1980-01-02",
-                "coordonnees_personnelles.escalier": 2,
+                "coordonnees_personnelles.code_postal": "01500",
                 "certification.signature_deposant": True,
                 "cle.inventee": "ignoree",
             }
@@ -124,7 +129,9 @@ def test_extract_rend_un_document_conforme(tmp_path: Path) -> None:
     assert by_id["deposant.nom_naissance"].value.type == "text"
     assert by_id["deposant.nom_naissance"].extracted_value == "MARTIN"
     assert by_id["deposant.date_naissance"].value.type == "date"
-    assert by_id["coordonnees_personnelles.escalier"].value.type == "number"
+    # Code postal en texte : un number aurait rendu 1500.
+    assert by_id["coordonnees_personnelles.code_postal"].value.type == "text"
+    assert by_id["coordonnees_personnelles.code_postal"].extracted_value == "01500"
     assert by_id["certification.signature_deposant"].value.type == "boolean"
     # False est une detection (case vue non cochee), pas une absence.
     assert by_id["situation_familiale.celibataire"].extracted_value == "false"
@@ -190,11 +197,13 @@ def test_pages_sans_schema_ne_sont_pas_annotees(tmp_path: Path) -> None:
     annotees."""
     requetes: List[httpx.Request] = []
     handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
-    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 10)))
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 12)))
 
-    assert len(requetes) == 2 * 10 + len(CERFA_V2_PAGE_FIELDS)
+    # Page 12, l'avertissement d'envoi, n'a pas de champs : OCR et
+    # identification seulement.
+    assert len(requetes) == 2 * 12 + len(CERFA_V2_PAGE_FIELDS)
     assert doc is not None
-    assert doc.page_count == 10
+    assert doc.page_count == 12
     assert [p.page_number for p in doc.pages] == sorted(CERFA_V2_PAGE_FIELDS)
     # Document dans l'ordre et complet : rien a signaler.
     assert doc.metadata["anomalies_pages"] == []
@@ -272,8 +281,9 @@ def test_page_en_double_n_est_annotee_qu_une_fois(tmp_path: Path) -> None:
     } in doc.metadata["anomalies_pages"]
 
 
-def test_page_hors_schema_rendue_par_le_modele_vaut_none(tmp_path: Path) -> None:
-    """Un numero inconnu du schema, ou un booleen, ne doit pas choisir de schema."""
+def test_page_hors_schema_rendue_par_le_modele_ne_choisit_aucun_schema(tmp_path: Path) -> None:
+    """Un numero inconnu du schema, ou un booleen, ne doit pas choisir de schema :
+    la page n'est pas annotee, et seule, elle rend le document non conforme."""
     for reponse in (13, True, "1"):
         requetes: List[httpx.Request] = []
         handler = _routeur(
@@ -281,8 +291,21 @@ def test_page_hors_schema_rendue_par_le_modele_vaut_none(tmp_path: Path) -> None
             journal=requetes,
             identification=lambda _, r=reponse: r,
         )
-        assert asyncio.run(_connector(handler).extract(_images(tmp_path, 1))) is None
+        with pytest.raises(DocumentNonConforme):
+            asyncio.run(_connector(handler).extract(_images(tmp_path, 1)))
         assert len(requetes) == 2
+
+
+def test_aucune_page_reconnue_rend_le_document_non_conforme(tmp_path: Path) -> None:
+    """Du texte sur chaque page, mais aucune page du formulaire : c'est un
+    autre document, que le schema du CERFA ne doit pas pre-alimenter."""
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, identification=lambda _: None)
+    with pytest.raises(DocumentNonConforme, match="aucune page") as exc:
+        asyncio.run(_connector(handler).extract(_images(tmp_path, 3)))
+    # Le motif porte les anomalies, pour le metadata["erreur"] du document.
+    assert {a["type"] for a in exc.value.anomalies} >= {"page_inattendue", "pages_manquantes"}
+    # Une erreur du connecteur : la pre-alimentation la traite deja en ERROR.
+    assert isinstance(exc.value, OcrConnectorError)
 
 
 def test_la_consigne_d_identification_decrit_les_pages_du_schema(tmp_path: Path) -> None:
@@ -307,24 +330,27 @@ def test_la_consigne_d_identification_ecarte_le_rang() -> None:
     numerotait les pages dans l'ordre de reception s'y est trompe."""
     consigne = _connector(lambda _: httpx.Response(500))._consigne_identification
     assert "scanne dans le desordre" in consigne
-    assert "Identifie la page par ses titres de rubrique uniquement" in consigne
+    # Le CERFA imprime « page N/12 » en tete : l'indice le plus sur.
+    assert "page N/12" in consigne and "elle fait foi" in consigne
+    assert "identifie la page par ses titres de rubrique" in consigne
     # Le pied de page "300 BdF 1947 - DIRCOM - 30/04/2020" est commun a toutes.
     assert "la meme sur toutes les pages" in consigne
-    # Pages 10 et 11 : meme titre, la 11 porte en plus deux autres rubriques.
-    assert "Autres prets et cautionnements" in consigne
+    # Pages 10 et 11 : credits a la consommation sur les deux, la 11 porte en
+    # plus la cause, les autres prets et le cautionnement.
+    assert "Cautionnement" in consigne
     assert "sans elles, c'est la page 10" in consigne
 
 
 def test_pages_9_et_10_inversees_comme_sur_le_cerfa_reel(tmp_path: Path) -> None:
-    """Ordre reel 1..8, 10, 9 : chaque tableau de prets garde son schema."""
-    ordre = [1, 2, 3, 4, 5, 6, 7, 8, 10, 9]
+    """Ordre reel 1..8, 10, 9, 11, 12 : chaque tableau de prets garde son schema."""
+    ordre = [1, 2, 3, 4, 5, 6, 7, 8, 10, 9, 11, 12]
     requetes: List[httpx.Request] = []
     handler = _routeur(
         lambda _: {"deposant.prenoms": "Jean"},
         journal=requetes,
         identification=lambda rang: ordre[rang - 1],
     )
-    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 10)))
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 12)))
 
     annotations = [
         _schema_annote(r)
@@ -332,24 +358,37 @@ def test_pages_9_et_10_inversees_comme_sur_le_cerfa_reel(tmp_path: Path) -> None
         if json.loads(r.content).get("response_format", {}).get("json_schema", {}).get("name")
         not in (None, _IDENTIFICATION)
     ]
-    assert annotations[-2] == set(CERFA_V2_PAGE_FIELDS[10])
-    assert annotations[-1] == set(CERFA_V2_PAGE_FIELDS[9])
+    # Rangs 9 et 10 : 9e et 10e annotations, toutes les pages 1 a 11 ayant des champs.
+    assert annotations[8] == set(CERFA_V2_PAGE_FIELDS[10])
+    assert annotations[9] == set(CERFA_V2_PAGE_FIELDS[9])
     assert doc is not None
     assert doc.metadata["anomalies_pages"] == [
         {"type": "page_deplacee", "rang": 9, "page_reconnue": 10},
         {"type": "page_deplacee", "rang": 10, "page_reconnue": 9},
     ]
+    # L'ordre rendu permet au worker de remettre les images en place.
+    assert doc.metadata["ordre_pages"]["9"] == 10
+    assert doc.metadata["ordre_pages"]["10"] == 9
+    assert doc.metadata["ordre_pages"]["1"] == 1
 
 
 def test_page_sans_champs_reconnue_n_est_pas_annotee(tmp_path: Path) -> None:
-    """Une page 3 a son rang : reconnue, rien a annoter, rien a signaler."""
+    """La page 12 placee en tete : reconnue et signalee, jamais annotee."""
     requetes: List[httpx.Request] = []
-    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
-    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 3)))
+    handler = _routeur(
+        lambda _: {"deposant.prenoms": "Jean"},
+        journal=requetes,
+        identification=lambda rang: {1: 12, 2: 1}[rang],
+    )
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 2)))
 
-    assert len(requetes) == 3 + 3 + 2
+    # Image 1 : OCR et identification ; image 2 : les trois appels.
+    assert len(requetes) == 2 + 3
     assert doc is not None
-    assert not any(a["type"] != "pages_manquantes" for a in doc.metadata["anomalies_pages"])
+    assert [p.page_number for p in doc.pages] == [1]
+    assert {"type": "page_deplacee", "rang": 1, "page_reconnue": 12} in doc.metadata[
+        "anomalies_pages"
+    ]
 
 
 def test_la_consigne_ne_complete_pas_une_date_partielle() -> None:
@@ -498,3 +537,46 @@ def test_factory_choisit_le_connecteur_selon_la_configuration() -> None:
     connector = connector_from_settings(mistral_settings)
     assert isinstance(connector, MistralOcrConnector)
     assert connector.annotation_model == "mistral-medium-latest"
+
+
+def test_un_montant_sort_en_number() -> None:
+    """Les montants restent des number, eux : seuls les codes en sortent."""
+    spec = CERFA_V2_PAGE_FIELDS[10]["credits_consommation.montant_impaye"]
+    assert _to_kv_value(2800, spec).type == "number"
+
+
+def test_lien_de_parente_recopie_meme_un_nom() -> None:
+    """Le tableau des personnes au domicile n'a pas de colonne nom : un
+    deposant ecrit parfois « Luna Vincent » dans la case du lien de parente,
+    et c'est cette valeur qu'il faut relever, pas un « Enfant » deduit."""
+    page_2 = CERFA_V2_PAGE_FIELDS[2]
+    assert not any(k.startswith("personnes_a_charge.nom") for k in page_2)
+    assert "recopie tel qu'ecrit" in page_2["personnes_a_charge.lien_parente"]["description"]
+    assert "prestations_familiales.co_deposant_msa_numero_allocataire" in page_2
+
+
+def test_lignes_du_cerfa_vierge() -> None:
+    """Quelques lignes du CERFA vierge que la transcription d'un CERFA rempli
+    ne montrait pas, parce qu'elles y etaient vides."""
+    assert "ressources_mensuelles.deposant_rsa" in CERFA_V2_PAGE_FIELDS[3]
+    assert "ressources_mensuelles.deposant_autres_pensions_nature" in CERFA_V2_PAGE_FIELDS[3]
+    assert "charges_mensuelles.co_deposant_mutuelle" in CERFA_V2_PAGE_FIELDS[4]
+    assert "gestion_budget.iban" in CERFA_V2_PAGE_FIELDS[4]
+    assert "epargne.deposant_livret_a" in CERFA_V2_PAGE_FIELDS[5]
+    assert "locations_diverses.solde_apres_vente" in CERFA_V2_PAGE_FIELDS[8]
+    assert "cautionnement.personne_cautionnee" in CERFA_V2_PAGE_FIELDS[11]
+
+
+def test_aucune_cle_partagee_entre_deux_pages() -> None:
+    """Le merger rapproche par cle seule : une cle declaree sur deux pages
+    recevrait la valeur de l'une dans les champs de l'autre."""
+    vues: dict = {}
+    for page_number, fields in CERFA_V2_PAGE_FIELDS.items():
+        for key in fields:
+            assert key not in vues, f"{key} en page {vues.get(key)} et {page_number}"
+            vues[key] = page_number
+
+
+def test_le_schema_couvre_les_pages_a_champs_du_cerfa() -> None:
+    """Pages 1 a 11 ; la 12 n'est qu'un avertissement d'envoi."""
+    assert sorted(CERFA_V2_PAGE_FIELDS) == list(range(1, 12))

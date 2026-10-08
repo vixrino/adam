@@ -23,7 +23,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import pytest
 
 from adam_core.enums.status import DocumentFieldStatus, DocumentStatus
-from adam_worker.connectors.base import OcrConnectorError
+from adam_worker.connectors.base import DocumentNonConforme, OcrConnectorError
 from adam_worker.connectors.mock import MockOcrConnector
 from adam_worker.prepopulation import poller as poller_module
 from adam_worker.prepopulation.api_client import ApiClient, ApiClientError
@@ -37,6 +37,7 @@ from adam_worker.prepopulation.merger import (
 from adam_worker.prepopulation.poller import (
     PrepopulationError,
     PrepopulationWorker,
+    _permutation,
     default_pages_dir,
 )
 
@@ -411,7 +412,10 @@ class TestPollerSelection:
 class TestPollerSucces:
     @pytest.mark.asyncio
     async def test_document_passe_en_in_progress(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient()).poll()
         assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
@@ -420,7 +424,10 @@ class TestPollerSucces:
     async def test_tous_les_champs_du_schema_sont_envoyes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         api = _FakeApiClient()
         await _worker(api).poll()
@@ -429,7 +436,10 @@ class TestPollerSucces:
     @pytest.mark.asyncio
     async def test_ocr_indisponible_reste_un_succes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Un OCR muet n'est pas une erreur : champs vides, document utilisable."""
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         api = _FakeApiClient()
         await _worker(api, connector=MockOcrConnector(available=False)).poll()
@@ -440,28 +450,40 @@ class TestPollerSucces:
 class TestPollerEchecs:
     @pytest.mark.asyncio
     async def test_connecteur_en_echec_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
 
     @pytest.mark.asyncio
     async def test_schema_injoignable_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(specs_error=True)).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
 
     @pytest.mark.asyncio
     async def test_bulk_refuse_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(bulk_error=True)).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
 
     @pytest.mark.asyncio
     async def test_schema_vide_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(field_specs=[])).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
@@ -471,7 +493,10 @@ class TestPollerEchecs:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """CA : le document suivant doit etre traite malgre l'echec du precedent."""
-        db = _FakeDb(candidates=[1, 2, 3], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1, 2, 3],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(specs_error=True)).poll()
         assert _statuses(db).count(DocumentStatus.ERROR.value) == 3
@@ -483,7 +508,10 @@ class TestPollerConfidentialite:
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """CA : ni IBAN ni NIR ne doivent apparaitre, donc aucune valeur du tout."""
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         secret = "FR7630006000011234567890189"
         connector = MockOcrConnector(["demandeur.nom"], value=secret)
@@ -495,7 +523,10 @@ class TestPollerConfidentialite:
     async def test_le_log_porte_les_comptages(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
         _patch_session(monkeypatch, db)
         with caplog.at_level(logging.INFO):
             await _worker(_FakeApiClient()).poll()
@@ -543,3 +574,302 @@ class TestApiOrigin:
 
 def test_prepopulation_error_est_exportee() -> None:
     assert issubclass(PrepopulationError, Exception)
+
+
+# ---------------------------------------------------------------------------
+# poller : documents non conformes
+# ---------------------------------------------------------------------------
+
+
+class _ConnecteurFige:
+    """Connecteur qui rend un document fixe, ou leve une exception fixe."""
+
+    name = "fige"
+
+    def __init__(self, rendu: Any = None, erreur: Optional[Exception] = None) -> None:
+        self.rendu = rendu
+        self.erreur = erreur
+
+    async def extract(self, images: Any) -> Any:
+        if self.erreur is not None:
+            raise self.erreur
+        return self.rendu
+
+
+def _metadata_erreur(db: _FakeDb) -> Dict[str, Any]:
+    """Motif ecrit par le dernier UPDATE, lu dans ses parametres compiles."""
+    for statement in reversed(db.statements):
+        if str(statement).startswith("UPDATE"):
+            params = statement.compile().params
+            for value in params.values():
+                if isinstance(value, dict) and "erreur" in value:
+                    return value["erreur"]
+    raise AssertionError("aucun motif d'erreur ecrit")
+
+
+class TestPollerNonConforme:
+    @pytest.mark.asyncio
+    async def test_aucune_page_reconnue_met_en_error_avec_motif(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
+        _patch_session(monkeypatch, db)
+        anomalies = [{"type": "pages_manquantes", "pages": [1, 2]}]
+        connecteur = _ConnecteurFige(
+            erreur=DocumentNonConforme("aucune page du formulaire reconnue", anomalies)
+        )
+        api = _FakeApiClient()
+        await _worker(api, connector=connecteur).poll()
+
+        assert DocumentStatus.ERROR.value in _statuses(db)
+        erreur = _metadata_erreur(db)
+        assert erreur["motif"] == "document_non_conforme"
+        assert erreur["etape"] == "pre_alimentation"
+        assert erreur["anomalies_pages"] == anomalies
+        # Aucun champ cree pour un document qui n'est pas le formulaire.
+        assert api.bulk_payloads == []
+
+    @pytest.mark.asyncio
+    async def test_pages_manquantes_mettent_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        ocr.metadata["anomalies_pages"] = [{"type": "pages_manquantes", "pages": [6]}]
+        api = _FakeApiClient()
+        await _worker(api, connector=_ConnecteurFige(rendu=ocr)).poll()
+
+        assert DocumentStatus.ERROR.value in _statuses(db)
+        assert _metadata_erreur(db)["motif"] == "pages_manquantes"
+        assert api.bulk_payloads == []
+
+    @pytest.mark.asyncio
+    async def test_page_deplacee_ne_bloque_pas(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Une page deplacee est remise en ordre par le connecteur : pas d'ERROR."""
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        ocr.metadata["anomalies_pages"] = [
+            {"type": "page_deplacee", "rang": 9, "page_reconnue": 10}
+        ]
+        await _worker(_FakeApiClient(), connector=_ConnecteurFige(rendu=ocr)).poll()
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
+
+    @pytest.mark.asyncio
+    async def test_l_erreur_technique_ecrit_aussi_son_motif(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
+        _patch_session(monkeypatch, db)
+        await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
+        assert "connecteur OCR en echec" in _metadata_erreur(db)["message"]
+
+
+# ---------------------------------------------------------------------------
+# poller : remise en ordre des images de page
+# ---------------------------------------------------------------------------
+
+
+class TestPermutation:
+    def test_pages_9_et_10_inversees(self) -> None:
+        ordre = {str(p): p for p in range(1, 13)} | {"9": 10, "10": 9}
+        assert _permutation(ordre, 12) == {9: 10, 10: 9}
+
+    def test_document_dans_l_ordre_rien_a_deplacer(self) -> None:
+        assert _permutation({str(p): p for p in range(1, 13)}, 12) == {}
+
+    def test_page_non_reconnue_completee_par_le_rang_restant(self) -> None:
+        """Page 12 blanche, non lue : elle prend le seul rang libre."""
+        ordre = {"1": 2, "2": 1} | {str(p): p for p in range(3, 12)}
+        assert _permutation(ordre, 12) == {2: 1, 1: 2}
+
+    def test_ordre_incoherent_ne_deplace_rien(self) -> None:
+        assert _permutation({"13": 1}, 12) == {}  # page hors bornes
+        assert _permutation({"1": 2, "2": 2}, 12) == {}  # rang en double
+        assert _permutation(None, 12) == {}  # connecteur sans ordre (mock)
+        assert _permutation({"x": 1}, 12) == {}
+
+
+class TestPollerRemiseEnOrdre:
+    @staticmethod
+    def _pages(tmp_path: Path, nombre: int) -> Path:
+        dossier = tmp_path / default_pages_dir(10)
+        dossier.mkdir(parents=True)
+        for rang in range(1, nombre + 1):
+            # Le contenu dit quelle image c'etait au scan.
+            (dossier / f"{rang:04d}.png").write_text(f"scan-{rang}")
+        return dossier
+
+    @pytest.mark.asyncio
+    async def test_images_renommees_dans_l_ordre_du_formulaire(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        dossier = self._pages(tmp_path, 3)
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        # Scan : page 1, page 3, page 2.
+        ocr.metadata["ordre_pages"] = {"1": 1, "3": 2, "2": 3}
+        await _worker(
+            _FakeApiClient(), connector=_ConnecteurFige(rendu=ocr), tmp_path=tmp_path
+        ).poll()
+
+        contenus = [(dossier / f"{n:04d}.png").read_text() for n in (1, 2, 3)]
+        assert contenus == ["scan-1", "scan-3", "scan-2"]
+        assert sorted(p.name for p in dossier.iterdir()) == ["0001.png", "0002.png", "0003.png"]
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
+
+    @pytest.mark.asyncio
+    async def test_document_en_ordre_images_intactes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        dossier = self._pages(tmp_path, 3)
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        ocr.metadata["ordre_pages"] = {"1": 1, "2": 2, "3": 3}
+        await _worker(
+            _FakeApiClient(), connector=_ConnecteurFige(rendu=ocr), tmp_path=tmp_path
+        ).poll()
+
+        contenus = [(dossier / f"{n:04d}.png").read_text() for n in (1, 2, 3)]
+        assert contenus == ["scan-1", "scan-2", "scan-3"]
+
+
+class TestMetadataJsonNull:
+    @pytest.mark.asyncio
+    async def test_la_fusion_ne_part_que_d_un_objet(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Un document cree avec metadata_=None porte un JSON null, pas un NULL
+        SQL. En JSONB, null || {...} rend [null, {...}], et GET /documents
+        tombait en 500 sur ce tableau. La base de la fusion doit donc etre
+        testee sur son type, pas seulement sur NULL."""
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
+        _patch_session(monkeypatch, db)
+        await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
+
+        update_sql = next(str(s) for s in reversed(db.statements) if str(s).startswith("UPDATE"))
+        assert "jsonb_typeof(document.metadata)" in update_sql
+        assert "coalesce" not in update_sql.lower()
+
+
+# ---------------------------------------------------------------------------
+# poller : PDF regenere dans l'ordre du formulaire
+# ---------------------------------------------------------------------------
+
+
+def _pdf_textes(chemin: Path) -> List[str]:
+    import pymupdf
+
+    with pymupdf.open(str(chemin)) as doc:
+        return [page.get_text().strip() for page in doc]
+
+
+def _ecrire_pdf(chemin: Path, textes: List[str]) -> None:
+    import pymupdf
+
+    chemin.parent.mkdir(parents=True, exist_ok=True)
+    doc = pymupdf.open()
+    for texte in textes:
+        doc.new_page().insert_text((72, 72), texte)
+    doc.save(str(chemin))
+    doc.close()
+
+
+class TestReorderPdf:
+    def test_pages_ecrites_dans_l_ordre_demande(self, tmp_path: Path) -> None:
+        from adam_core.utils.pdf_render import reorder_pdf
+
+        source = tmp_path / "scan.pdf"
+        _ecrire_pdf(source, ["scan-1", "scan-2", "scan-3"])
+        reorder_pdf(source, tmp_path / "ordonne.pdf", [1, 3, 2])
+        assert _pdf_textes(tmp_path / "ordonne.pdf") == ["scan-1", "scan-3", "scan-2"]
+        # L'original n'est pas touche.
+        assert _pdf_textes(source) == ["scan-1", "scan-2", "scan-3"]
+
+    def test_ordre_incompatible_ne_laisse_aucun_fichier(self, tmp_path: Path) -> None:
+        from adam_core.utils.pdf_render import PdfRenderError, reorder_pdf
+
+        source = tmp_path / "scan.pdf"
+        _ecrire_pdf(source, ["scan-1", "scan-2"])
+        with pytest.raises(PdfRenderError):
+            reorder_pdf(source, tmp_path / "ordonne.pdf", [1, 3])
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["scan.pdf"]
+
+
+class TestPollerPdfOrdonne:
+    @pytest.mark.asyncio
+    async def test_pdf_regenere_et_file_pointe_dessus(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _ecrire_pdf(tmp_path / "org/cerfa/doc.pdf", ["scan-1", "scan-2", "scan-3"])
+        dossier = TestPollerRemiseEnOrdre._pages(tmp_path, 3)
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        ocr.metadata["ordre_pages"] = {"1": 1, "3": 2, "2": 3}
+        await _worker(
+            _FakeApiClient(), connector=_ConnecteurFige(rendu=ocr), tmp_path=tmp_path
+        ).poll()
+
+        # PDF et images suivent le meme ordre, celui du formulaire.
+        assert _pdf_textes(tmp_path / "org/cerfa/doc_ordonne.pdf") == [
+            "scan-1",
+            "scan-3",
+            "scan-2",
+        ]
+        assert (dossier / "0002.png").read_text() == "scan-3"
+        # L'original reste, trace du scan tel que recu.
+        assert _pdf_textes(tmp_path / "org/cerfa/doc.pdf") == ["scan-1", "scan-2", "scan-3"]
+        # Le FILE pointe sur la copie ordonnee.
+        maj_file = [s.compile().params for s in db.statements if str(s).startswith("UPDATE file")]
+        assert maj_file and maj_file[0]["file_path"] == "org/cerfa/doc_ordonne.pdf"
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
+
+    @pytest.mark.asyncio
+    async def test_pdf_absent_n_empeche_pas_les_images(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        dossier = TestPollerRemiseEnOrdre._pages(tmp_path, 3)
+        db = _FakeDb(
+            candidates=[1],
+            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
+        )
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        ocr.metadata["ordre_pages"] = {"1": 1, "3": 2, "2": 3}
+        await _worker(
+            _FakeApiClient(), connector=_ConnecteurFige(rendu=ocr), tmp_path=tmp_path
+        ).poll()
+
+        assert (dossier / "0002.png").read_text() == "scan-3"
+        assert not any(str(s).startswith("UPDATE file") for s in db.statements)
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)

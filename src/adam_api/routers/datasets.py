@@ -207,6 +207,9 @@ async def ingest_documents(
 ) -> IngestionOut:
     """Ingestion multipart de PDF bruts vers le PVC (statut RECEIVED).
 
+    Un PDF qui n'a pas INGESTION_PAGE_COUNT pages est cree en ERROR (statut
+    "error" dans le detail, motif dans reason).
+
     Repond 200 dans tous les cas (y compris doublons), avec un detail par
     fichier. 404 si le dataset n'existe pas.
     """
@@ -241,6 +244,7 @@ async def ingest_documents(
             file_name=file_name,
             content=content,
             pvc_root=pvc_root,
+            expected_page_count=settings.ingestion_page_count,
         )
         items.append(FileIngestionItemOut(**raw))
 
@@ -250,5 +254,6 @@ async def ingest_documents(
         created=sum(1 for r in items if r.status in ("created", "created_file_reused")),
         already_exists=sum(1 for r in items if r.status == "already_exists"),
         rejected=sum(1 for r in items if r.status == "rejected"),
+        in_error=sum(1 for r in items if r.status == "error"),
         results=items,
     )

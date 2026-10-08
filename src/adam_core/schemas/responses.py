@@ -365,7 +365,7 @@ class FileIngestionItemOut(BaseModel):
     """Resultat pour un fichier dans la reponse d'ingestion."""
 
     file_name: str
-    status: str  # created | created_file_reused | already_exists | rejected
+    status: str  # created | created_file_reused | already_exists | rejected | error
     document_id: Optional[int] = None
     file_id: Optional[int] = None
     file_path: Optional[str] = None  # a titre de debug
@@ -378,6 +378,8 @@ class IngestionOut(BaseModel):
     created: int
     already_exists: int
     rejected: int
+    #: Documents crees mais d'emblee en ERROR (nombre de pages non conforme).
+    in_error: int = 0
     results: List[FileIngestionItemOut]
 
 

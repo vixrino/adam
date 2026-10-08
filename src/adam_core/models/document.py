@@ -51,7 +51,10 @@ class Document(OrganisationScoped, ProjectScoped, Base):
     )
     metadata_: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         "metadata",  # nom de colonne en BDD
-        JSONB,
+        # NULL SQL ou objet JSON, jamais JSON null : par defaut, SQLAlchemy
+        # ecrit None en JSON null, que PostgreSQL concatene a un objet en
+        # tableau [null, {...}] — et GET /documents tombe alors en 500.
+        JSONB(none_as_null=True),
         nullable=True,
         comment="Métadonnées libres d'ingestion : source, lot, date de dépôt...",
     )

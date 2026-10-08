@@ -7,7 +7,7 @@ image page par page.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
+from typing import List, Sequence
 
 import fitz  # PyMuPDF
 
@@ -67,3 +67,28 @@ def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
         raise PdfRenderError(f"Echec de rendu PDF ({pdf_path}): {exc}") from exc
 
     return written
+
+
+def reorder_pdf(source: Path, destination: Path, ordre: Sequence[int]) -> None:
+    """Ecrit dans `destination` les pages de `source` dans l'ordre `ordre`.
+
+    `ordre[i]` est le numero (1-indexe) de la page source qui devient la page
+    i + 1. L'ecriture passe par un fichier temporaire renomme a la fin : un
+    echec ne laisse jamais de PDF tronque a l'emplacement final.
+    """
+    temporaire = destination.with_name(destination.name + ".tmp")
+    try:
+        with fitz.open(str(source)) as doc:
+            if sorted(ordre) != list(range(1, doc.page_count + 1)):
+                raise PdfRenderError(
+                    f"ordre {list(ordre)} incompatible avec {doc.page_count} page(s) ({source})"
+                )
+            doc.select([page - 1 for page in ordre])
+            doc.save(str(temporaire), garbage=3, deflate=True)
+        temporaire.replace(destination)
+    except PdfRenderError:
+        temporaire.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        temporaire.unlink(missing_ok=True)
+        raise PdfRenderError(f"Echec de remise en ordre du PDF ({source}): {exc}") from exc
