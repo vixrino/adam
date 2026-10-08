@@ -25,6 +25,15 @@ qu'un document que l'OCR juge non conforme : aucune page du formulaire
 reconnue, ou des pages a champs introuvables. Le motif de l'ERROR est ecrit
 dans metadata["erreur"] du document, que l'API expose.
 
+Remise en ordre des images
+--------------------------
+Quand l'OCR a reconnu des pages hors de leur rang — un CERFA scanne pages 9
+et 10 inversees — le worker renomme les images de page pour que l'image N
+porte la page N du formulaire. Sans cela, l'operateur verrait les champs de
+la page 9 poses sur l'image de la page 10. Les images appartiennent au FILE,
+partage entre documents de meme contenu : ce contenu-la est dans le meme
+desordre, la remise en ordre vaut pour tous.
+
 Confidentialite des logs
 ------------------------
 Aucune valeur de champ n'est loguee, jamais. Les documents traites contiennent
@@ -35,7 +44,7 @@ des comptages, dont le nombre de champs detectes, qui suffit au diagnostic.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from sqlalchemy import func, literal, select, update
 from sqlalchemy.dialects.postgresql import JSONB
@@ -205,6 +214,7 @@ class PrepopulationWorker(BaseWorker):
 
         ocr = await self._run_ocr(images, document_id)
         _controle_pages(ocr)
+        await self._reordonner_images(document_id, images, ocr)
         field_specs = await self._load_field_specs(dataset_id, document_id)
 
         payloads = merge(field_specs, ocr)
@@ -288,20 +298,91 @@ class PrepopulationWorker(BaseWorker):
             )
 
     async def _set_error(self, document_id: int, erreur: Dict[str, Any]) -> None:
-        """Passe le document en ERROR et ecrit le motif dans metadata["erreur"],
-        sans ecraser les autres cles de metadata (concatenation JSONB)."""
-        motif = {"erreur": {"etape": "pre_alimentation", **erreur}}
-        async with get_async_session() as db:
-            await db.execute(
-                update(Document)
-                .where(Document.id == document_id)
-                .values(
-                    status=DocumentStatus.ERROR.value,
-                    metadata_=func.coalesce(Document.metadata_, literal({}, JSONB)).op("||")(
-                        literal(motif, JSONB)
-                    ),
-                )
+        """Passe le document en ERROR et ecrit le motif dans metadata["erreur"]."""
+        await self._update_metadata(
+            document_id,
+            {"erreur": {"etape": "pre_alimentation", **erreur}},
+            status=DocumentStatus.ERROR,
+        )
+
+    async def _update_metadata(
+        self,
+        document_id: int,
+        cles: Dict[str, Any],
+        *,
+        status: Optional[DocumentStatus] = None,
+    ) -> None:
+        """Ajoute des cles a metadata sans ecraser les autres (concatenation JSONB)."""
+        values: Dict[str, Any] = {
+            "metadata_": func.coalesce(Document.metadata_, literal({}, JSONB)).op("||")(
+                literal(cles, JSONB)
             )
+        }
+        if status is not None:
+            values["status"] = status.value
+        async with get_async_session() as db:
+            await db.execute(update(Document).where(Document.id == document_id).values(**values))
+
+    async def _reordonner_images(
+        self,
+        document_id: int,
+        images: Sequence[Path],
+        ocr: Optional[SmartdocDocument],
+    ) -> None:
+        """Renomme les images pour que l'image N porte la page N du formulaire.
+
+        Les noms cibles sont ceux des images existantes : l'image de rang r
+        prend le nom de l'image de rang p, ou p est la page qu'elle porte. Le
+        worker n'a ainsi pas a connaitre la convention de nommage du rendu.
+        """
+        if ocr is None:
+            return
+        permutation = _permutation(ocr.metadata.get("ordre_pages"), len(images))
+        if not permutation:
+            return
+        # Deux passes, pour qu'aucun renommage n'ecrase une image pas encore
+        # deplacee : d'abord vers un nom temporaire, puis vers le nom cible.
+        temporaires = {}
+        for rang in permutation:
+            source = images[rang - 1]
+            temporaire = source.with_name(source.name + ".reordre")
+            source.rename(temporaire)
+            temporaires[rang] = temporaire
+        for rang, page in permutation.items():
+            temporaires[rang].rename(images[page - 1])
+
+        deplacees = [{"page": page, "rang_origine": rang} for rang, page in permutation.items()]
+        self.logger.warning(
+            "images de page remises dans l'ordre du formulaire [document_id=%s] : %s",
+            document_id,
+            deplacees,
+        )
+        await self._update_metadata(document_id, {"pages_reordonnees": deplacees})
+
+
+def _permutation(ordre_pages: Any, nombre_images: int) -> Dict[int, int]:
+    """Rang d'image -> page du formulaire, pour les seules images a deplacer.
+
+    `ordre_pages` (page -> rang) ne couvre que les pages reconnues. Les rangs
+    et pages restants — une page blanche que l'OCR n'a pas lue — sont apparies
+    dans l'ordre, ce qui laisse en place une page non reconnue quand tout le
+    reste l'est. Rend {} quand il n'y a rien a deplacer, ou quand l'ordre ne
+    forme pas une permutation des rangs (page hors bornes, rang en double) :
+    mieux vaut des images dans l'ordre du scan que dans un ordre invente.
+    """
+    if not isinstance(ordre_pages, Mapping) or not ordre_pages:
+        return {}
+    try:
+        page_vers_rang = {int(page): int(rang) for page, rang in ordre_pages.items()}
+    except (TypeError, ValueError):
+        return {}
+    bornes = set(range(1, nombre_images + 1))
+    pages, rangs = set(page_vers_rang), set(page_vers_rang.values())
+    if not pages <= bornes or not rangs <= bornes or len(rangs) != len(pages):
+        return {}
+    for page, rang in zip(sorted(bornes - pages), sorted(bornes - rangs)):
+        page_vers_rang[page] = rang
+    return {rang: page for page, rang in page_vers_rang.items() if rang != page}
 
 
 def _controle_pages(ocr: Optional[SmartdocDocument]) -> None:

@@ -366,6 +366,10 @@ def test_pages_9_et_10_inversees_comme_sur_le_cerfa_reel(tmp_path: Path) -> None
         {"type": "page_deplacee", "rang": 9, "page_reconnue": 10},
         {"type": "page_deplacee", "rang": 10, "page_reconnue": 9},
     ]
+    # L'ordre rendu permet au worker de remettre les images en place.
+    assert doc.metadata["ordre_pages"]["9"] == 10
+    assert doc.metadata["ordre_pages"]["10"] == 9
+    assert doc.metadata["ordre_pages"]["1"] == 1
 
 
 def test_page_sans_champs_reconnue_n_est_pas_annotee(tmp_path: Path) -> None:

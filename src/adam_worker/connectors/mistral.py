@@ -225,6 +225,9 @@ class MistralOcrConnector(BaseOcrConnector):
                 "model": self.model,
                 "annotation_model": self.annotation_model,
                 "anomalies_pages": anomalies,
+                # Page du CERFA reconnue -> rang de son image dans le PDF : de
+                # quoi remettre les images dans l'ordre du formulaire.
+                "ordre_pages": {str(page): rang for page, rang in reconnues.items()},
             },
         )
 

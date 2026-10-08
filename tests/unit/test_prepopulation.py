@@ -37,6 +37,7 @@ from adam_worker.prepopulation.merger import (
 from adam_worker.prepopulation.poller import (
     PrepopulationError,
     PrepopulationWorker,
+    _permutation,
     default_pages_dir,
 )
 
@@ -633,3 +634,76 @@ class TestPollerNonConforme:
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
         assert "connecteur OCR en echec" in _metadata_erreur(db)["message"]
+
+
+# ---------------------------------------------------------------------------
+# poller : remise en ordre des images de page
+# ---------------------------------------------------------------------------
+
+
+class TestPermutation:
+    def test_pages_9_et_10_inversees(self) -> None:
+        ordre = {str(p): p for p in range(1, 13)} | {"9": 10, "10": 9}
+        assert _permutation(ordre, 12) == {9: 10, 10: 9}
+
+    def test_document_dans_l_ordre_rien_a_deplacer(self) -> None:
+        assert _permutation({str(p): p for p in range(1, 13)}, 12) == {}
+
+    def test_page_non_reconnue_completee_par_le_rang_restant(self) -> None:
+        """Page 12 blanche, non lue : elle prend le seul rang libre."""
+        ordre = {"1": 2, "2": 1} | {str(p): p for p in range(3, 12)}
+        assert _permutation(ordre, 12) == {2: 1, 1: 2}
+
+    def test_ordre_incoherent_ne_deplace_rien(self) -> None:
+        assert _permutation({"13": 1}, 12) == {}  # page hors bornes
+        assert _permutation({"1": 2, "2": 2}, 12) == {}  # rang en double
+        assert _permutation(None, 12) == {}  # connecteur sans ordre (mock)
+        assert _permutation({"x": 1}, 12) == {}
+
+
+class TestPollerRemiseEnOrdre:
+    @staticmethod
+    def _pages(tmp_path: Path, nombre: int) -> Path:
+        dossier = tmp_path / default_pages_dir(10)
+        dossier.mkdir(parents=True)
+        for rang in range(1, nombre + 1):
+            # Le contenu dit quelle image c'etait au scan.
+            (dossier / f"{rang:04d}.png").write_text(f"scan-{rang}")
+        return dossier
+
+    @pytest.mark.asyncio
+    async def test_images_renommees_dans_l_ordre_du_formulaire(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        dossier = self._pages(tmp_path, 3)
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        # Scan : page 1, page 3, page 2.
+        ocr.metadata["ordre_pages"] = {"1": 1, "3": 2, "2": 3}
+        await _worker(
+            _FakeApiClient(), connector=_ConnecteurFige(rendu=ocr), tmp_path=tmp_path
+        ).poll()
+
+        contenus = [(dossier / f"{n:04d}.png").read_text() for n in (1, 2, 3)]
+        assert contenus == ["scan-1", "scan-3", "scan-2"]
+        assert sorted(p.name for p in dossier.iterdir()) == ["0001.png", "0002.png", "0003.png"]
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
+
+    @pytest.mark.asyncio
+    async def test_document_en_ordre_images_intactes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        dossier = self._pages(tmp_path, 3)
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        ocr.metadata["ordre_pages"] = {"1": 1, "2": 2, "3": 3}
+        await _worker(
+            _FakeApiClient(), connector=_ConnecteurFige(rendu=ocr), tmp_path=tmp_path
+        ).poll()
+
+        contenus = [(dossier / f"{n:04d}.png").read_text() for n in (1, 2, 3)]
+        assert contenus == ["scan-1", "scan-2", "scan-3"]
