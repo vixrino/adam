@@ -316,11 +316,14 @@ def test_la_consigne_d_identification_ecarte_le_rang() -> None:
     numerotait les pages dans l'ordre de reception s'y est trompe."""
     consigne = _connector(lambda _: httpx.Response(500))._consigne_identification
     assert "scanne dans le desordre" in consigne
-    assert "Identifie la page par ses titres de rubrique uniquement" in consigne
+    # Le CERFA imprime « page N/12 » en tete : l'indice le plus sur.
+    assert "page N/12" in consigne and "elle fait foi" in consigne
+    assert "identifie la page par ses titres de rubrique" in consigne
     # Le pied de page "300 BdF 1947 - DIRCOM - 30/04/2020" est commun a toutes.
     assert "la meme sur toutes les pages" in consigne
-    # Pages 10 et 11 : meme titre, la 11 porte en plus deux autres rubriques.
-    assert "Autres prets et cautionnements" in consigne
+    # Pages 10 et 11 : credits a la consommation sur les deux, la 11 porte en
+    # plus la cause, les autres prets et le cautionnement.
+    assert "Cautionnement" in consigne
     assert "sans elles, c'est la page 10" in consigne
 
 
@@ -524,13 +527,26 @@ def test_un_montant_sort_en_number() -> None:
     assert _to_kv_value(2800, spec).type == "number"
 
 
-def test_personnes_a_charge_ont_une_colonne_nom() -> None:
-    """Sans champ pour le nom, le modele rangeait « Luna Vincent » dans
-    lien_parente : le nom n'avait nulle part d'autre ou aller."""
+def test_lien_de_parente_recopie_meme_un_nom() -> None:
+    """Le tableau des personnes au domicile n'a pas de colonne nom : un
+    deposant ecrit parfois « Luna Vincent » dans la case du lien de parente,
+    et c'est cette valeur qu'il faut relever, pas un « Enfant » deduit."""
     page_2 = CERFA_V2_PAGE_FIELDS[2]
-    assert "personnes_a_charge.nom_prenom" in page_2
-    assert "jamais un nom" in page_2["personnes_a_charge.lien_parente"]["description"]
-    assert "prestations_familiales.numero_allocataire_deposant" in page_2
+    assert not any(k.startswith("personnes_a_charge.nom") for k in page_2)
+    assert "recopie tel qu'ecrit" in page_2["personnes_a_charge.lien_parente"]["description"]
+    assert "prestations_familiales.co_deposant_msa_numero_allocataire" in page_2
+
+
+def test_lignes_du_cerfa_vierge() -> None:
+    """Quelques lignes du CERFA vierge que la transcription d'un CERFA rempli
+    ne montrait pas, parce qu'elles y etaient vides."""
+    assert "ressources_mensuelles.deposant_rsa" in CERFA_V2_PAGE_FIELDS[3]
+    assert "ressources_mensuelles.deposant_autres_pensions_nature" in CERFA_V2_PAGE_FIELDS[3]
+    assert "charges_mensuelles.co_deposant_mutuelle" in CERFA_V2_PAGE_FIELDS[4]
+    assert "gestion_budget.iban" in CERFA_V2_PAGE_FIELDS[4]
+    assert "epargne.deposant_livret_a" in CERFA_V2_PAGE_FIELDS[5]
+    assert "locations_diverses.solde_apres_vente" in CERFA_V2_PAGE_FIELDS[8]
+    assert "cautionnement.personne_cautionnee" in CERFA_V2_PAGE_FIELDS[11]
 
 
 def test_aucune_cle_partagee_entre_deux_pages() -> None:
