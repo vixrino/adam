@@ -292,6 +292,13 @@ def _capture_document_id(instance: object) -> None:
 
 
 class TestIngestDocuments:
+    @pytest.fixture(autouse=True)
+    def _sans_controle_du_nombre_de_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ces tests envoient un PDF d'une page : ils ne doivent pas dependre de
+        l'INGESTION_PAGE_COUNT du .env du poste, qui les mettrait en ERROR.
+        Le controle lui-meme a son test, qui fixe sa propre valeur."""
+        monkeypatch.setattr("adam_api.routers.datasets.settings.ingestion_page_count", 0)
+
     def test_404_when_dataset_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = None
         response = client.post(
@@ -335,6 +342,41 @@ class TestIngestDocuments:
         assert body["rejected"] == 0
         assert body["results"][0]["file_name"] == "doc.pdf"
         assert body["results"][0]["status"] == "created"
+
+    def test_pdf_hors_taille_cree_en_error(
+        self,
+        client: TestClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """INGESTION_PAGE_COUNT=12 et un PDF d'une page : document cree en ERROR."""
+        monkeypatch.setattr("adam_api.routers.datasets.settings.pvc_mount_path", str(tmp_path))
+        monkeypatch.setattr("adam_api.routers.datasets.settings.ingestion_page_count", 12)
+        mock_db.get = AsyncMock(side_effect=_db_get_side_effect(dataset=_make_dataset()))
+        mock_db.add = MagicMock(side_effect=_capture_document_id)
+        new_file = MagicMock()
+        new_file.id = 7
+        new_file.file_path = "dires/cerfa/2026_01_15_1321/doc.pdf"
+        mock_db.execute = AsyncMock(
+            side_effect=[
+                _exec_result(scalar_one_or_none=None),
+                _exec_result(scalar_one_or_none=None),
+                _exec_result(scalar_one_or_none=new_file),
+            ]
+        )
+
+        response = client.post(
+            "/datasets/1/documents",
+            files=[("files", ("doc.pdf", _minimal_valid_pdf(), "application/pdf"))],
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["created"] == 0
+        assert body["in_error"] == 1
+        assert body["results"][0]["status"] == "error"
+        assert body["results"][0]["reason"] == "1 page(s) au lieu de 12"
 
     def test_duplicate_file_in_dataset_returns_already_exists(
         self,
