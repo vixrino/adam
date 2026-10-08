@@ -22,12 +22,14 @@ Usage :
     python scripts/seed.py --form-demo --reset
     python scripts/seed.py --json form_demo_v0.3.json --reset
 """
+
 import argparse
 import asyncio
 import json
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sqlalchemy import text
@@ -58,6 +60,7 @@ from adam_core.models import (
     User,
     UserProject,
 )
+
 # Le chemin du PVC est un reglage d'API, pas de coeur : c'est la que vivent
 # les workers qui liront le PDF depose ici.
 from adam_api.core.config import settings as api_settings
@@ -75,18 +78,30 @@ from seed_schema_cerfa import REPEATABLE_SECTIONS, SECTION_LABELS, build_specs
 
 settings = CoreSettings()
 SEPARATOR = "-" * 55
+
+
 # Reset
 async def reset_db(session: AsyncSession) -> None:
     print(" Reset de la base...")
     tables = [
-        "document_field", "ocr_result", "document", "file",
-        "dataset", "field_spec", "doc_schema",
-        "user_project", "project", "user", "organisation",
+        "document_field",
+        "ocr_result",
+        "document",
+        "file",
+        "dataset",
+        "field_spec",
+        "doc_schema",
+        "user_project",
+        "project",
+        "user",
+        "organisation",
     ]
     for table in tables:
         await session.execute(text(f'TRUNCATE TABLE "{table}" CASCADE'))
     await session.commit()
     print(" Tables videes")
+
+
 # Infrastructure commune
 #
 # Les DIRES sont les directions regionales qui instruisent les dossiers de
@@ -227,30 +242,46 @@ async def seed_infrastructure(session: AsyncSession) -> Tuple:
         reference_users["MAT00002"],
         projects[reference_slug],
     )
+
+
 # Mode 1 : Donnees hardcodees
 HARDCODED_FIELD_SPECS = [
     ("demandeur", "Demandeur", "demandeur.nom", "Nom de naissance", FieldValueType.TEXT.value, 1),
     ("demandeur", "Demandeur", "demandeur.prenom", "Prenom", FieldValueType.TEXT.value, 1),
-    ("demandeur", "Demandeur", "demandeur.date_naissance", "Date de naissance", FieldValueType.DATE.value, 1),
+    (
+        "demandeur",
+        "Demandeur",
+        "demandeur.date_naissance",
+        "Date de naissance",
+        FieldValueType.DATE.value,
+        1,
+    ),
     ("demandeur", "Demandeur", "demandeur.civilite_m", "Monsieur", FieldValueType.BOOLEAN.value, 1),
     ("demandeur", "Demandeur", "demandeur.civilite_mme", "Madame", FieldValueType.BOOLEAN.value, 1),
     ("bien", "Bien", "bien.adresse", "Adresse du bien", FieldValueType.TEXT.value, 1),
     ("bien", "Bien", "bien.valeur", "Valeur du bien (EUR)", FieldValueType.NUMBER.value, 1),
     ("bien", "Bien", "bien.superficie", "Superficie (m2)", FieldValueType.NUMBER.value, 1),
     ("creance", "Creance", "creance.montant", "Montant creance", FieldValueType.NUMBER.value, 1),
-    ("creance", "Creance", "creance.date_echeance", "Date d'echeance", FieldValueType.DATE.value, 1),
+    (
+        "creance",
+        "Creance",
+        "creance.date_echeance",
+        "Date d'echeance",
+        FieldValueType.DATE.value,
+        1,
+    ),
 ]
 HARDCODED_OCR_VALUES: Dict = {
-    "demandeur.nom":                 ("NOM01",                      0.98, [182,282,298,182,298,168,82,168]),
-    "demandeur.prenom":              ("P02",                        0.97, [82,142,288,142,288,168,82,168]),
-    "demandeur.date_naissance":      ("1985-01-01",                  0.95, [82,182,218,182,218,208,82,208]),
-    "demandeur.civilite_m":          ("true",                        1.00, [82,222,118,222,118,238,82,238]),
-    "demandeur.civilite_mme":        ("false",                       1.00, [132,222,178,222,178,238,132,238]),
-    "bien.adresse":                 ("1 rue Demo 00000 Villedemo", 0.91, [82,102,498,102,498,128,82,128]),
-    "bien.valeur":                  ("450000",                      0.88, [82,142,298,142,298,168,82,168]),
-    "bien.superficie":              ("85",                          0.93, [322,142,448,142,448,168,322,168]),
-    "creance.montant":              ("320000",                      0.90, [82,222,298,222,298,248,82,248]),
-    "creance.date_echeance":        ("2040-01-15",                  0.94, [322,222,498,222,498,248,322,248]),
+    "demandeur.nom": ("NOM01", 0.98, [182, 282, 298, 182, 298, 168, 82, 168]),
+    "demandeur.prenom": ("P02", 0.97, [82, 142, 288, 142, 288, 168, 82, 168]),
+    "demandeur.date_naissance": ("1985-01-01", 0.95, [82, 182, 218, 182, 218, 208, 82, 208]),
+    "demandeur.civilite_m": ("true", 1.00, [82, 222, 118, 222, 118, 238, 82, 238]),
+    "demandeur.civilite_mme": ("false", 1.00, [132, 222, 178, 222, 178, 238, 132, 238]),
+    "bien.adresse": ("1 rue Demo 00000 Villedemo", 0.91, [82, 102, 498, 102, 498, 128, 82, 128]),
+    "bien.valeur": ("450000", 0.88, [82, 142, 298, 142, 298, 168, 82, 168]),
+    "bien.superficie": ("85", 0.93, [322, 142, 448, 142, 448, 168, 322, 168]),
+    "creance.montant": ("320000", 0.90, [82, 222, 298, 222, 298, 248, 82, 248]),
+    "creance.date_echeance": ("2040-01-15", 0.94, [322, 222, 498, 222, 498, 248, 322, 248]),
 }
 HARDCODED_RAW_JSON = {
     "smartdoc_version": "0.3",
@@ -260,14 +291,16 @@ HARDCODED_RAW_JSON = {
     "metadata": {"ocr": {"provider": "PULSAR", "processed_at": "2024-01-15T10:00:00Z"}},
     "pages": [],
 }
+
+
 async def seed_hardcoded(session: AsyncSession, project: Project) -> None:
     print("\n --- Mode : donnees hardcodees (Formulaire Demo v2) ---")
     print(" [4/8] DocSchema...")
     schema = DocSchema(
-       project_id=project.id,
-       version=2,
-       name="Schema Formulaire Demo v2",
-       document_type="FORM_DEMO_02",
+        project_id=project.id,
+        version=2,
+        name="Schema Formulaire Demo v2",
+        document_type="FORM_DEMO_02",
     )
     session.add(schema)
     await session.flush()
@@ -275,42 +308,50 @@ async def seed_hardcoded(session: AsyncSession, project: Project) -> None:
     print(" [5/8] FieldSpecs...")
     field_specs = []
     for i, (sec_id, sec_label, key, label, ftype, page) in enumerate(HARDCODED_FIELD_SPECS):
-       fs = FieldSpec(
-           schema_id=schema.id, page=page,
-           section_id=sec_id, section_label=sec_label,
-           field_key=key, display_label=label,
-           value_type=ftype, required=False,
-           display_order=i,
-       )
-       field_specs.append(fs)
+        fs = FieldSpec(
+            schema_id=schema.id,
+            page=page,
+            section_id=sec_id,
+            section_label=sec_label,
+            field_key=key,
+            display_label=label,
+            value_type=ftype,
+            required=False,
+            display_order=i,
+        )
+        field_specs.append(fs)
     session.add_all(field_specs)
     await session.flush()
     print(f"    --- {len(field_specs)} FieldSpecs crees")
     await _seed_dataset_to_fields(
-       session, project, schema, field_specs,
-       file_path="/pvc/org-beta/forms/2024_01/2024_01_15_1200/form_demo_001.pdf",
-       file_name="form_demo_001.pdf",
-       raw_json=HARDCODED_RAW_JSON,
-       ocr_values=HARDCODED_OCR_VALUES,
-       document_id_str="form_demo_001",
-       step_offset=6,
+        session,
+        project,
+        schema,
+        field_specs,
+        file_path="/pvc/org-beta/forms/2024_01/2024_01_15_1200/form_demo_001.pdf",
+        file_name="form_demo_001.pdf",
+        raw_json=HARDCODED_RAW_JSON,
+        ocr_values=HARDCODED_OCR_VALUES,
+        document_id_str="form_demo_001",
+        step_offset=6,
     )
+
+
 # Mode 2 : Depuis JSON formulaire
-async def seed_from_form_json(
-    session: AsyncSession, project: Project, json_path: Path
-) -> None:
+async def seed_from_form_json(session: AsyncSession, project: Project, json_path: Path) -> None:
     from adam_core.schemas.interface_contract import SmartdocDocument
+
     print(f"\n --- Mode : FORM JSON ({json_path.name}) ---")
     with open(json_path, encoding="utf-8") as f:
-       json_raw = json.load(f)
+        json_raw = json.load(f)
     form_doc = SmartdocDocument.model_validate(json_raw)
     print(f" JSON valide : {form_doc.page_count} pages, document_id={form_doc.document_id}")
     print(" [4/8] DocSchema...")
     schema = DocSchema(
-       project_id=project.id,
-       version=1,
-       name="Formulaire Demo",
-       document_type="FORM_DEMO_01",
+        project_id=project.id,
+        version=1,
+        name="Formulaire Demo",
+        document_type="FORM_DEMO_01",
     )
     session.add(schema)
     await session.flush()
@@ -320,31 +361,32 @@ async def seed_from_form_json(
     field_spec_index: Dict = {}
     field_specs = []
     for spec in specs_data:
-       fs = FieldSpec(
-           schema_id=schema.id,
-           page=spec["page"],
-           section_id=spec["section_id"],
-           section_label=spec["section_label"],
-           field_key=spec["field_key"],
-           display_label=spec["display_label"],
-           value_type=spec["value_type"],
-           required=spec["required"],
-           display_order=spec["display_order"],
-           polygon=spec["polygon"],
-       )
-       field_specs.append(fs)
-       session.add(fs)
-       await session.flush()
-       field_spec_index[(spec["section_id"], spec["field_key"])] = fs
+        fs = FieldSpec(
+            schema_id=schema.id,
+            page=spec["page"],
+            section_id=spec["section_id"],
+            section_label=spec["section_label"],
+            field_key=spec["field_key"],
+            display_label=spec["display_label"],
+            value_type=spec["value_type"],
+            required=spec["required"],
+            display_order=spec["display_order"],
+            polygon=spec["polygon"],
+        )
+        field_specs.append(fs)
+        session.add(fs)
+        await session.flush()
+        field_spec_index[(spec["section_id"], spec["field_key"])] = fs
     print(f"        {len(field_specs)} FieldSpecs créés depuis {form_doc.page_count} pages")
     print(" [6/8] Dataset...")
     dataset = Dataset(
-       project_id=project.id, schema_id=schema.id,
-       name=CERFA_DATASET_NAME,
-       ocr_provider=OcrProvider.PULSAR.value,
-       status=DatasetStatus.ACTIVE.value,
-       required_operators=2,
-       configs={"confidence_threshold": 0.8},
+        project_id=project.id,
+        schema_id=schema.id,
+        name=CERFA_DATASET_NAME,
+        ocr_provider=OcrProvider.PULSAR.value,
+        status=DatasetStatus.ACTIVE.value,
+        required_operators=2,
+        configs={"confidence_threshold": 0.8},
     )
     session.add(dataset)
     await session.flush()
@@ -353,23 +395,25 @@ async def seed_from_form_json(
     json_bytes = json.dumps(json_raw, ensure_ascii=False).encode("utf-8")
     sha256 = sha256_bytes(json_bytes)
     file_ = File(
-       file_path=f"/pvc/forms/demo/{form_doc.document_id}.pdf",
-       storage_type="pvc", mime_type="application/pdf",
-       page_count=form_doc.page_count,
-       file_size_bytes=len(json_bytes),
-       sha256_checksum=sha256,
+        file_path=f"/pvc/forms/demo/{form_doc.document_id}.pdf",
+        storage_type="pvc",
+        mime_type="application/pdf",
+        page_count=form_doc.page_count,
+        file_size_bytes=len(json_bytes),
+        sha256_checksum=sha256,
     )
     session.add(file_)
     await session.flush()
     document = Document(
-       dataset_id=dataset.id, file_id=file_.id,
-       file_name=f"{form_doc.document_id}.pdf",
-       metadata={
-           "smartdoc_version": form_doc.smartdoc_version,
-           "document_id": form_doc.document_id,
-           "coordinate_unit": form_doc.coordinate_unit,
-       },
-       status=DocumentStatus.IN_PROGRESS.value,
+        dataset_id=dataset.id,
+        file_id=file_.id,
+        file_name=f"{form_doc.document_id}.pdf",
+        metadata={
+            "smartdoc_version": form_doc.smartdoc_version,
+            "document_id": form_doc.document_id,
+            "coordinate_unit": form_doc.coordinate_unit,
+        },
+        status=DocumentStatus.IN_PROGRESS.value,
     )
     session.add(document)
     await session.flush()
@@ -377,33 +421,43 @@ async def seed_from_form_json(
     print(f"        {document}")
     print("    [8/8] OcrResult + DocumentFields...")
     ocr_result = OcrResult(
-       document_id=document.id, dataset_id=dataset.id,
-       storage_mode=StorageMode.JSONB.value,
-       raw_json=json_raw,
+        document_id=document.id,
+        dataset_id=dataset.id,
+        storage_mode=StorageMode.JSONB.value,
+        raw_json=json_raw,
     )
     session.add(ocr_result)
     await session.flush()
     doc_fields = []
     skipped = 0
     for _, section, kv in form_doc.iter_kv_pairs():
-       fs = field_spec_index.get((section.id, kv.field_key))
-       if not fs:
-           skipped += 1
-           continue
-       doc_fields.append(DocumentField(
-           document_id=document.id, field_spec_id=fs.id,
-           group_id=kv.group_id,
-           ocr_value=kv.extracted_value, resolved_value=kv.extracted_value,
-           status=DocumentFieldStatus.PENDING.value,
-           ocr_confidence=kv.confidence, consensus_reached=False,
-           ocr_polygon=kv.polygon,
-       ))
+        fs = field_spec_index.get((section.id, kv.field_key))
+        if not fs:
+            skipped += 1
+            continue
+        doc_fields.append(
+            DocumentField(
+                document_id=document.id,
+                field_spec_id=fs.id,
+                group_id=kv.group_id,
+                ocr_value=kv.extracted_value,
+                resolved_value=kv.extracted_value,
+                status=DocumentFieldStatus.PENDING.value,
+                ocr_confidence=kv.confidence,
+                consensus_reached=False,
+                ocr_polygon=kv.polygon,
+            )
+        )
     session.add_all(doc_fields)
     await session.flush()
     print(f"            {len(doc_fields)} DocumentFields crees")
     if skipped:
-       print(f"            {skipped} KVPairs ignores (fieldSpec manquant)")
-    print(f"\n Resume : {len(field_specs)} FieldSpecs, {len(doc_fields)} DocumentFields, {form_doc.page_count}")
+        print(f"            {skipped} KVPairs ignores (fieldSpec manquant)")
+    print(
+        f"\n Resume : {len(field_specs)} FieldSpecs, {len(doc_fields)} DocumentFields, {form_doc.page_count}"
+    )
+
+
 # Mode 3 : CERFA surendettement (schema reel, champs de cerfa_v2.py)
 #
 # Le mode hardcode monte un formulaire synthetique — demandeur, bien, creance —
@@ -478,11 +532,13 @@ CERFA_DOSSIER: Dict[str, str] = {
     "situation_familiale.divorce": "false",
     "situation_familiale.veuf": "false",
     "personnes_a_charge.personne_1.lien_parente": "Fille",
+    "personnes_a_charge.personne_1.nom_prenom": "MOREAU Lea",
     "personnes_a_charge.personne_1.date_naissance": "2011-02-08",
     "personnes_a_charge.personne_1.situation_garde": "Au domicile",
     "personnes_a_charge.personne_1.ressources_oui": "false",
     "personnes_a_charge.personne_1.ressources_non": "true",
     "personnes_a_charge.personne_2.lien_parente": "Fils",
+    "personnes_a_charge.personne_2.nom_prenom": "MOREAU Hugo",
     "personnes_a_charge.personne_2.date_naissance": "2014-11-22",
     "personnes_a_charge.personne_2.situation_garde": "Garde alternee",
     "personnes_a_charge.personne_2.ressources_oui": "false",
@@ -493,6 +549,7 @@ CERFA_DOSSIER: Dict[str, str] = {
     "situation_logement_deposant.proprietaire": "true",
     "situation_logement_deposant.saisie_immobiliere_oui": "false",
     "situation_logement_deposant.saisie_immobiliere_non": "true",
+    "prestations_familiales.numero_allocataire_deposant": "1234567",
     # Page 6 : deux dettes remplies sur les quatre et cinq emplacements ouverts
     "dettes_logement.dette_logement_1.nom_creancier": "Syndic Foncia Meaux",
     "dettes_logement.dette_logement_1.adresse_creancier": "8 rue Saint-Remy, 77100 Meaux",
@@ -772,7 +829,11 @@ async def seed_cerfa(
         )
     session.add_all(doc_fields)
     await session.flush()
-    below = sum(1 for fs in field_specs if _cerfa_key(fs.section_id, fs.group_id, fs.field_key) in CERFA_LOW_CONFIDENCE)
+    below = sum(
+        1
+        for fs in field_specs
+        if _cerfa_key(fs.section_id, fs.group_id, fs.field_key) in CERFA_LOW_CONFIDENCE
+    )
     print(f"        {len(doc_fields)} DocumentFields crees, dont {filled} renseignes par l'OCR")
     print(f"        {below} sous le seuil de confiance du dataset (0.8)")
 
@@ -854,7 +915,6 @@ def _pdf_page_count(pdf_path: Path) -> int:
         return pdf.page_count
 
 
-
 # Helper partagé
 async def _seed_dataset_to_fields(
     session: AsyncSession,
@@ -870,13 +930,14 @@ async def _seed_dataset_to_fields(
 ) -> None:
     print(f"  [{step_offset}/8] Dataset...")
     dataset = Dataset(
-       project_id=project.id, schema_id=schema.id,
-       name=DEMO_DATASET_NAME,
-       description="Premier lot de documents",
-       ocr_provider=OcrProvider.PULSAR.value,
-       status=DatasetStatus.ACTIVE.value,
-       required_operators=2,
-       configs={"confidence_threshold": 0.8, "export_format": "json_pdf"},
+        project_id=project.id,
+        schema_id=schema.id,
+        name=DEMO_DATASET_NAME,
+        description="Premier lot de documents",
+        ocr_provider=OcrProvider.PULSAR.value,
+        status=DatasetStatus.ACTIVE.value,
+        required_operators=2,
+        configs={"confidence_threshold": 0.8, "export_format": "json_pdf"},
     )
     session.add(dataset)
     await session.flush()
@@ -885,16 +946,21 @@ async def _seed_dataset_to_fields(
     json_bytes = json.dumps(raw_json, ensure_ascii=False).encode("utf-8")
     sha256 = sha256_bytes(json_bytes)
     file_ = File(
-       file_path=file_path, storage_type="PVC",
-       mime_type="application/pdf", page_count=raw_json.get("page_count", 2),
-       file_size_bytes=len(json_bytes), sha256_checksum=sha256,
+        file_path=file_path,
+        storage_type="PVC",
+        mime_type="application/pdf",
+        page_count=raw_json.get("page_count", 2),
+        file_size_bytes=len(json_bytes),
+        sha256_checksum=sha256,
     )
     session.add(file_)
     await session.flush()
     document = Document(
-       dataset_id=dataset.id, file_id=file_.id, file_name=file_name,
-       metadata={"source": "PVC", "lot": "2024-01", "reception_date": "2024-01-15"},
-       status=DocumentStatus.IN_PROGRESS.value,
+        dataset_id=dataset.id,
+        file_id=file_.id,
+        file_name=file_name,
+        metadata={"source": "PVC", "lot": "2024-01", "reception_date": "2024-01-15"},
+        status=DocumentStatus.IN_PROGRESS.value,
     )
     session.add(document)
     await session.flush()
@@ -902,23 +968,34 @@ async def _seed_dataset_to_fields(
     print(f"        {document}")
     print(f"  [{step_offset + 2}/8] OcrResult + DocumentFields...")
     ocr_result = OcrResult(
-       document_id=document.id, dataset_id=dataset.id,
-       storage_mode=StorageMode.JSONB.value, raw_json=raw_json,
+        document_id=document.id,
+        dataset_id=dataset.id,
+        storage_mode=StorageMode.JSONB.value,
+        raw_json=raw_json,
     )
     session.add(ocr_result)
     await session.flush()
     doc_fields = []
     for fs in field_specs:
-       ocr_val, confidence, polygon = ocr_values.get(fs.field_key, (None, None, None))
-       doc_fields.append(DocumentField(
-           document_id=document.id, field_spec_id=fs.id, group_id=None,
-           ocr_value=ocr_val, resolved_value=ocr_val,
-           status=DocumentFieldStatus.PENDING.value,
-           ocr_confidence=confidence, consensus_reached=False, ocr_polygon=polygon,
-       ))
+        ocr_val, confidence, polygon = ocr_values.get(fs.field_key, (None, None, None))
+        doc_fields.append(
+            DocumentField(
+                document_id=document.id,
+                field_spec_id=fs.id,
+                group_id=None,
+                ocr_value=ocr_val,
+                resolved_value=ocr_val,
+                status=DocumentFieldStatus.PENDING.value,
+                ocr_confidence=confidence,
+                consensus_reached=False,
+                ocr_polygon=polygon,
+            )
+        )
     session.add_all(doc_fields)
     await session.flush()
     print(f"        {len(doc_fields)} DocumentFields crees")
+
+
 # Main
 async def main(
     reset: bool,
@@ -931,22 +1008,26 @@ async def main(
     await create_tables()
     factory = async_sessionmaker(bind=get_engine(), expire_on_commit=False)
     async with factory() as session:
-       if reset:
-           await reset_db(session)
-       _, admin, operator, project = await seed_infrastructure(session)
-       if json_path:
-           await seed_from_form_json(session, project, json_path)
-       elif form_demo:
-           await seed_hardcoded(session, project)
-       else:
-           await seed_cerfa(session, project, pdf_path=pdf_path, fake_ocr=fake_ocr)
-       await session.commit()
+        if reset:
+            await reset_db(session)
+        _, admin, operator, project = await seed_infrastructure(session)
+        if json_path:
+            await seed_from_form_json(session, project, json_path)
+        elif form_demo:
+            await seed_hardcoded(session, project)
+        else:
+            await seed_cerfa(session, project, pdf_path=pdf_path, fake_ocr=fake_ocr)
+        await session.commit()
     await get_engine().dispose()
     print("\n Seed termine avec succes")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Seed ADAM database")
     parser.add_argument("--reset", action="store_true", help="Vide les tables avant de seeder")
-    parser.add_argument("--json", default=None, help="Chemin vers un fichier JSON format formulaire v0.3")
+    parser.add_argument(
+        "--json", default=None, help="Chemin vers un fichier JSON format formulaire v0.3"
+    )
     parser.add_argument(
         "--form-demo",
         action="store_true",
@@ -971,46 +1052,46 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.pdf and args.fake_ocr:
-       print("--pdf et --fake-ocr s'excluent : l'un fait appeler l'OCR, l'autre l'evite")
-       sys.exit(1)
+        print("--pdf et --fake-ocr s'excluent : l'un fait appeler l'OCR, l'autre l'evite")
+        sys.exit(1)
 
     pdf_path = None
     if args.pdf:
-       pdf_path = Path(args.pdf)
-       if not pdf_path.exists():
-           print(f"PDF introuvable : {args.pdf}")
-           sys.exit(1)
+        pdf_path = Path(args.pdf)
+        if not pdf_path.exists():
+            print(f"PDF introuvable : {args.pdf}")
+            sys.exit(1)
     json_path = None
     if args.json:
-       json_path = Path(args.json)
-       if not json_path.exists():
-           json_path = Path(__file__).parent.parent / args.json
-       if not json_path.exists():
-           json_path = Path(__file__).parent / args.json
-       if not json_path.exists():
-           print(f"Fichier introuvable : {args.json}")
-           sys.exit(1)
+        json_path = Path(args.json)
+        if not json_path.exists():
+            json_path = Path(__file__).parent.parent / args.json
+        if not json_path.exists():
+            json_path = Path(__file__).parent / args.json
+        if not json_path.exists():
+            print(f"Fichier introuvable : {args.json}")
+            sys.exit(1)
     print(SEPARATOR)
     print("Seed de la base de donnees")
     if json_path:
-       mode = "FORM JSON"
+        mode = "FORM JSON"
     elif args.form_demo:
-       mode = "Formulaire demo hardcode"
+        mode = "Formulaire demo hardcode"
     elif pdf_path:
-       mode = f"CERFA surendettement 13594*02 + document reel ({pdf_path.name})"
+        mode = f"CERFA surendettement 13594*02 + document reel ({pdf_path.name})"
     elif args.fake_ocr:
-       mode = "CERFA surendettement 13594*02 + dossier fictif"
+        mode = "CERFA surendettement 13594*02 + dossier fictif"
     else:
-       mode = "CERFA surendettement 13594*02, schema seul"
+        mode = "CERFA surendettement 13594*02, schema seul"
     print(f" Mode : {mode}")
     print(SEPARATOR)
     asyncio.run(
-       main(
-           reset=args.reset,
-           json_path=json_path,
-           form_demo=args.form_demo,
-           pdf_path=pdf_path,
-           fake_ocr=args.fake_ocr,
-       )
+        main(
+            reset=args.reset,
+            json_path=json_path,
+            form_demo=args.form_demo,
+            pdf_path=pdf_path,
+            fake_ocr=args.fake_ocr,
+        )
     )
     print(SEPARATOR)

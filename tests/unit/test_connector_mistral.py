@@ -28,7 +28,12 @@ import pytest
 from adam_worker.connectors import connector_from_settings
 from adam_worker.connectors.base import OcrConnectorError
 from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
-from adam_worker.connectors.mistral import _CONSIGNE, _IDENTIFICATION, MistralOcrConnector
+from adam_worker.connectors.mistral import (
+    _CONSIGNE,
+    _IDENTIFICATION,
+    MistralOcrConnector,
+    _to_kv_value,
+)
 from adam_worker.connectors.mock import MockOcrConnector
 
 ENDPOINT = "https://mistral.test"
@@ -102,7 +107,7 @@ def test_extract_rend_un_document_conforme(tmp_path: Path) -> None:
             return {
                 "deposant.nom_naissance": "MARTIN",
                 "deposant.date_naissance": "1980-01-02",
-                "coordonnees_personnelles.escalier": 2,
+                "coordonnees_personnelles.code_postal": "01500",
                 "certification.signature_deposant": True,
                 "cle.inventee": "ignoree",
             }
@@ -124,7 +129,9 @@ def test_extract_rend_un_document_conforme(tmp_path: Path) -> None:
     assert by_id["deposant.nom_naissance"].value.type == "text"
     assert by_id["deposant.nom_naissance"].extracted_value == "MARTIN"
     assert by_id["deposant.date_naissance"].value.type == "date"
-    assert by_id["coordonnees_personnelles.escalier"].value.type == "number"
+    # Code postal en texte : un number aurait rendu 1500.
+    assert by_id["coordonnees_personnelles.code_postal"].value.type == "text"
+    assert by_id["coordonnees_personnelles.code_postal"].extracted_value == "01500"
     assert by_id["certification.signature_deposant"].value.type == "boolean"
     # False est une detection (case vue non cochee), pas une absence.
     assert by_id["situation_familiale.celibataire"].extracted_value == "false"
@@ -498,3 +505,18 @@ def test_factory_choisit_le_connecteur_selon_la_configuration() -> None:
     connector = connector_from_settings(mistral_settings)
     assert isinstance(connector, MistralOcrConnector)
     assert connector.annotation_model == "mistral-medium-latest"
+
+
+def test_un_montant_sort_en_number() -> None:
+    """Les montants restent des number, eux : seuls les codes en sortent."""
+    spec = CERFA_V2_PAGE_FIELDS[10]["credits_consommation.montant_impaye"]
+    assert _to_kv_value(2800, spec).type == "number"
+
+
+def test_personnes_a_charge_ont_une_colonne_nom() -> None:
+    """Sans champ pour le nom, le modele rangeait « Luna Vincent » dans
+    lien_parente : le nom n'avait nulle part d'autre ou aller."""
+    page_2 = CERFA_V2_PAGE_FIELDS[2]
+    assert "personnes_a_charge.nom_prenom" in page_2
+    assert "jamais un nom" in page_2["personnes_a_charge.lien_parente"]["description"]
+    assert "prestations_familiales.numero_allocataire_deposant" in page_2

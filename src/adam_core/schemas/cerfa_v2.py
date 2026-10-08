@@ -11,9 +11,11 @@ Les groupes repetables du script (`<variable_numero_...>`) sont aplatis en une
 seule instance : la repetition des champs est portee par le ticket T7 et ne
 change rien a l'appel OCR, seulement au depliage de la reponse.
 
-Les types sont ceux du script d'origine, y compris les choix discutables
-(code_postal en number), pour rester sur la configuration qualifiee ; c'est
-field_parser qui tranche en aval.
+Les types sont ceux du script d'origine, sauf la ou un CERFA reel les a mis
+en defaut : code postal, escalier et etage passent en string, un number
+perdant le zero initial d'un code postal (01500) et ne pouvant rendre un
+escalier « B ». Les champs ajoutes depuis — nom des personnes a charge,
+numero d'allocataire — l'ont ete d'apres le meme CERFA.
 """
 
 from __future__ import annotations
@@ -83,11 +85,11 @@ _PAGE_1: Dict[str, FieldDef] = {
     },
     "coordonnees_personnelles.escalier": {
         "description": "Champ Escalier section coordonnees personnelles",
-        "type": "number",
+        "type": "string",
     },
     "coordonnees_personnelles.etage": {
         "description": "Champ Etage section coordonnees personnelles",
-        "type": "number",
+        "type": "string",
     },
     "coordonnees_personnelles.appartement": {
         "description": "Champ Appartement section coordonnees personnelles",
@@ -107,7 +109,7 @@ _PAGE_1: Dict[str, FieldDef] = {
     },
     "coordonnees_personnelles.code_postal": {
         "description": "Champ Code postal section coordonnees personnelles",
-        "type": "number",
+        "type": "string",
     },
     "coordonnees_personnelles.localite": {
         "description": "Champ Localite section coordonnees personnelles",
@@ -214,7 +216,17 @@ _PAGE_2: Dict[str, FieldDef] = {
         "type": "string",
         "format": "date",
     },
-    "personnes_a_charge.lien_parente": {"description": "Lien de parente", "type": "string"},
+    "personnes_a_charge.lien_parente": {
+        "description": (
+            "Lien de parente avec le deposant (enfant, parent...), lu dans la "
+            "colonne lien de parente ; jamais un nom de personne"
+        ),
+        "type": "string",
+    },
+    "personnes_a_charge.nom_prenom": {
+        "description": "Nom et prenom de la personne vivant au domicile",
+        "type": "string",
+    },
     "personnes_a_charge.date_naissance": {
         "description": "Date de naissance de la personne a charge",
         "type": "string",
@@ -255,6 +267,13 @@ _PAGE_2: Dict[str, FieldDef] = {
     "situation_logement_deposant.saisie_immobiliere_non": {
         "description": "Case a cocher saisie immobiliere en cours : non",
         "type": "boolean",
+    },
+    "prestations_familiales.numero_allocataire_deposant": {
+        "description": (
+            "Numero d'allocataire du deposant aupres de la caisse d'allocations "
+            "familiales, rubrique prestations familiales"
+        ),
+        "type": "string",
     },
 }
 

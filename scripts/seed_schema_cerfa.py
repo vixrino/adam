@@ -81,6 +81,7 @@ SECTION_LABELS: Dict[str, str] = {
     "situation_familiale": "Situation familiale",
     "personnes_a_charge": "Personnes vivant au domicile",
     "situation_logement_deposant": "Situation de logement",
+    "prestations_familiales": "Prestations familiales",
     "dettes_logement": "Dettes de logement",
     "dettes_courantes": "Dettes de charges courantes",
     "credits_immobiliers": "Credits immobiliers",
@@ -106,6 +107,7 @@ _SENSITIVE_SUFFIXES = (
     "prenoms",
     "date_naissance",
     "lieu_naissance",
+    "nom_prenom",
 )
 
 
