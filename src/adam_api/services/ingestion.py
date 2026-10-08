@@ -217,8 +217,12 @@ async def ingest_pdf(
         file_id=file_row.id,
         file_name=file_name,
         status=(DocumentStatus.ERROR if erreur else DocumentStatus.RECEIVED).value,
-        metadata_={"erreur": erreur} if erreur else None,
     )
+    if erreur:
+        # Jamais metadata_=None : la colonne JSONB l'enregistre en JSON null,
+        # pas en NULL SQL, et un JSON null concatene a un objet donne un
+        # tableau [null, {...}] que la reponse de l'API refuse.
+        document.metadata_ = {"erreur": erreur}
     db.add(document)
     await db.flush()
     if erreur:

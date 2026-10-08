@@ -46,7 +46,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from sqlalchemy import func, literal, select, update
+from sqlalchemy import case, func, literal, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 
 from adam_api.core.config import API_PREFIX, settings
@@ -312,12 +312,18 @@ class PrepopulationWorker(BaseWorker):
         *,
         status: Optional[DocumentStatus] = None,
     ) -> None:
-        """Ajoute des cles a metadata sans ecraser les autres (concatenation JSONB)."""
-        values: Dict[str, Any] = {
-            "metadata_": func.coalesce(Document.metadata_, literal({}, JSONB)).op("||")(
-                literal(cles, JSONB)
-            )
-        }
+        """Ajoute des cles a metadata sans ecraser les autres (concatenation JSONB).
+
+        Seul un objet est conserve comme base. NULL SQL, mais aussi JSON null —
+        ce qu'ecrit SQLAlchemy pour metadata_=None — repartent d'un objet vide :
+        en JSONB, null || {...} ne fusionne pas, il rend le tableau [null, {...}],
+        et la reponse de l'API, qui attend un objet, echoue alors en 500.
+        """
+        base = case(
+            (func.jsonb_typeof(Document.metadata_) == "object", Document.metadata_),
+            else_=literal({}, JSONB),
+        )
+        values: Dict[str, Any] = {"metadata_": base.op("||")(literal(cles, JSONB))}
         if status is not None:
             values["status"] = status.value
         async with get_async_session() as db:

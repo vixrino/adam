@@ -707,3 +707,19 @@ class TestPollerRemiseEnOrdre:
 
         contenus = [(dossier / f"{n:04d}.png").read_text() for n in (1, 2, 3)]
         assert contenus == ["scan-1", "scan-2", "scan-3"]
+
+
+class TestMetadataJsonNull:
+    @pytest.mark.asyncio
+    async def test_la_fusion_ne_part_que_d_un_objet(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Un document cree avec metadata_=None porte un JSON null, pas un NULL
+        SQL. En JSONB, null || {...} rend [null, {...}], et GET /documents
+        tombait en 500 sur ce tableau. La base de la fusion doit donc etre
+        testee sur son type, pas seulement sur NULL."""
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        _patch_session(monkeypatch, db)
+        await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
+
+        update_sql = next(str(s) for s in reversed(db.statements) if str(s).startswith("UPDATE"))
+        assert "jsonb_typeof(document.metadata)" in update_sql
+        assert "coalesce" not in update_sql.lower()
