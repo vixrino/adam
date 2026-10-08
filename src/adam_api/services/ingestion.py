@@ -11,6 +11,13 @@ des Documents distincts dans des datasets differents. Le chemin physique
 d'un FILE est fixe a sa premiere creation (organisation/type/horodatage
 de ce premier upload) ; une ingestion ulterieure du meme contenu par une
 autre organisation reutilise ce chemin, elle n'en cree pas un nouveau.
+
+Controle du nombre de pages : quand `expected_page_count` est fixe, un PDF
+d'un autre nombre de pages est quand meme enregistre, mais directement en
+ERROR, le motif dans metadata["erreur"]. Il reste visible et tracable, et
+sort de la chaine : PageImageWorker ne prend que les RECEIVED, il ne sera
+donc ni rendu ni soumis a l'OCR. Le refuser a l'upload l'aurait fait
+disparaitre sans trace.
 """
 
 from __future__ import annotations
@@ -35,12 +42,8 @@ logger = get_logger(__name__)
 PDF_MIME = "application/pdf"
 
 
-def looks_like_pdf(content: bytes) -> bool:
-    """Valide que le contenu est un PDF structurellement correct (via pymupdf).
-
-    content-type et nom de fichier sont fournis par le client et donc
-    falsifiables : ils ne sont jamais utilises comme critere de validation.
-    """
+def pdf_page_count(content: bytes) -> int:
+    """Nombre de pages d'un PDF, 0 s'il est illisible."""
     try:
         # pymupdf expose py.typed mais Document.__init__ n'a pas d'annotations :
         # l'appel et l'attribut suivant sont donc non types cote lib, pas cote nous.
@@ -52,11 +55,20 @@ def looks_like_pdf(content: bytes) -> bool:
             stream=content, filetype="pdf"
         )
     except RuntimeError:
-        return False
+        return 0
     try:
-        return cast(int, doc.page_count) > 0
+        return cast(int, doc.page_count)
     finally:
         doc.close()  # type: ignore[no-untyped-call, unused-ignore]
+
+
+def looks_like_pdf(content: bytes) -> bool:
+    """Valide que le contenu est un PDF structurellement correct (via pymupdf).
+
+    content-type et nom de fichier sont fournis par le client et donc
+    falsifiables : ils ne sont jamais utilises comme critere de validation.
+    """
+    return pdf_page_count(content) > 0
 
 
 def pvc_relative_path(
@@ -157,8 +169,13 @@ async def ingest_pdf(
     file_name: str,
     content: bytes,
     pvc_root: Path,
+    expected_page_count: int = 0,
 ) -> dict[str, Any]:
-    """Ingere un PDF dans un dataset. Idempotent au sein du dataset."""
+    """Ingere un PDF dans un dataset. Idempotent au sein du dataset.
+
+    expected_page_count > 0 impose ce nombre de pages : un PDF hors taille est
+    cree en ERROR plutot qu'en RECEIVED (voir l'en-tete du module).
+    """
     checksum = sha256_bytes(content)
 
     existing = (
@@ -194,14 +211,31 @@ async def ingest_pdf(
         document_type=document_type,
         file_name=file_name,
     )
+    erreur = _controle_pages(content, expected_page_count)
     document = Document(
         dataset_id=dataset.id,
         file_id=file_row.id,
         file_name=file_name,
-        status=DocumentStatus.RECEIVED.value,
+        status=(DocumentStatus.ERROR if erreur else DocumentStatus.RECEIVED).value,
+        metadata_={"erreur": erreur} if erreur else None,
     )
     db.add(document)
     await db.flush()
+    if erreur:
+        logger.warning(
+            "Document ingere en ERROR [dataset_id=%s document_id=%s] : %s",
+            dataset.id,
+            document.id,
+            erreur["message"],
+        )
+        return {
+            "file_name": file_name,
+            "status": "error",
+            "document_id": document.id,
+            "file_id": file_row.id,
+            "file_path": file_row.file_path,
+            "reason": erreur["message"],
+        }
     logger.info(
         "Document ingere [dataset_id=%s document_id=%s file_id=%s file_created=%s]",
         dataset.id,
@@ -215,4 +249,20 @@ async def ingest_pdf(
         "document_id": document.id,
         "file_id": file_row.id,
         "file_path": file_row.file_path,
+    }
+
+
+def _controle_pages(content: bytes, expected_page_count: int) -> dict[str, Any] | None:
+    """Motif d'erreur si le PDF n'a pas le nombre de pages exige, sinon None."""
+    if expected_page_count <= 0:
+        return None
+    recu = pdf_page_count(content)
+    if recu == expected_page_count:
+        return None
+    return {
+        "etape": "ingestion",
+        "motif": "nombre_de_pages",
+        "attendu": expected_page_count,
+        "recu": recu,
+        "message": f"{recu} page(s) au lieu de {expected_page_count}",
     }

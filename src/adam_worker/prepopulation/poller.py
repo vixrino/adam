@@ -19,8 +19,11 @@ ERROR — et non rester en INGESTED, ou il serait repolle indefiniment et
 bloquerait le lot — puis la boucle continue avec le suivant.
 
 Un OCR indisponible n'est pas une erreur : le document est pre-alimente avec des
-champs vides et passe quand meme en IN_PROGRESS, l'operateur saisira tout. Seul
-un echec technique du connecteur ou de l'API met le document en ERROR.
+champs vides et passe quand meme en IN_PROGRESS, l'operateur saisira tout. Un
+echec technique du connecteur ou de l'API met le document en ERROR, de meme
+qu'un document que l'OCR juge non conforme : aucune page du formulaire
+reconnue, ou des pages a champs introuvables. Le motif de l'ERROR est ecrit
+dans metadata["erreur"] du document, que l'API expose.
 
 Confidentialite des logs
 ------------------------
@@ -34,7 +37,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import select, update
+from sqlalchemy import func, literal, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 
 from adam_api.core.config import API_PREFIX, settings
 from adam_core.db.session import get_async_session
@@ -43,7 +47,11 @@ from adam_core.models import Document
 from adam_core.schemas.interface_contract import SmartdocDocument
 from adam_worker.base_worker import BaseWorker
 from adam_worker.connectors import connector_from_settings
-from adam_worker.connectors.base import BaseOcrConnector, OcrConnectorError
+from adam_worker.connectors.base import (
+    BaseOcrConnector,
+    DocumentNonConforme,
+    OcrConnectorError,
+)
 from adam_worker.prepopulation.api_client import ApiClient, ApiClientError
 from adam_worker.prepopulation.merger import count_detected, merge
 
@@ -92,7 +100,14 @@ def _api_origin() -> str:
 
 
 class PrepopulationError(Exception):
-    """Echec bloquant sur un document : il passera en ERROR."""
+    """Echec bloquant sur un document : il passera en ERROR.
+
+    `details` complete le motif ecrit dans metadata["erreur"].
+    """
+
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.details = details or {}
 
 
 class PrepopulationWorker(BaseWorker):
@@ -154,11 +169,13 @@ class PrepopulationWorker(BaseWorker):
                     document_id,
                     exc,
                 )
-                await self._set_status(document_id, DocumentStatus.ERROR)
+                await self._set_error(document_id, {"message": str(exc), **exc.details})
             except Exception:  # pylint: disable=broad-exception-caught
                 # Filet : un imprevu ne doit pas interrompre le lot.
                 self.logger.exception("echec inattendu [document_id=%s]", document_id)
-                await self._set_status(document_id, DocumentStatus.ERROR)
+                await self._set_error(
+                    document_id, {"message": "echec inattendu, voir les logs du worker"}
+                )
 
     async def _fetch_candidates(self) -> List[int]:
         """Documents prets, les plus anciens d'abord."""
@@ -184,6 +201,7 @@ class PrepopulationWorker(BaseWorker):
         images = self._page_images(file_id)
 
         ocr = await self._run_ocr(images, document_id)
+        _controle_pages(ocr)
         field_specs = await self._load_field_specs(dataset_id, document_id)
 
         payloads = merge(field_specs, ocr)
@@ -236,6 +254,11 @@ class PrepopulationWorker(BaseWorker):
     ) -> Optional[SmartdocDocument]:
         try:
             ocr = await self.connector.extract(images)
+        except DocumentNonConforme as exc:
+            raise PrepopulationError(
+                f"document non conforme : {exc}",
+                {"motif": "document_non_conforme", "anomalies_pages": exc.anomalies},
+            ) from exc
         except OcrConnectorError as exc:
             raise PrepopulationError(f"connecteur OCR en echec : {exc}") from exc
         if ocr is None:
@@ -260,6 +283,41 @@ class PrepopulationWorker(BaseWorker):
             await db.execute(
                 update(Document).where(Document.id == document_id).values(status=status.value)
             )
+
+    async def _set_error(self, document_id: int, erreur: Dict[str, Any]) -> None:
+        """Passe le document en ERROR et ecrit le motif dans metadata["erreur"],
+        sans ecraser les autres cles de metadata (concatenation JSONB)."""
+        motif = {"erreur": {"etape": "pre_alimentation", **erreur}}
+        async with get_async_session() as db:
+            await db.execute(
+                update(Document)
+                .where(Document.id == document_id)
+                .values(
+                    status=DocumentStatus.ERROR.value,
+                    metadata_=func.coalesce(Document.metadata_, literal({}, JSONB)).op("||")(
+                        literal(motif, JSONB)
+                    ),
+                )
+            )
+
+
+def _controle_pages(ocr: Optional[SmartdocDocument]) -> None:
+    """Bloque un document dont des pages a champs sont introuvables.
+
+    Le connecteur le signale sans lever : une page manquante n'empeche pas
+    d'annoter les autres. Mais un formulaire incomplet ne peut pas etre traite,
+    et le pre-alimenter laisserait croire le contraire a l'operateur.
+    """
+    if ocr is None:
+        return
+    anomalies = ocr.metadata.get("anomalies_pages") or []
+    manquantes = [a for a in anomalies if a.get("type") == "pages_manquantes"]
+    if manquantes:
+        pages = manquantes[0].get("pages")
+        raise PrepopulationError(
+            f"pages du formulaire introuvables : {pages}",
+            {"motif": "pages_manquantes", "anomalies_pages": anomalies},
+        )
 
 
 __all__ = ["PrepopulationWorker", "PrepopulationError"]

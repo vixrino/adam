@@ -11,6 +11,7 @@ from adam_api.services.ingestion import (
     get_or_create_file,
     ingest_pdf,
     looks_like_pdf,
+    pdf_page_count,
     pvc_relative_path,
 )
 
@@ -299,3 +300,80 @@ async def test_ingest_pdf_file_reused(tmp_path: Path) -> None:
         )
 
     assert result["status"] == "created_file_reused"
+
+
+# ---------------------------------------------------------------------------
+# Controle du nombre de pages
+# ---------------------------------------------------------------------------
+
+
+def _pdf(pages: int) -> bytes:
+    doc = pymupdf.open()
+    for _ in range(pages):
+        doc.new_page()
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_pdf_page_count() -> None:
+    assert pdf_page_count(_pdf(12)) == 12
+    assert pdf_page_count(b"pas un pdf") == 0
+
+
+async def _ingest(tmp_path: Path, content: bytes, expected: int) -> tuple[dict, MagicMock]:
+    db = AsyncMock()
+    db.add = MagicMock()
+    not_found = MagicMock()
+    not_found.one_or_none.return_value = None
+    db.execute = AsyncMock(return_value=not_found)
+    db.flush = AsyncMock()
+    dataset = MagicMock()
+    dataset.id = 1
+    file_mock = MagicMock()
+    file_mock.id = 5
+    file_mock.file_path = "dires/cerfa/2026_01_15/new.pdf"
+    with patch(
+        "adam_api.services.ingestion.get_or_create_file", AsyncMock(return_value=(file_mock, True))
+    ):
+        result = await ingest_pdf(
+            db,
+            dataset,
+            organisation_slug="dires",
+            document_type="cerfa",
+            file_name="new.pdf",
+            content=content,
+            pvc_root=tmp_path,
+            expected_page_count=expected,
+        )
+    return result, db.add.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_pdf_hors_taille_cree_en_error(tmp_path: Path) -> None:
+    """Le document existe, tracable, mais en ERROR : PageImageWorker ne prenant
+    que les RECEIVED, il ne sera ni rendu ni soumis a l'OCR."""
+    result, document = await _ingest(tmp_path, _pdf(10), expected=12)
+
+    assert result["status"] == "error"
+    assert result["reason"] == "10 page(s) au lieu de 12"
+    assert result["document_id"] is not None or document is not None
+    assert document.status == "ERROR"
+    assert document.metadata_["erreur"]["motif"] == "nombre_de_pages"
+    assert document.metadata_["erreur"]["attendu"] == 12
+    assert document.metadata_["erreur"]["recu"] == 10
+
+
+@pytest.mark.asyncio
+async def test_pdf_au_bon_nombre_de_pages_est_recu(tmp_path: Path) -> None:
+    result, document = await _ingest(tmp_path, _pdf(12), expected=12)
+    assert result["status"] == "created"
+    assert document.status == "RECEIVED"
+    assert document.metadata_ is None
+
+
+@pytest.mark.asyncio
+async def test_sans_nombre_de_pages_configure_aucun_controle(tmp_path: Path) -> None:
+    result, document = await _ingest(tmp_path, _pdf(3), expected=0)
+    assert result["status"] == "created"
+    assert document.status == "RECEIVED"

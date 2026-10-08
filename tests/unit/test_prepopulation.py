@@ -23,7 +23,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import pytest
 
 from adam_core.enums.status import DocumentFieldStatus, DocumentStatus
-from adam_worker.connectors.base import OcrConnectorError
+from adam_worker.connectors.base import DocumentNonConforme, OcrConnectorError
 from adam_worker.connectors.mock import MockOcrConnector
 from adam_worker.prepopulation import poller as poller_module
 from adam_worker.prepopulation.api_client import ApiClient, ApiClientError
@@ -543,3 +543,93 @@ class TestApiOrigin:
 
 def test_prepopulation_error_est_exportee() -> None:
     assert issubclass(PrepopulationError, Exception)
+
+
+# ---------------------------------------------------------------------------
+# poller : documents non conformes
+# ---------------------------------------------------------------------------
+
+
+class _ConnecteurFige:
+    """Connecteur qui rend un document fixe, ou leve une exception fixe."""
+
+    name = "fige"
+
+    def __init__(self, rendu: Any = None, erreur: Optional[Exception] = None) -> None:
+        self.rendu = rendu
+        self.erreur = erreur
+
+    async def extract(self, images: Any) -> Any:
+        if self.erreur is not None:
+            raise self.erreur
+        return self.rendu
+
+
+def _metadata_erreur(db: _FakeDb) -> Dict[str, Any]:
+    """Motif ecrit par le dernier UPDATE, lu dans ses parametres compiles."""
+    for statement in reversed(db.statements):
+        if str(statement).startswith("UPDATE"):
+            params = statement.compile().params
+            for value in params.values():
+                if isinstance(value, dict) and "erreur" in value:
+                    return value["erreur"]
+    raise AssertionError("aucun motif d'erreur ecrit")
+
+
+class TestPollerNonConforme:
+    @pytest.mark.asyncio
+    async def test_aucune_page_reconnue_met_en_error_avec_motif(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        _patch_session(monkeypatch, db)
+        anomalies = [{"type": "pages_manquantes", "pages": [1, 2]}]
+        connecteur = _ConnecteurFige(
+            erreur=DocumentNonConforme("aucune page du formulaire reconnue", anomalies)
+        )
+        api = _FakeApiClient()
+        await _worker(api, connector=connecteur).poll()
+
+        assert DocumentStatus.ERROR.value in _statuses(db)
+        erreur = _metadata_erreur(db)
+        assert erreur["motif"] == "document_non_conforme"
+        assert erreur["etape"] == "pre_alimentation"
+        assert erreur["anomalies_pages"] == anomalies
+        # Aucun champ cree pour un document qui n'est pas le formulaire.
+        assert api.bulk_payloads == []
+
+    @pytest.mark.asyncio
+    async def test_pages_manquantes_mettent_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        ocr.metadata["anomalies_pages"] = [{"type": "pages_manquantes", "pages": [6]}]
+        api = _FakeApiClient()
+        await _worker(api, connector=_ConnecteurFige(rendu=ocr)).poll()
+
+        assert DocumentStatus.ERROR.value in _statuses(db)
+        assert _metadata_erreur(db)["motif"] == "pages_manquantes"
+        assert api.bulk_payloads == []
+
+    @pytest.mark.asyncio
+    async def test_page_deplacee_ne_bloque_pas(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Une page deplacee est remise en ordre par le connecteur : pas d'ERROR."""
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        _patch_session(monkeypatch, db)
+        ocr = await MockOcrConnector(["demandeur.nom"]).extract([])
+        assert ocr is not None
+        ocr.metadata["anomalies_pages"] = [
+            {"type": "page_deplacee", "rang": 9, "page_reconnue": 10}
+        ]
+        await _worker(_FakeApiClient(), connector=_ConnecteurFige(rendu=ocr)).poll()
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
+
+    @pytest.mark.asyncio
+    async def test_l_erreur_technique_ecrit_aussi_son_motif(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10))
+        _patch_session(monkeypatch, db)
+        await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
+        assert "connecteur OCR en echec" in _metadata_erreur(db)["message"]

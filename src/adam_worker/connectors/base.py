@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from adam_core.schemas.interface_contract import SmartdocDocument
 
@@ -27,6 +27,20 @@ class OcrConnectorError(Exception):
     A distinguer d'un `extract` rendant None, qui signale une absence de
     resultat sans incident.
     """
+
+
+class DocumentNonConforme(OcrConnectorError):
+    """Le moteur a lu le document, et ce n'est pas le formulaire attendu.
+
+    Pas un echec technique, mais il bloque de la meme facon : pre-alimenter
+    un autre document avec le schema du CERFA rangerait ses valeurs dans des
+    champs qui ne sont pas les siens. Porte les anomalies relevees, pour que
+    le motif de l'ERROR soit lisible sur le document.
+    """
+
+    def __init__(self, message: str, anomalies: List[Dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.anomalies = anomalies
 
 
 class BaseOcrConnector(ABC):

@@ -26,7 +26,7 @@ import httpx
 import pytest
 
 from adam_worker.connectors import connector_from_settings
-from adam_worker.connectors.base import OcrConnectorError
+from adam_worker.connectors.base import DocumentNonConforme, OcrConnectorError
 from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
 from adam_worker.connectors.mistral import _CONSIGNE, _IDENTIFICATION, MistralOcrConnector
 from adam_worker.connectors.mock import MockOcrConnector
@@ -272,8 +272,9 @@ def test_page_en_double_n_est_annotee_qu_une_fois(tmp_path: Path) -> None:
     } in doc.metadata["anomalies_pages"]
 
 
-def test_page_hors_schema_rendue_par_le_modele_vaut_none(tmp_path: Path) -> None:
-    """Un numero inconnu du schema, ou un booleen, ne doit pas choisir de schema."""
+def test_page_hors_schema_rendue_par_le_modele_ne_choisit_aucun_schema(tmp_path: Path) -> None:
+    """Un numero inconnu du schema, ou un booleen, ne doit pas choisir de schema :
+    la page n'est pas annotee, et seule, elle rend le document non conforme."""
     for reponse in (13, True, "1"):
         requetes: List[httpx.Request] = []
         handler = _routeur(
@@ -281,8 +282,21 @@ def test_page_hors_schema_rendue_par_le_modele_vaut_none(tmp_path: Path) -> None
             journal=requetes,
             identification=lambda _, r=reponse: r,
         )
-        assert asyncio.run(_connector(handler).extract(_images(tmp_path, 1))) is None
+        with pytest.raises(DocumentNonConforme):
+            asyncio.run(_connector(handler).extract(_images(tmp_path, 1)))
         assert len(requetes) == 2
+
+
+def test_aucune_page_reconnue_rend_le_document_non_conforme(tmp_path: Path) -> None:
+    """Du texte sur chaque page, mais aucune page du formulaire : c'est un
+    autre document, que le schema du CERFA ne doit pas pre-alimenter."""
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, identification=lambda _: None)
+    with pytest.raises(DocumentNonConforme, match="aucune page") as exc:
+        asyncio.run(_connector(handler).extract(_images(tmp_path, 3)))
+    # Le motif porte les anomalies, pour le metadata["erreur"] du document.
+    assert {a["type"] for a in exc.value.anomalies} >= {"page_inattendue", "pages_manquantes"}
+    # Une erreur du connecteur : la pre-alimentation la traite deja en ERROR.
+    assert isinstance(exc.value, OcrConnectorError)
 
 
 def test_la_consigne_d_identification_decrit_les_pages_du_schema(tmp_path: Path) -> None:

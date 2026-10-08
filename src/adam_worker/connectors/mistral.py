@@ -44,7 +44,8 @@ rang. Une page reconnue comme sans champs n'est pas annotee, et une page dont
 l'OCR ne rend aucun texte n'est ni identifiee ni annotee.
 
 Erreurs : moteur injoignable, statut non-2xx epuisant les reprises, ou reponse
-illisible levent OcrConnectorError. Un moteur joignable qui ne detecte aucun
+illisible levent OcrConnectorError. Un document dont aucune page n'est
+reconnue comme une page du formulaire leve DocumentNonConforme. Un moteur joignable qui ne detecte aucun
 champ rend None — cas nominal, le document sera pre-alimente vide.
 """
 
@@ -70,7 +71,7 @@ from adam_core.schemas.interface_contract import (
     SmartdocDocument,
 )
 from adam_core.utils.logging import get_logger
-from adam_worker.connectors.base import BaseOcrConnector, OcrConnectorError
+from adam_worker.connectors.base import BaseOcrConnector, DocumentNonConforme, OcrConnectorError
 from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS, CERFA_V2_PAGE_TITLES, FieldDef
 
 logger = get_logger(__name__)
@@ -171,12 +172,14 @@ class MistralOcrConnector(BaseOcrConnector):
         anomalies: List[Dict[str, Any]] = []
         #: page du CERFA reconnue -> rang de l'image qui la porte.
         reconnues: Dict[int, int] = {}
+        lues = 0
         detected = 0
         for rang, image in enumerate(images, start=1):
             markdown, dims = await self._read_page(image, rang)
             if not markdown.strip():
                 # Page illisible ou vide : rien a identifier ni a annoter.
                 continue
+            lues += 1
             page_number = await self._identify(markdown, rang)
             anomalie = _anomalie(rang, page_number, reconnues, self._descriptions)
             if anomalie is not None:
@@ -201,6 +204,12 @@ class MistralOcrConnector(BaseOcrConnector):
             anomalie = {"type": "pages_manquantes", "pages": manquantes}
             logger.warning("pages du CERFA introuvables : %s", manquantes)
             anomalies.append(anomalie)
+
+        if lues and not reconnues:
+            # Du texte, mais aucune page du formulaire : c'est un autre
+            # document. Un OCR muet (lues == 0) reste, lui, une absence de
+            # resultat, que la pre-alimentation traite en champs vides.
+            raise DocumentNonConforme("aucune page du formulaire reconnue", anomalies)
 
         if detected == 0:
             # Aucun champ vu sur aucune page : absence de resultat, pas d'erreur.

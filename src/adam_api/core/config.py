@@ -42,6 +42,9 @@ class Settings(CoreSettings):
     mistral_annotation_model: str = "mistral-medium-latest"
     #: Chemin d'un truststore PEM pour un endpoint prive ; vide = CA systeme.
     mistral_ca_bundle: str = ""
+    #: Nombre de pages exige d'un PDF ingere (12 pour le CERFA) ; 0 = aucun
+    #: controle. Un PDF d'un autre nombre de pages est cree en ERROR.
+    ingestion_page_count: int = 0
 
     @property
     def cors_origins(self) -> List[str]:
