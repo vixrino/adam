@@ -2,7 +2,4 @@
 
 [https://vibeslops.luckeysystems.com/](https://t.co/8r990RLwpe)
 
-
-uv run --all-extras alembic -c src\nota_core\alembic.ini current.  
-uv run --all-extras alembic -c src\nota_core\alembic.ini heads --verbose.  
-
+uv run --all-extras alembic -c src\nota_core\alembic.ini heads
