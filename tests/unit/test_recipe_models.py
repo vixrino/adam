@@ -88,7 +88,7 @@ class TestContraintes:
         assert "document_field_id" not in EvaluationReport.__table__.c
 
     def test_field_spec_porte_la_sensibilite(self) -> None:
-        column = FieldSpec.__table__.c.is_sensitive
+        column = FieldSpec.__table__.c.sensitive
         assert column.nullable is False
 
 

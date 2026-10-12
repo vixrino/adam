@@ -122,7 +122,7 @@ REPEATABLE_SECTIONS: Dict[str, Tuple[int, str, str]] = {
 }
 
 #: Champs porteurs de donnee personnelle sensible, reconnus par leur suffixe.
-#: Pilote is_sensitive, qui determine si comparison_result stocke la valeur en
+#: Pilote sensitive, qui determine si comparison_result stocke la valeur en
 #: clair ou son HMAC.
 _SENSITIVE_SUFFIXES = (
     "nom_naissance",
@@ -151,7 +151,7 @@ def _value_type(field_def: Mapping[str, Any]) -> str:
     return FieldValueType.TEXT.value
 
 
-def _is_sensitive(field_key: str) -> bool:
+def _sensitive(field_key: str) -> bool:
     return field_key.endswith(_SENSITIVE_SUFFIXES)
 
 
@@ -204,7 +204,7 @@ def build_specs() -> List[Dict[str, Any]]:
                             ),
                             "value_type": _value_type(field_def),
                             "required": False,
-                            "is_sensitive": _is_sensitive(field_key),
+                            "sensitive": _sensitive(field_key),
                             "display_order": order,
                         }
                     )
