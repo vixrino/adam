@@ -386,10 +386,19 @@ async def regler_datasets(
                 cibles = (await conn.execute(text(requete), {"name": CERFA_DATASET_NAME})).all()
 
             if not cibles:
-                tous = (await conn.execute(text("SELECT id, name FROM dataset ORDER BY id"))).all()
+                tous = (
+                    await conn.execute(
+                        text(f"SELECT id, name, {valeur} AS actuel FROM dataset ORDER BY id")
+                    )
+                ).all()
+                deja = [d for d in tous if d.name == CERFA_DATASET_NAME and d.actuel is not None]
+                if deja and not dataset_ids:
+                    for d in deja:
+                        print(f" [3/4] dataset id={d.id} {d.name} deja regle : {d.actuel} pages")
+                    return
                 print(" [3/4] aucun dataset a regler. Datasets presents :")
                 for ligne in tous:
-                    print(f"        id={ligne.id}  {ligne.name}")
+                    print(f"        id={ligne.id}  {ligne.name}  ({ligne.actuel} pages)")
                 print("        relancer avec --dataset-id <id> pour en viser un.")
                 return
 
