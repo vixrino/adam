@@ -164,6 +164,9 @@ PROJECT_DESCRIPTION = "Annotation des CERFA 13594*02 recus par la direction"
 #: demandeur, bien, creance — qu'aucun CERFA ne reprend : lui donner un numero
 #: de CERFA serait faux.
 CERFA_DATASET_NAME = "cerfa_13594-02_v2"
+#: Le CERFA 13594*02 compte 12 pages : un PDF d'un autre nombre de pages est
+#: cree en ERROR a l'ingestion (Dataset.expected_page_count).
+CERFA_PAGE_COUNT = 12
 DEMO_DATASET_NAME = "form_demo_v2"
 
 
@@ -744,6 +747,7 @@ async def seed_cerfa(
         ocr_provider=OcrProvider.MISTRAL.value,
         status=DatasetStatus.ACTIVE.value,
         required_operators=2,
+        expected_page_count=CERFA_PAGE_COUNT,
         configs={"confidence_threshold": 0.8, "export_format": "json_pdf"},
     )
     session.add(dataset)

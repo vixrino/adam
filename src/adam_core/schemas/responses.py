@@ -44,6 +44,7 @@ class DatasetOut(BaseModel):
     ocr_provider: str
     required_operators: int
     ocr_job_enabled: bool
+    expected_page_count: Optional[int] = None
 
 
 class DatasetStatsOut(BaseModel):

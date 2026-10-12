@@ -68,6 +68,14 @@ class Dataset(OrganisationScoped, ProjectScoped, Base):
         default=3,
         comment="Nombre d'opérateurs requis par document",
     )
+    expected_page_count: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment=(
+            "Nombre de pages exige des PDF ingeres (12 pour le CERFA) ; NULL = "
+            "aucun controle. Un PDF hors taille est cree en ERROR."
+        ),
+    )
     # Config provisoire
     configs: Mapped[Dict[str, Any]] = mapped_column(
         JSONB,
