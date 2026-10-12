@@ -1,4 +1,8 @@
-"""Champs attendus par page du CERFA surendettement v2, pour l'annotation Mistral.
+"""Donnees du schema CERFA surendettement v2, a ecrire en base par les seeds.
+
+Ce module ne pilote plus l'extraction : le connecteur OCR lit les champs et
+les pages du schema du dataset en base (FIELD_SPEC, SCHEMA_PAGE). Il reste la
+source a partir de laquelle seed.py et seed_schema_cerfa.py creent ce schema.
 
 Source : le script de qualification test_mistral_configuration.py, qui a valide
 sur des CERFA fictifs l'appel OCR en une passe avec un json_schema par page.
@@ -834,7 +838,9 @@ CERFA_V2_PAGE_TITLES: Dict[int, str] = {
     ),
     10: (
         "Credits a la consommation (credits renouvelables, prets personnels...), "
-        "et aucune autre rubrique"
+        "prets n° 1 a 6, et aucune autre rubrique. Une page de credits a la "
+        "consommation qui porte aussi la cause du surendettement, les autres "
+        "prets ou le cautionnement est la page 11, pas celle-ci"
     ),
     11: (
         "Cause de votre situation de surendettement ; Credits a la consommation, "

@@ -20,7 +20,7 @@ Champs repetables
 -----------------
 Le CERFA ouvre plusieurs emplacements identiques pour un meme objet : six
 prets a la consommation page 10, plusieurs dettes page 6, plusieurs personnes
-au domicile page 2. cerfa_v2.py, qui pilote l'appel OCR, les aplatit
+au domicile page 2. cerfa_v2.py, source des champs du schema, les aplatit
 volontairement en une seule instance : la repetition ne change rien a ce qu'on
 demande a Mistral, seulement au depliage de sa reponse.
 
@@ -55,8 +55,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from adam_core.core.config import CoreSettings
 from adam_core.db.session import create_tables, get_engine, init_engine
 from adam_core.enums.status import FieldValueType, ProjectStatus
-from adam_core.models import DocSchema, FieldSpec, Organisation, Project
-from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
+from adam_core.models import DocSchema, FieldSpec, Organisation, Project, SchemaPage
+from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS, CERFA_V2_PAGE_TITLES
 
 settings = CoreSettings()
 SEPARATOR = "-" * 70
@@ -122,7 +122,7 @@ REPEATABLE_SECTIONS: Dict[str, Tuple[int, str, str]] = {
 }
 
 #: Champs porteurs de donnee personnelle sensible, reconnus par leur suffixe.
-#: Pilote is_sensitive, qui determine si comparison_result stocke la valeur en
+#: Pilote sensitive, qui determine si comparison_result stocke la valeur en
 #: clair ou son HMAC.
 _SENSITIVE_SUFFIXES = (
     "nom_naissance",
@@ -151,8 +151,20 @@ def _value_type(field_def: Mapping[str, Any]) -> str:
     return FieldValueType.TEXT.value
 
 
-def _is_sensitive(field_key: str) -> bool:
+def _sensitive(field_key: str) -> bool:
     return field_key.endswith(_SENSITIVE_SUFFIXES)
+
+
+def build_pages(schema_id: int) -> List[SchemaPage]:
+    """Une SCHEMA_PAGE par page du CERFA, decrite par ses rubriques imprimees.
+
+    C'est ce que le connecteur lit pour reconnaitre une page a son contenu et
+    remettre en ordre un document scanne dans le desordre.
+    """
+    return [
+        SchemaPage(schema_id=schema_id, page_number=page, description=description)
+        for page, description in sorted(CERFA_V2_PAGE_TITLES.items())
+    ]
 
 
 def build_specs() -> List[Dict[str, Any]]:
@@ -202,9 +214,12 @@ def build_specs() -> List[Dict[str, Any]]:
                             "display_label": (
                                 f"{label} - {instance_label}" if instance_label else label
                             ),
+                            # Pour le moteur d'extraction : la description
+                            # du champ, sans le libelle de l'instance.
+                            "description": label,
                             "value_type": _value_type(field_def),
                             "required": False,
-                            "is_sensitive": _is_sensitive(field_key),
+                            "sensitive": _sensitive(field_key),
                             "display_order": order,
                         }
                     )
@@ -318,13 +333,17 @@ async def seed_schema(session: AsyncSession, replace: bool, organisation_slug: s
             group_id=spec["group_id"],
             field_key=spec["field_key"],
             display_label=spec["display_label"],
+            description=spec["description"],
             value_type=spec["value_type"],
             required=spec["required"],
+            sensitive=spec["sensitive"],
             display_order=spec["display_order"],
         )
         for spec in specs
     )
+    session.add_all(build_pages(schema.id))
     await session.flush()
+    print(f"  {len(CERFA_V2_PAGE_TITLES)} pages decrites")
 
     grouped = sum(1 for spec in specs if spec["group_id"] is not None)
     print(f"  {len(specs)} champs crees, dont {grouped} dans une section repetable")

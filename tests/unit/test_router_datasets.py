@@ -3,6 +3,7 @@ Tests unitaires adam_api/routers/datasets.py
 """
 
 from pathlib import Path
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pymupdf
@@ -56,9 +57,11 @@ def _make_dataset(
     status: str = "draft",
     project_id: int = 1,
     schema_id: int = 1,
+    expected_page_count: Optional[int] = None,
 ) -> MagicMock:
     ds = MagicMock()
     ds.id = id
+    ds.expected_page_count = expected_page_count
     ds.name = name
     ds.status = status
     ds.project_id = project_id
@@ -292,13 +295,6 @@ def _capture_document_id(instance: object) -> None:
 
 
 class TestIngestDocuments:
-    @pytest.fixture(autouse=True)
-    def _sans_controle_du_nombre_de_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Ces tests envoient un PDF d'une page : ils ne doivent pas dependre de
-        l'INGESTION_PAGE_COUNT du .env du poste, qui les mettrait en ERROR.
-        Le controle lui-meme a son test, qui fixe sa propre valeur."""
-        monkeypatch.setattr("adam_api.routers.datasets.settings.ingestion_page_count", 0)
-
     def test_404_when_dataset_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = None
         response = client.post(
@@ -350,10 +346,11 @@ class TestIngestDocuments:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        """INGESTION_PAGE_COUNT=12 et un PDF d'une page : document cree en ERROR."""
+        """Dataset a 12 pages exigees et un PDF d'une page : document cree en ERROR."""
         monkeypatch.setattr("adam_api.routers.datasets.settings.pvc_mount_path", str(tmp_path))
-        monkeypatch.setattr("adam_api.routers.datasets.settings.ingestion_page_count", 12)
-        mock_db.get = AsyncMock(side_effect=_db_get_side_effect(dataset=_make_dataset()))
+        mock_db.get = AsyncMock(
+            side_effect=_db_get_side_effect(dataset=_make_dataset(expected_page_count=12))
+        )
         mock_db.add = MagicMock(side_effect=_capture_document_id)
         new_file = MagicMock()
         new_file.id = 7

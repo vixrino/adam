@@ -40,6 +40,8 @@ class DatasetIn(BaseModel):
     ocr_model_id: Optional[str] = None
     required_operators: int = Field(default=3, ge=1, le=5)
     ocr_job_enabled: bool = True
+    #: Nombre de pages exige des PDF ingeres ; None = aucun controle.
+    expected_page_count: Optional[int] = Field(default=None, ge=1)
     configs: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -49,6 +51,7 @@ class DatasetPatch(BaseModel):
     status: Optional[str] = None
     required_operators: Optional[int] = Field(default=None, ge=1, le=5)
     ocr_job_enabled: Optional[bool] = None
+    expected_page_count: Optional[int] = Field(default=None, ge=1)
     configs: Optional[Dict[str, Any]] = None
 
 
@@ -207,8 +210,9 @@ async def ingest_documents(
 ) -> IngestionOut:
     """Ingestion multipart de PDF bruts vers le PVC (statut RECEIVED).
 
-    Un PDF qui n'a pas INGESTION_PAGE_COUNT pages est cree en ERROR (statut
-    "error" dans le detail, motif dans reason).
+    Un PDF qui n'a pas le nombre de pages exige par le dataset
+    (expected_page_count) est cree en ERROR (statut "error" dans le detail,
+    motif dans reason).
 
     Repond 200 dans tous les cas (y compris doublons), avec un detail par
     fichier. 404 si le dataset n'existe pas.
@@ -244,7 +248,7 @@ async def ingest_documents(
             file_name=file_name,
             content=content,
             pvc_root=pvc_root,
-            expected_page_count=settings.ingestion_page_count,
+            expected_page_count=dataset.expected_page_count or 0,
         )
         items.append(FileIngestionItemOut(**raw))
 

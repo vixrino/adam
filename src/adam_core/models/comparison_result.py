@@ -8,7 +8,7 @@ d'ici.
 Confidentialite : la valeur selon la sensibilite du champ
 ----------------------------------------------------------
 Les documents portent des IBAN et des NIR, concentres sur une minorite de
-champs. La regle, appliquee par le worker et portee par field_spec.is_sensitive :
+champs. La regle, appliquee par le worker et portee par field_spec.sensitive :
 
     champ non sensible   expected_value et observed_value en clair — c'est ce
                          qui rend le debogage reel possible (« qu'a lu le
@@ -98,10 +98,10 @@ class ComparisonResult(OrganisationScoped, ProjectScoped, Base):
     #: hesitant.
     ocr_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
-    #: Renseignees uniquement si field_spec.is_sensitive est faux.
+    #: Renseignees uniquement si field_spec.sensitive est faux.
     expected_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     observed_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    #: Renseignees uniquement si field_spec.is_sensitive est vrai.
+    #: Renseignees uniquement si field_spec.sensitive est vrai.
     observed_hmac: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     edit_distance: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 

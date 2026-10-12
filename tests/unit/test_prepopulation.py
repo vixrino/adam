@@ -44,6 +44,7 @@ from adam_worker.prepopulation.poller import (
 # Le seed stocke la cle complete dans field_key ; on couvre les deux conventions.
 SPECS: List[Dict[str, Any]] = [
     {
+        "page": 1,
         "id": 1,
         "section_id": "demandeur",
         "field_key": "demandeur.nom",
@@ -51,6 +52,7 @@ SPECS: List[Dict[str, Any]] = [
         "group_id": None,
     },
     {
+        "page": 1,
         "id": 2,
         "section_id": "demandeur",
         "field_key": "demandeur.prenom",
@@ -58,6 +60,7 @@ SPECS: List[Dict[str, Any]] = [
         "group_id": None,
     },
     {
+        "page": 1,
         "id": 3,
         "section_id": "bien",
         "field_key": "bien.adresse",
@@ -358,6 +361,11 @@ class _FakeApiClient:
             raise ApiClientError("schema injoignable")
         return self.field_specs
 
+    async def get_dataset_schema(self, dataset_id: int) -> Dict[str, Any]:
+        if self.specs_error:
+            raise ApiClientError("schema injoignable")
+        return {"name": "schema de test", "pages": [], "field_specs": self.field_specs}
+
     async def create_fields_bulk(
         self, document_id: int, fields: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -590,7 +598,7 @@ class _ConnecteurFige:
         self.rendu = rendu
         self.erreur = erreur
 
-    async def extract(self, images: Any) -> Any:
+    async def extract(self, images: Any, modele: Any = None) -> Any:
         if self.erreur is not None:
             raise self.erreur
         return self.rendu
@@ -809,6 +817,19 @@ class TestReorderPdf:
         assert _pdf_textes(tmp_path / "ordonne.pdf") == ["scan-1", "scan-3", "scan-2"]
         # L'original n'est pas touche.
         assert _pdf_textes(source) == ["scan-1", "scan-2", "scan-3"]
+
+    def test_ne_depend_pas_de_l_alias_fitz(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cote nota, pdf_render importe PyMuPDF sous le nom pymupdf, pas fitz :
+        reorder_pdf y levait « name 'fitz' is not defined »."""
+        from adam_core.utils import pdf_render
+
+        monkeypatch.delattr(pdf_render, "fitz")
+        source = tmp_path / "scan.pdf"
+        _ecrire_pdf(source, ["scan-1", "scan-2"])
+        pdf_render.reorder_pdf(source, tmp_path / "ordonne.pdf", [2, 1])
+        assert _pdf_textes(tmp_path / "ordonne.pdf") == ["scan-2", "scan-1"]
 
     def test_ordre_incompatible_ne_laisse_aucun_fichier(self, tmp_path: Path) -> None:
         from adam_core.utils.pdf_render import PdfRenderError, reorder_pdf

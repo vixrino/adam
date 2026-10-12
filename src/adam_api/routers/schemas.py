@@ -16,8 +16,9 @@ from sqlalchemy.orm import selectinload
 
 from adam_api.dependencies.db import get_db
 from adam_core.enums.status import DatasetStatus, FieldValueType
-from adam_core.models import Dataset, DocSchema, DocumentField, FieldSpec
+from adam_core.models import Dataset, DocSchema, DocumentField, FieldSpec, SchemaPage
 from adam_core.schemas.responses import (
+    SchemaPageOut,
     FieldSpecCreatedOut,
     FieldSpecDetailOut,
     FieldSpecItemOut,
@@ -36,6 +37,9 @@ class FieldSpecIn(BaseModel):
     section_label: str
     field_key: str = Field(pattern=r"^[a-z0-9_]+\.[a-z0-9_]+$")
     display_label: str
+    #: Ce que le champ contient, dit au moteur d'extraction ; a defaut,
+    #: display_label sert.
+    description: Optional[str] = None
     value_type: str = FieldValueType.TEXT.value
     required: bool = False
     display_order: int = 0
@@ -46,9 +50,15 @@ class FieldSpecIn(BaseModel):
 class FieldSpecPatch(BaseModel):
     section_label: Optional[str] = None
     display_label: Optional[str] = None
+    description: Optional[str] = None
     required: Optional[bool] = None
     display_order: Optional[int] = None
     polygon: Optional[List[float]] = Field(default=None, min_length=8, max_length=8)
+
+
+class SchemaPageIn(BaseModel):
+    page_number: int = Field(ge=1)
+    description: str = Field(min_length=1)
 
 
 class SchemaIn(BaseModel):
@@ -56,7 +66,16 @@ class SchemaIn(BaseModel):
     name: str
     document_type: str
     version: int = 1
+    #: Description de chaque page, pour la reconnaitre a son contenu. Facultatif :
+    #: sans pages decrites, l'extraction s'appuie sur les rubriques des champs.
+    pages: List[SchemaPageIn] = Field(default_factory=list)
     field_specs: List[FieldSpecIn] = Field(default_factory=list)
+
+
+def _check_pages_uniques(pages: List[SchemaPageIn]) -> None:
+    numeros = [p.page_number for p in pages]
+    if len(numeros) != len(set(numeros)):
+        raise HTTPException(status_code=422, detail="numero de page en double")
 
 
 async def _check_schema_not_locked(schema_id: int, db: AsyncSession) -> None:
@@ -87,6 +106,7 @@ def _spec_item_out(fs: FieldSpec) -> FieldSpecItemOut:
         section_label=fs.section_label,
         field_key=fs.field_key,
         display_label=fs.display_label,
+        description=fs.description,
         value_type=fs.value_type,
         required=fs.required,
         display_order=fs.display_order,
@@ -105,6 +125,7 @@ def _spec_detail_out(fs: FieldSpec) -> FieldSpecDetailOut:
         section_label=fs.section_label,
         field_key=fs.field_key,
         display_label=fs.display_label,
+        description=fs.description,
         value_type=fs.value_type,
         required=fs.required,
         display_order=fs.display_order,
@@ -117,6 +138,7 @@ def _spec_detail_out(fs: FieldSpec) -> FieldSpecDetailOut:
 # ---------------------------------------------------------------------------
 # GET
 # ---------------------------------------------------------------------------
+
 
 @router.get("", response_model=List[SchemaListItemOut])
 async def list_schemas(
@@ -155,7 +177,7 @@ async def get_schema(schema_id: int, db: AsyncSession = Depends(get_db)) -> Sche
     result = await db.execute(
         select(DocSchema)
         .where(DocSchema.id == schema_id)
-        .options(selectinload(DocSchema.field_specs))
+        .options(selectinload(DocSchema.field_specs), selectinload(DocSchema.pages))
     )
     schema = result.scalar_one_or_none()
     if not schema:
@@ -168,6 +190,10 @@ async def get_schema(schema_id: int, db: AsyncSession = Depends(get_db)) -> Sche
         project_id=schema.project_id,
         created_at=schema.created_at,
         updated_at=schema.updated_at,
+        pages=[
+            SchemaPageOut(page_number=p.page_number, description=p.description)
+            for p in sorted(schema.pages, key=lambda x: x.page_number)
+        ],
         field_specs=[
             _spec_item_out(fs)
             for fs in sorted(schema.field_specs, key=lambda x: (x.page, x.display_order))
@@ -179,9 +205,11 @@ async def get_schema(schema_id: int, db: AsyncSession = Depends(get_db)) -> Sche
 # POST
 # ---------------------------------------------------------------------------
 
+
 @router.post("", response_model=SchemaCreatedOut, status_code=201)
 async def create_schema(payload: SchemaIn, db: AsyncSession = Depends(get_db)) -> SchemaCreatedOut:
-    """Cree un schema avec ses field_specs en une seule transaction."""
+    """Cree un schema avec ses pages et ses field_specs en une seule transaction."""
+    _check_pages_uniques(payload.pages)
     schema = DocSchema(
         project_id=payload.project_id,
         name=payload.name,
@@ -199,6 +227,7 @@ async def create_schema(payload: SchemaIn, db: AsyncSession = Depends(get_db)) -
             section_label=fs_in.section_label,
             field_key=fs_in.field_key,
             display_label=fs_in.display_label,
+            description=fs_in.description,
             value_type=fs_in.value_type,
             required=fs_in.required,
             display_order=fs_in.display_order,
@@ -208,6 +237,10 @@ async def create_schema(payload: SchemaIn, db: AsyncSession = Depends(get_db)) -
         for fs_in in payload.field_specs
     ]
     db.add_all(field_specs)
+    db.add_all(
+        SchemaPage(schema_id=schema.id, page_number=p.page_number, description=p.description)
+        for p in payload.pages
+    )
     await db.flush()
 
     return SchemaCreatedOut(
@@ -235,6 +268,7 @@ async def add_field_spec(
         section_label=payload.section_label,
         field_key=payload.field_key,
         display_label=payload.display_label,
+        description=payload.description,
         value_type=payload.value_type,
         required=payload.required,
         display_order=payload.display_order,
@@ -247,15 +281,13 @@ async def add_field_spec(
 
 
 @router.post("/{schema_id}/duplicate", response_model=SchemaCreatedOut, status_code=201)
-async def duplicate_schema(
-    schema_id: int, db: AsyncSession = Depends(get_db)
-) -> SchemaCreatedOut:
+async def duplicate_schema(schema_id: int, db: AsyncSession = Depends(get_db)) -> SchemaCreatedOut:
     """Duplique un schema avec tous ses FieldSpecs en incrementant la version.
     Utile pour modifier un schema deja utilise sans casser l'historique."""
     result = await db.execute(
         select(DocSchema)
         .where(DocSchema.id == schema_id)
-        .options(selectinload(DocSchema.field_specs))
+        .options(selectinload(DocSchema.field_specs), selectinload(DocSchema.pages))
     )
     source = result.scalar_one_or_none()
     if not source:
@@ -286,6 +318,7 @@ async def duplicate_schema(
             section_label=fs.section_label,
             field_key=fs.field_key,
             display_label=fs.display_label,
+            description=fs.description,
             value_type=fs.value_type,
             required=fs.required,
             display_order=fs.display_order,
@@ -295,6 +328,10 @@ async def duplicate_schema(
         for fs in source.field_specs
     ]
     db.add_all(new_specs)
+    db.add_all(
+        SchemaPage(schema_id=new_schema.id, page_number=p.page_number, description=p.description)
+        for p in source.pages
+    )
     await db.flush()
 
     return SchemaCreatedOut(
@@ -310,6 +347,7 @@ async def duplicate_schema(
 # PATCH
 # ---------------------------------------------------------------------------
 
+
 @router.patch("/{schema_id}/field-specs/{spec_id}", response_model=FieldSpecItemOut)
 async def patch_field_spec(
     schema_id: int, spec_id: int, body: FieldSpecPatch, db: AsyncSession = Depends(get_db)
@@ -324,9 +362,37 @@ async def patch_field_spec(
     return _spec_item_out(fs)
 
 
+@router.put("/{schema_id}/pages", response_model=List[SchemaPageOut])
+async def replace_pages(
+    schema_id: int, pages: List[SchemaPageIn], db: AsyncSession = Depends(get_db)
+) -> List[SchemaPageOut]:
+    """Remplace la description des pages du schema. Interdit si le schema est
+    verrouille : changer la description d'une page change la facon dont les
+    documents du dataset sont reconnus et remis en ordre."""
+    await _check_schema_not_locked(schema_id, db)
+    _check_pages_uniques(pages)
+    result = await db.execute(
+        select(DocSchema).where(DocSchema.id == schema_id).options(selectinload(DocSchema.pages))
+    )
+    schema = result.scalar_one_or_none()
+    if not schema:
+        raise_not_found(DocSchema)
+    for page in list(schema.pages):
+        await db.delete(page)
+    await db.flush()
+    nouvelles = [
+        SchemaPage(schema_id=schema_id, page_number=p.page_number, description=p.description)
+        for p in sorted(pages, key=lambda x: x.page_number)
+    ]
+    db.add_all(nouvelles)
+    await db.flush()
+    return [SchemaPageOut(page_number=p.page_number, description=p.description) for p in nouvelles]
+
+
 # ---------------------------------------------------------------------------
 # DELETE
 # ---------------------------------------------------------------------------
+
 
 @router.delete("/{schema_id}/field-specs/{spec_id}", status_code=204)
 async def delete_field_spec(

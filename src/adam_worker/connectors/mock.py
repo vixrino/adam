@@ -30,6 +30,7 @@ from adam_core.schemas.interface_contract import (
     SmartdocDocument,
 )
 from adam_worker.connectors.base import BaseOcrConnector, OcrConnectorError
+from adam_worker.connectors.modele import ModeleDocument
 
 #: Polygone arbitraire, pour que les champs detectes en portent un.
 _DEFAULT_POLYGON = [10.0, 10.0, 200.0, 10.0, 200.0, 40.0, 10.0, 40.0]
@@ -55,7 +56,9 @@ class MockOcrConnector(BaseOcrConnector):
         self.available = available
         self.failing = failing
 
-    async def extract(self, images: Sequence[Path]) -> Optional[SmartdocDocument]:
+    async def extract(
+        self, images: Sequence[Path], modele: Optional[ModeleDocument] = None
+    ) -> Optional[SmartdocDocument]:
         if self.failing:
             raise OcrConnectorError("connecteur mock configure en echec")
         if not self.available:

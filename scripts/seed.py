@@ -74,7 +74,7 @@ from adam_worker.prepopulation.merger import OCR_RESOLVER
 # Le depliage des champs du CERFA en FieldSpec — sections repetables comprises —
 # vit dans seed_schema_cerfa.py, qui ne cree que le schema. Le reimporter ici
 # evite d'en tenir deux copies qui divergeraient des le prochain CERFA.
-from seed_schema_cerfa import REPEATABLE_SECTIONS, SECTION_LABELS, build_specs
+from seed_schema_cerfa import REPEATABLE_SECTIONS, SECTION_LABELS, build_pages, build_specs
 
 settings = CoreSettings()
 SEPARATOR = "-" * 55
@@ -90,6 +90,7 @@ async def reset_db(session: AsyncSession) -> None:
         "file",
         "dataset",
         "field_spec",
+        "schema_page",
         "doc_schema",
         "user_project",
         "project",
@@ -164,6 +165,9 @@ PROJECT_DESCRIPTION = "Annotation des CERFA 13594*02 recus par la direction"
 #: demandeur, bien, creance — qu'aucun CERFA ne reprend : lui donner un numero
 #: de CERFA serait faux.
 CERFA_DATASET_NAME = "cerfa_13594-02_v2"
+#: Le CERFA 13594*02 compte 12 pages : un PDF d'un autre nombre de pages est
+#: cree en ERROR a l'ingestion (Dataset.expected_page_count).
+CERFA_PAGE_COUNT = 12
 DEMO_DATASET_NAME = "form_demo_v2"
 
 
@@ -714,13 +718,16 @@ async def seed_cerfa(
             group_id=spec["group_id"],
             field_key=spec["field_key"],
             display_label=spec["display_label"],
+            description=spec["description"],
             value_type=spec["value_type"],
             required=spec["required"],
+            sensitive=spec["sensitive"],
             display_order=spec["display_order"],
         )
         for spec in specs
     ]
     session.add_all(field_specs)
+    session.add_all(build_pages(schema.id))
     await session.flush()
     grouped = sum(1 for spec in specs if spec["group_id"] is not None)
     print(
@@ -744,6 +751,7 @@ async def seed_cerfa(
         ocr_provider=OcrProvider.MISTRAL.value,
         status=DatasetStatus.ACTIVE.value,
         required_operators=2,
+        expected_page_count=CERFA_PAGE_COUNT,
         configs={"confidence_threshold": 0.8, "export_format": "json_pdf"},
     )
     session.add(dataset)
