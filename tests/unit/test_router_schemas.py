@@ -77,6 +77,7 @@ def _make_schema(
     row.created_at = _NOW
     row.updated_at = _NOW
     row.field_specs = field_specs or []
+    row.pages = []
     return row
 
 
@@ -101,6 +102,7 @@ def _make_field_spec(
     fs.section_id = section_id
     fs.section_label = section_label
     fs.display_label = display_label
+    fs.description = None
     fs.page = page
     fs.value_type = value_type
     fs.required = required
@@ -497,3 +499,45 @@ class TestDeleteFieldSpec:
 
         mock_db.execute.side_effect = _exec
         assert client.delete("/schemas/1/field-specs/10").status_code == 409
+
+
+class TestSchemaPages:
+    def test_get_schema_rend_les_pages_triees(self, client: TestClient, mock_db: AsyncMock) -> None:
+        schema = _make_schema()
+        schema.pages = [
+            MagicMock(page_number=2, description="Situation familiale"),
+            MagicMock(page_number=1, description="Deposant"),
+        ]
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = schema
+        mock_db.execute = AsyncMock(return_value=result)
+
+        body = client.get("/schemas/1").json()
+        assert body["pages"] == [
+            {"page_number": 1, "description": "Deposant"},
+            {"page_number": 2, "description": "Situation familiale"},
+        ]
+
+    def test_put_pages_refuse_un_numero_en_double(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        unlocked = MagicMock()
+        unlocked.scalar_one_or_none.return_value = None
+        mock_db.execute = AsyncMock(return_value=unlocked)
+        response = client.put(
+            "/schemas/1/pages",
+            json=[
+                {"page_number": 1, "description": "a"},
+                {"page_number": 1, "description": "b"},
+            ],
+        )
+        assert response.status_code == 422
+
+    def test_put_pages_interdit_sur_schema_verrouille(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        locked = MagicMock()
+        locked.scalar_one_or_none.return_value = MagicMock(name="ds", status="active")
+        mock_db.execute = AsyncMock(return_value=locked)
+        response = client.put("/schemas/1/pages", json=[{"page_number": 1, "description": "a"}])
+        assert response.status_code == 423

@@ -70,6 +70,7 @@ from adam_worker.connectors.base import (
     DocumentNonConforme,
     OcrConnectorError,
 )
+from adam_worker.connectors.modele import ModeleDocument
 from adam_worker.prepopulation.api_client import ApiClient, ApiClientError
 from adam_worker.prepopulation.merger import count_detected, merge
 
@@ -218,10 +219,15 @@ class PrepopulationWorker(BaseWorker):
         dataset_id, file_id, file_path = await self._load_context(document_id)
         images = self._page_images(file_id)
 
-        ocr = await self._run_ocr(images, document_id)
+        # Le schema passe avant l'OCR : c'est lui qui dit au connecteur quels
+        # champs extraire et a quoi ressemble chaque page.
+        schema = await self._load_schema(dataset_id, document_id)
+        field_specs: List[Dict[str, Any]] = schema.get("field_specs") or []
+        modele = ModeleDocument.depuis_schema(schema)
+
+        ocr = await self._run_ocr(images, document_id, modele)
         _controle_pages(ocr)
         await self._remettre_en_ordre(document_id, file_id, file_path, images, ocr)
-        field_specs = await self._load_field_specs(dataset_id, document_id)
 
         payloads = merge(field_specs, ocr)
         if not payloads:
@@ -271,10 +277,10 @@ class PrepopulationWorker(BaseWorker):
         return sorted(directory.glob("*.png"))
 
     async def _run_ocr(
-        self, images: Sequence[Path], document_id: int
+        self, images: Sequence[Path], document_id: int, modele: ModeleDocument
     ) -> Optional[SmartdocDocument]:
         try:
-            ocr = await self.connector.extract(images)
+            ocr = await self.connector.extract(images, modele)
         except DocumentNonConforme as exc:
             raise PrepopulationError(
                 f"document non conforme : {exc}",
@@ -291,9 +297,9 @@ class PrepopulationWorker(BaseWorker):
             )
         return ocr
 
-    async def _load_field_specs(self, dataset_id: int, document_id: int) -> List[Dict[str, Any]]:
+    async def _load_schema(self, dataset_id: int, document_id: int) -> Dict[str, Any]:
         try:
-            return await self.api_client.get_field_specs(dataset_id)
+            return await self.api_client.get_dataset_schema(dataset_id)
         except ApiClientError as exc:
             raise PrepopulationError(
                 f"schema injoignable pour le document {document_id} : {exc}"

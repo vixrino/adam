@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from adam_core.schemas.interface_contract import SmartdocDocument
+from adam_worker.connectors.modele import ModeleDocument
 
 
 class OcrConnectorError(Exception):
@@ -33,7 +34,7 @@ class DocumentNonConforme(OcrConnectorError):
     """Le moteur a lu le document, et ce n'est pas le formulaire attendu.
 
     Pas un echec technique, mais il bloque de la meme facon : pre-alimenter
-    un autre document avec le schema du CERFA rangerait ses valeurs dans des
+    un autre document avec le schema du formulaire rangerait ses valeurs dans des
     champs qui ne sont pas les siens. Porte les anomalies relevees, pour que
     le motif de l'ERROR soit lisible sur le document.
     """
@@ -50,11 +51,15 @@ class BaseOcrConnector(ABC):
     name: str = "base"
 
     @abstractmethod
-    async def extract(self, images: Sequence[Path]) -> Optional[SmartdocDocument]:
+    async def extract(
+        self, images: Sequence[Path], modele: Optional[ModeleDocument] = None
+    ) -> Optional[SmartdocDocument]:
         """Soumet les images au moteur et rend le document structure.
 
         Args:
-            images: chemins des images de page, dans l'ordre des pages.
+            images: chemins des images de page, dans l'ordre du scan.
+            modele: champs et pages attendus, tires du schema du dataset. Un
+                connecteur qui n'en a pas besoin (le mock) l'ignore.
 
         Returns:
             Le document OCR, ou None si le moteur n'a rien produit.

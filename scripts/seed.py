@@ -74,7 +74,7 @@ from adam_worker.prepopulation.merger import OCR_RESOLVER
 # Le depliage des champs du CERFA en FieldSpec — sections repetables comprises —
 # vit dans seed_schema_cerfa.py, qui ne cree que le schema. Le reimporter ici
 # evite d'en tenir deux copies qui divergeraient des le prochain CERFA.
-from seed_schema_cerfa import REPEATABLE_SECTIONS, SECTION_LABELS, build_specs
+from seed_schema_cerfa import REPEATABLE_SECTIONS, SECTION_LABELS, build_pages, build_specs
 
 settings = CoreSettings()
 SEPARATOR = "-" * 55
@@ -90,6 +90,7 @@ async def reset_db(session: AsyncSession) -> None:
         "file",
         "dataset",
         "field_spec",
+        "schema_page",
         "doc_schema",
         "user_project",
         "project",
@@ -717,6 +718,7 @@ async def seed_cerfa(
             group_id=spec["group_id"],
             field_key=spec["field_key"],
             display_label=spec["display_label"],
+            description=spec["description"],
             value_type=spec["value_type"],
             required=spec["required"],
             sensitive=spec["sensitive"],
@@ -725,6 +727,7 @@ async def seed_cerfa(
         for spec in specs
     ]
     session.add_all(field_specs)
+    session.add_all(build_pages(schema.id))
     await session.flush()
     grouped = sum(1 for spec in specs if spec["group_id"] is not None)
     print(

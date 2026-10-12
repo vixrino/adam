@@ -147,12 +147,16 @@ class ApiClient:
         )
         return result
 
-    async def get_field_specs(self, dataset_id: int) -> List[Dict[str, Any]]:
-        """Raccourci : dataset -> schema -> field_specs, les deux appels chaines."""
+    async def get_dataset_schema(self, dataset_id: int) -> Dict[str, Any]:
+        """Schema complet du dataset (pages et field_specs) : dataset -> schema."""
         dataset = await self.get_dataset(dataset_id)
         schema_id = dataset.get("schema_id")
         if schema_id is None:
             raise ApiClientError(f"dataset {dataset_id} sans schema_id")
-        schema = await self.get_schema(int(schema_id))
+        return await self.get_schema(int(schema_id))
+
+    async def get_field_specs(self, dataset_id: int) -> List[Dict[str, Any]]:
+        """Raccourci : les seuls field_specs du schema du dataset."""
+        schema = await self.get_dataset_schema(dataset_id)
         specs: List[Dict[str, Any]] = schema.get("field_specs", [])
         return specs

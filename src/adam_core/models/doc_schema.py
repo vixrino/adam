@@ -60,6 +60,13 @@ class DocSchema(OrganisationScoped, ProjectScoped, Base):
         lazy="noload",
         cascade="all, delete-orphan",
     )
+    pages: Mapped[list["SchemaPage"]] = relationship(  # type: ignore[name-defined]
+        "SchemaPage",
+        back_populates="schema",
+        lazy="noload",
+        cascade="all, delete-orphan",
+        order_by="SchemaPage.page_number",
+    )
     datasets: Mapped[list["Dataset"]] = relationship(  # type: ignore[name-defined]
         "Dataset",
         back_populates="schema",

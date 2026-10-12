@@ -3,7 +3,16 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Float
@@ -71,6 +80,11 @@ class FieldSpec(OrganisationScoped, ProjectScoped, Base):
         nullable=False,
         comment="Libellé affiché à l'opérateur",
     )
+    #: Ce que le champ contient, dit au moteur d'extraction : c'est la
+    #: description de la propriete du json_schema envoye a Mistral. Plus riche
+    #: que display_label, qui est fait pour l'ecran ; a defaut, c'est lui qui
+    #: sert.
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     value_type: Mapped[str] = mapped_column(
         String,
         nullable=False,
