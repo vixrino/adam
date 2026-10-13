@@ -89,6 +89,13 @@ class TestExclusions:
             "(!(userAccountControl", ""
         )
 
+    def test_suffixe_exclu_dans_le_filtre(self) -> None:
+        for filtre in (
+            filtre_recherche("dan", suffixes_exclus=["OT2"]),
+            filtre_matricule("I21080M", suffixes_exclus=["OT2"]),
+        ):
+            assert "(!(sAMAccountName=*OT2))" in filtre
+
     def test_prefixe_echappe(self) -> None:
         assert "(!(sAMAccountName=a\\2a*))" in filtre_recherche("dan", ["a*"])
 
@@ -159,6 +166,17 @@ class TestAnnuaireLdapMock:
         )
         compte("Marie", "V00001", True, givenName="Marie", sn="Kochanowicz", mail="m@exemple.fr")
         connexion_admin.strategy.add_entry(
+            f"CN=Daniel Suffixe,{base}",
+            {
+                "objectCategory": "person",
+                "objectClass": "user",
+                "sAMAccountName": "I21080MOT2",
+                "userAccountControl": 512,
+                "givenName": "Daniel",
+                "sn": "Suffixe",
+            },
+        )
+        connexion_admin.strategy.add_entry(
             f"CN=Admin Daniel,OU=OT2,{base}",
             {
                 "objectCategory": "person",
@@ -201,11 +219,17 @@ class TestAnnuaireLdapMock:
         """Le compte OT2 est sous la base : sans exclusion, il remonte."""
         assert "OT2I21080M" in [p.matricule for p in await annuaire.rechercher("Dan")]
         annuaire.ou_exclues = ["OT2"]
-        assert [p.matricule for p in await annuaire.rechercher("Dan")] == ["I21080M"]
+        assert "OT2I21080M" not in [p.matricule for p in await annuaire.rechercher("Dan")]
         annuaire.ou_exclues = []
         annuaire.prefixes_exclus = ["OT2"]
-        assert [p.matricule for p in await annuaire.rechercher("Dan")] == ["I21080M"]
+        assert "OT2I21080M" not in [p.matricule for p in await annuaire.rechercher("Dan")]
         assert await annuaire.trouver("OT2I21080M") is None
+        # Matricule qui FINIT par OT2 : exclu par suffixe.
+        annuaire.prefixes_exclus = []
+        assert "I21080MOT2" in [p.matricule for p in await annuaire.rechercher("Dan")]
+        annuaire.suffixes_exclus = ["OT2"]
+        assert "I21080MOT2" not in [p.matricule for p in await annuaire.rechercher("Dan")]
+        assert await annuaire.trouver("I21080MOT2") is None
 
     @pytest.mark.asyncio
     async def test_matricule_inconnu_rend_none(self, annuaire: AnnuaireLdap) -> None:

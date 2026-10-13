@@ -15,10 +15,11 @@ Regles de recherche, fixees avec l'equipe qui administre l'AD
 - L'attribut `department` est rendu : il situe la personne dans le reseau et
   permet de grouper la liste deroulante.
 - Certains comptes rangés sous la base de recherche ne sont pas des personnes a
-  affecter (comptes d'administration « OT2 », par exemple). Ils s'excluent par
-  le debut de leur matricule (AD_EXCLUDE_PREFIXES, applique dans le filtre LDAP)
-  ou par l'unite d'organisation qui les range (AD_EXCLUDE_OUS, appliquee sur le
-  DN de chaque resultat, que LDAP ne sait pas filtrer).
+  affecter (comptes d'administration, dont le matricule finit par « OT2 », par
+  exemple). Ils s'excluent par le debut ou la fin de leur matricule
+  (AD_EXCLUDE_PREFIXES, AD_EXCLUDE_SUFFIXES, appliques dans le filtre LDAP) ou
+  par l'unite d'organisation qui les range (AD_EXCLUDE_OUS, appliquee sur le DN
+  de chaque resultat, que LDAP ne sait pas filtrer).
 
 Connexion
 ---------
@@ -95,27 +96,36 @@ def echapper(valeur: str) -> str:
     return "".join(remplacements.get(c, c) for c in valeur)
 
 
-def _exclusions(prefixes: Sequence[str]) -> str:
-    """Conditions qui ecartent les matricules commencant par l'un des prefixes."""
-    return "".join(f"(!(sAMAccountName={echapper(p.strip())}*))" for p in prefixes if p.strip())
+def _exclusions(prefixes: Sequence[str], suffixes: Sequence[str] = ()) -> str:
+    """Conditions qui ecartent les matricules commencant par l'un des prefixes
+    ou finissant par l'un des suffixes."""
+    return "".join(
+        [f"(!(sAMAccountName={echapper(p.strip())}*))" for p in prefixes if p.strip()]
+        + [f"(!(sAMAccountName=*{echapper(s.strip())}))" for s in suffixes if s.strip()]
+    )
 
 
-def filtre_recherche(texte: str, prefixes_exclus: Sequence[str] = ()) -> str:
+def filtre_recherche(
+    texte: str, prefixes_exclus: Sequence[str] = (), suffixes_exclus: Sequence[str] = ()
+) -> str:
     """Filtre pour une saisie libre : chaque mot doit correspondre a un debut de
     matricule, de prenom ou de nom, ou a un morceau du nom affiche."""
     mots = [echapper(m) for m in texte.split()[:_MOTS_MAX]]
     conditions = "".join(
         f"(|(sAMAccountName={m}*)(givenName={m}*)(sn={m}*)(displayName=*{m}*))" for m in mots
     )
-    return f"(&{_PERSONNES_ACTIVES}{_exclusions(prefixes_exclus)}{conditions})"
+    exclusions = _exclusions(prefixes_exclus, suffixes_exclus)
+    return f"(&{_PERSONNES_ACTIVES}{exclusions}{conditions})"
 
 
-def filtre_matricule(matricule: str, prefixes_exclus: Sequence[str] = ()) -> str:
+def filtre_matricule(
+    matricule: str, prefixes_exclus: Sequence[str] = (), suffixes_exclus: Sequence[str] = ()
+) -> str:
     """Filtre exact sur un matricule, comptes actifs seulement. Les exclusions
     valent ici aussi : un compte ecarte de la recherche ne doit pas pouvoir
     etre affecte en tapant son matricule."""
     return (
-        f"(&{_PERSONNES_ACTIVES}{_exclusions(prefixes_exclus)}"
+        f"(&{_PERSONNES_ACTIVES}{_exclusions(prefixes_exclus, suffixes_exclus)}"
         f"(sAMAccountName={echapper(matricule.strip())}))"
     )
 
@@ -203,6 +213,7 @@ class AnnuaireLdap:
         limite: int = 25,
         prefixes_exclus: Sequence[str] = (),
         ou_exclues: Sequence[str] = (),
+        suffixes_exclus: Sequence[str] = (),
     ) -> None:
         if not (host and bind_dn and password and base_dn):
             raise AnnuaireDesactive(
@@ -218,6 +229,7 @@ class AnnuaireLdap:
         self.timeout_seconds = timeout_seconds
         self.limite = limite
         self.prefixes_exclus = [p for p in prefixes_exclus if p.strip()]
+        self.suffixes_exclus = [s for s in suffixes_exclus if s.strip()]
         self.ou_exclues = [o for o in ou_exclues if o.strip()]
 
     def _serveur(self) -> Any:
@@ -282,11 +294,11 @@ class AnnuaireLdap:
         return sorted(personnes, key=lambda p: ((p.departement or "~"), p.nom_affiche.lower()))
 
     async def rechercher(self, texte: str) -> List[PersonneAnnuaire]:
-        filtre = filtre_recherche(texte, self.prefixes_exclus)
+        filtre = filtre_recherche(texte, self.prefixes_exclus, self.suffixes_exclus)
         return await asyncio.to_thread(self._chercher, filtre, self.limite)
 
     async def trouver(self, matricule: str) -> Optional[PersonneAnnuaire]:
-        filtre = filtre_matricule(matricule, self.prefixes_exclus)
+        filtre = filtre_matricule(matricule, self.prefixes_exclus, self.suffixes_exclus)
         trouvees = await asyncio.to_thread(self._chercher, filtre, 2)
         return trouvees[0] if len(trouvees) == 1 else None
 
@@ -306,6 +318,7 @@ def annuaire_depuis_settings(settings: Any) -> AnnuaireLdap:
         timeout_seconds=settings.ad_timeout_seconds,
         limite=settings.ad_search_limit,
         prefixes_exclus=_liste(settings.ad_exclude_prefixes),
+        suffixes_exclus=_liste(settings.ad_exclude_suffixes),
         ou_exclues=_liste(settings.ad_exclude_ous),
     )
 

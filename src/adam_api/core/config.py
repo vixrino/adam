@@ -65,6 +65,8 @@ class Settings(CoreSettings):
     #: de matricule (« OT2 ») et unites d'organisation (« OT2 »), separes par
     #: des virgules.
     ad_exclude_prefixes: str = ""
+    #: Fins de matricule a exclure (« OT2 » : I21080MOT2).
+    ad_exclude_suffixes: str = ""
     ad_exclude_ous: str = ""
 
     @property
