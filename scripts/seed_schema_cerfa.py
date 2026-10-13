@@ -20,11 +20,10 @@ Champs repetables
 -----------------
 Le CERFA ouvre plusieurs emplacements identiques pour un meme objet : six
 prets a la consommation page 10, plusieurs dettes page 6, plusieurs personnes
-au domicile page 2. cerfa_v2.py, source des champs du schema, les aplatit
-volontairement en une seule instance : la repetition ne change rien a ce qu'on
-demande a Mistral, seulement au depliage de sa reponse.
+au domicile page 2. cerfa_v2.py, source des champs du schema, les decrit en
+une seule instance ; ce script les deplie.
 
-Ici, au contraire, la repetition doit exister : un operateur qui annote le
+Ici, la repetition doit exister : un operateur qui annote le
 pret n° 3 doit avoir des champs distincts de ceux du pret n° 1. C'est le role
 de FieldSpec.group_id, et de la contrainte d'unicite
 (schema_id, section_id, group_id, field_key) qui l'accompagne : le meme

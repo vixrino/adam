@@ -13,15 +13,24 @@ Le modele porte trois choses :
   d'annotation, indexes par leur cle semantique "section.champ" — celle que
   le merger rapproche ensuite des FIELD_SPEC.
 
-Les champs repetables (FIELD_SPEC de meme cle sur plusieurs group_id) n'y
-figurent qu'une fois : la repetition ne change rien a ce qu'on demande au
-moteur, seulement au depliage de sa reponse (ticket T7).
+Champs repetables (ticket T7)
+-----------------------------
+Un tableau a plusieurs lignes identiques (prets n° 1 a 6) a une FIELD_SPEC par
+ligne, distinguee par group_id. Le moteur recoit une propriete par ligne, dont
+le nom porte l'instance : "credits_consommation.pret_2.reference". Le schema
+reste plat — le mode strict de Mistral exige `required` complet a chaque
+niveau, et un tableau d'objets ne fixerait ni le nombre ni le rang des lignes.
+
+Ce nom n'est qu'une cle d'appel : la reponse est redecoupee en
+id="credits_consommation.reference" et group_id="pret_2", la forme du contrat
+(KVPair.group_id), que le merger rapproche de la bonne ligne.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from adam_core.enums.status import FieldValueType
 from adam_worker.prepopulation.merger import semantic_key
@@ -37,8 +46,18 @@ class ModeleDocument:
     nom: str
     #: Numero de page -> description (titres de rubrique imprimes).
     pages: Mapping[int, str] = field(default_factory=dict)
-    #: Numero de page -> cle semantique -> propriete du json_schema.
+    #: Numero de page -> cle d'appel -> propriete du json_schema. La cle
+    #: d'appel est la cle semantique, avec l'instance pour un repetable.
     champs: Mapping[int, Mapping[str, FieldDef]] = field(default_factory=dict)
+    #: Cle d'appel d'un champ repetable -> (cle semantique, group_id). Une cle
+    #: absente d'ici est un champ simple : elle est sa propre cle semantique.
+    instances: Mapping[str, Tuple[str, str]] = field(default_factory=dict)
+
+    def cible(self, cle_appel: str) -> Tuple[str, Optional[str]]:
+        """(cle semantique, group_id) que remplit une propriete de la reponse."""
+        if cle_appel in self.instances:
+            return self.instances[cle_appel]
+        return cle_appel, None
 
     @property
     def nombre_pages(self) -> int:
@@ -54,22 +73,47 @@ class ModeleDocument:
             if p.get("description")
         }
         champs: Dict[int, Dict[str, FieldDef]] = {}
+        instances: Dict[str, Tuple[str, str]] = {}
         for spec in schema.get("field_specs") or []:
             cle = semantic_key(spec.get("section_id"), spec["field_key"])
+            group_id = spec.get("group_id")
             page = champs.setdefault(int(spec["page"]), {})
-            # Premiere instance d'un champ repetable : les suivantes portent
-            # la meme cle et ne changent rien a la demande.
-            page.setdefault(cle, propriete(spec))
-        return cls(nom=str(schema.get("name") or "formulaire"), pages=pages, champs=champs)
+            if not group_id:
+                page.setdefault(cle, propriete(spec))
+                continue
+            cle_appel = cle_d_appel(cle, group_id)
+            page.setdefault(cle_appel, propriete(spec, group_id))
+            instances[cle_appel] = (cle, group_id)
+        return cls(
+            nom=str(schema.get("name") or "formulaire"),
+            pages=pages,
+            champs=champs,
+            instances=instances,
+        )
 
 
-def propriete(spec: Mapping[str, Any]) -> FieldDef:
+def cle_d_appel(cle: str, group_id: str) -> str:
+    """Nom de propriete d'une instance : l'instance s'insere apres la section.
+
+    "credits_consommation.reference" + "pret_2" donne
+    "credits_consommation.pret_2.reference".
+    """
+    section, _, reste = cle.partition(".")
+    return f"{section}.{group_id}.{reste}" if reste else f"{group_id}.{section}"
+
+
+def propriete(spec: Mapping[str, Any], group_id: Optional[str] = None) -> FieldDef:
     """Propriete du json_schema d'annotation pour un FIELD_SPEC.
 
     La description vient de field_spec.description, faite pour le moteur ; a
-    defaut, de display_label, fait pour l'ecran.
+    defaut, de display_label, fait pour l'ecran. Pour une ligne de tableau,
+    elle dit laquelle : c'est le numero imprime de la ligne qui la designe.
     """
     description = spec.get("description") or spec.get("display_label") or spec["field_key"]
+    if group_id:
+        numero = re.search(r"(\d+)$", group_id)
+        ligne = f"ligne n° {numero.group(1)} du tableau" if numero else f"instance {group_id}"
+        description = f"{description} ({ligne})"
     value_type = str(spec.get("value_type") or FieldValueType.TEXT.value).upper()
     if value_type == FieldValueType.BOOLEAN.value:
         return {"description": description, "type": "boolean"}

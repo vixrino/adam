@@ -913,11 +913,11 @@ def _pdf_page_count(pdf_path: Path) -> int:
     ce que le worker corrige le compte a son premier cycle.
     """
     try:
-        import fitz  # PyMuPDF
+        import pymupdf
     except ImportError:
         print("        PyMuPDF absent : page_count pose a 1, le worker le corrigera")
         return 1
-    with fitz.open(pdf_path) as pdf:
+    with pymupdf.open(pdf_path) as pdf:
         return pdf.page_count
 
 

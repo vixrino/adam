@@ -30,7 +30,7 @@ FIELD_PROPOSAL des qu'un operateur soumettra une correction.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from adam_core.enums.status import DocumentFieldStatus
 from adam_core.schemas.interface_contract import KVPair, SmartdocDocument
@@ -54,18 +54,27 @@ def semantic_key(section_id: Optional[str], field_key: str) -> str:
     return f"{section_id}.{field_key}"
 
 
-def index_ocr_pairs(ocr: Optional[SmartdocDocument]) -> Dict[str, KVPair]:
-    """Indexe les KVPair par leur identifiant pointe.
+#: Cle d'un KVPair : son identifiant pointe et l'instance qu'il remplit.
+CleOcr = Tuple[str, Optional[str]]
 
-    En cas d'identifiant repete entre deux pages, le premier rencontre gagne :
-    un champ vu deux fois est plus probablement une entete repetee qu'une
-    seconde occurrence significative, et le contrat ne permet pas de trancher.
+
+def index_ocr_pairs(ocr: Optional[SmartdocDocument]) -> Dict[CleOcr, KVPair]:
+    """Indexe les KVPair par (identifiant pointe, group_id).
+
+    Le group_id est celui du contrat : une ligne d'un tableau repetable (pret
+    n° 2) arrive avec id="credits_consommation.reference" et group_id="pret_2".
+    Sans lui, les six prets d'un tableau partageraient une seule cle, et la
+    valeur du premier finirait dans les six.
+
+    En cas de cle repetee entre deux pages, le premier rencontre gagne : un
+    champ vu deux fois est plus probablement une entete repetee qu'une seconde
+    occurrence significative, et le contrat ne permet pas de trancher.
     """
     if ocr is None:
         return {}
-    index: Dict[str, KVPair] = {}
+    index: Dict[CleOcr, KVPair] = {}
     for _page_number, _section, kv in ocr.iter_kv_pairs():
-        index.setdefault(kv.id, kv)
+        index.setdefault((kv.id, kv.group_id), kv)
     return index
 
 
@@ -117,10 +126,22 @@ def merge(
         La liste des champs, dans l'ordre du schema.
     """
     index = index_ocr_pairs(ocr)
+    #: Cles dont la valeur sans instance a deja servi a une ligne repetable.
+    replis_servis: Set[str] = set()
     payloads: List[Dict[str, Any]] = []
     for spec in field_specs:
         key = semantic_key(spec.get("section_id"), spec["field_key"])
-        payloads.append(_payload_from_spec(spec, index.get(key)))
+        group_id = spec.get("group_id")
+        kv = index.get((key, group_id))
+        if kv is None and group_id is not None and key not in replis_servis:
+            # Valeur rendue sans instance (connecteur qui ne connait pas les
+            # repetables) : elle ne remplit que la premiere ligne du tableau.
+            # La recopier dans toutes ferait croire a l'operateur que six prets
+            # ont ete lus, alors qu'un seul l'a ete.
+            kv = index.get((key, None))
+            if kv is not None:
+                replis_servis.add(key)
+        payloads.append(_payload_from_spec(spec, kv))
     return payloads
 
 

@@ -677,8 +677,8 @@ def test_un_autre_formulaire_que_le_cerfa(tmp_path: Path) -> None:
     assert "salarie.nom" in schema["properties"]
 
 
-def test_modele_depuis_schema_deplie_une_seule_fois_les_repetables() -> None:
-    """Six instances d'un pret portent la meme cle : une seule propriete."""
+def test_modele_depuis_schema_une_propriete_par_ligne_de_tableau() -> None:
+    """T7 : six prets, six proprietes, chacune redecoupee vers sa ligne."""
     specs = [
         {
             "page": 10,
@@ -692,6 +692,13 @@ def test_modele_depuis_schema_deplie_une_seule_fois_les_repetables() -> None:
         for n in range(1, 7)
     ]
     modele = ModeleDocument.depuis_schema({"name": "x", "field_specs": specs})
-    assert list(modele.champs[10]) == ["credits_consommation.reference"]
-    assert modele.champs[10]["credits_consommation.reference"]["description"] == "Reference du pret"
+    assert list(modele.champs[10]) == [
+        f"credits_consommation.pret_{n}.reference" for n in range(1, 7)
+    ]
+    propriete = modele.champs[10]["credits_consommation.pret_2.reference"]
+    assert propriete["description"] == "Reference du pret (ligne n° 2 du tableau)"
+    assert modele.cible("credits_consommation.pret_2.reference") == (
+        "credits_consommation.reference",
+        "pret_2",
+    )
     assert modele.nombre_pages == 10

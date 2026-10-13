@@ -818,18 +818,13 @@ class TestReorderPdf:
         # L'original n'est pas touche.
         assert _pdf_textes(source) == ["scan-1", "scan-2", "scan-3"]
 
-    def test_ne_depend_pas_de_l_alias_fitz(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Cote nota, pdf_render importe PyMuPDF sous le nom pymupdf, pas fitz :
-        reorder_pdf y levait « name 'fitz' is not defined »."""
+    def test_pdf_render_n_utilise_plus_l_alias_fitz(self) -> None:
+        """PyMuPDF s'importe sous le nom pymupdf, comme cote nota : l'alias
+        historique fitz y faisait lever « name 'fitz' is not defined »."""
         from adam_core.utils import pdf_render
 
-        monkeypatch.delattr(pdf_render, "fitz")
-        source = tmp_path / "scan.pdf"
-        _ecrire_pdf(source, ["scan-1", "scan-2"])
-        pdf_render.reorder_pdf(source, tmp_path / "ordonne.pdf", [2, 1])
-        assert _pdf_textes(tmp_path / "ordonne.pdf") == ["scan-2", "scan-1"]
+        assert not hasattr(pdf_render, "fitz")
+        assert hasattr(pdf_render, "pymupdf")
 
     def test_ordre_incompatible_ne_laisse_aucun_fichier(self, tmp_path: Path) -> None:
         from adam_core.utils.pdf_render import PdfRenderError, reorder_pdf
