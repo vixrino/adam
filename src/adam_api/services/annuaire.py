@@ -14,6 +14,11 @@ Regles de recherche, fixees avec l'equipe qui administre l'AD
 - Les comptes desactives sont exclus (bit ACCOUNTDISABLE de userAccountControl).
 - L'attribut `department` est rendu : il situe la personne dans le reseau et
   permet de grouper la liste deroulante.
+- Certains comptes rangés sous la base de recherche ne sont pas des personnes a
+  affecter (comptes d'administration « OT2 », par exemple). Ils s'excluent par
+  le debut de leur matricule (AD_EXCLUDE_PREFIXES, applique dans le filtre LDAP)
+  ou par l'unite d'organisation qui les range (AD_EXCLUDE_OUS, appliquee sur le
+  DN de chaque resultat, que LDAP ne sait pas filtrer).
 
 Connexion
 ---------
@@ -32,7 +37,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 from adam_core.utils.logging import get_logger
 
@@ -90,19 +95,41 @@ def echapper(valeur: str) -> str:
     return "".join(remplacements.get(c, c) for c in valeur)
 
 
-def filtre_recherche(texte: str) -> str:
+def _exclusions(prefixes: Sequence[str]) -> str:
+    """Conditions qui ecartent les matricules commencant par l'un des prefixes."""
+    return "".join(f"(!(sAMAccountName={echapper(p.strip())}*))" for p in prefixes if p.strip())
+
+
+def filtre_recherche(texte: str, prefixes_exclus: Sequence[str] = ()) -> str:
     """Filtre pour une saisie libre : chaque mot doit correspondre a un debut de
     matricule, de prenom ou de nom, ou a un morceau du nom affiche."""
     mots = [echapper(m) for m in texte.split()[:_MOTS_MAX]]
     conditions = "".join(
         f"(|(sAMAccountName={m}*)(givenName={m}*)(sn={m}*)(displayName=*{m}*))" for m in mots
     )
-    return f"(&{_PERSONNES_ACTIVES}{conditions})"
+    return f"(&{_PERSONNES_ACTIVES}{_exclusions(prefixes_exclus)}{conditions})"
 
 
-def filtre_matricule(matricule: str) -> str:
-    """Filtre exact sur un matricule, comptes actifs seulement."""
-    return f"(&{_PERSONNES_ACTIVES}(sAMAccountName={echapper(matricule.strip())}))"
+def filtre_matricule(matricule: str, prefixes_exclus: Sequence[str] = ()) -> str:
+    """Filtre exact sur un matricule, comptes actifs seulement. Les exclusions
+    valent ici aussi : un compte ecarte de la recherche ne doit pas pouvoir
+    etre affecte en tapant son matricule."""
+    return (
+        f"(&{_PERSONNES_ACTIVES}{_exclusions(prefixes_exclus)}"
+        f"(sAMAccountName={echapper(matricule.strip())}))"
+    )
+
+
+def dans_ou_exclue(dn: Optional[str], ou_exclues: Sequence[str]) -> bool:
+    """Le DN passe-t-il par l'une des unites d'organisation exclues ?
+
+    Compare les composants « OU=... » du DN, sans casse : OU=OT2 exclut
+    CN=x,OU=OT2,OU=T2,DC=... mais pas CN=x,OU=OT2BIS,OU=T2,DC=...
+    """
+    if not dn or not ou_exclues:
+        return False
+    composants = {c.strip().upper() for c in dn.split(",")}
+    return any(f"OU={ou.strip().upper()}" in composants for ou in ou_exclues if ou.strip())
 
 
 def personne_depuis_attributs(attributs: Dict[str, Any]) -> Optional[PersonneAnnuaire]:
@@ -174,6 +201,8 @@ class AnnuaireLdap:
         ca_bundle: str = "",
         timeout_seconds: int = 5,
         limite: int = 25,
+        prefixes_exclus: Sequence[str] = (),
+        ou_exclues: Sequence[str] = (),
     ) -> None:
         if not (host and bind_dn and password and base_dn):
             raise AnnuaireDesactive(
@@ -188,6 +217,8 @@ class AnnuaireLdap:
         self.ca_bundle = ca_bundle
         self.timeout_seconds = timeout_seconds
         self.limite = limite
+        self.prefixes_exclus = [p for p in prefixes_exclus if p.strip()]
+        self.ou_exclues = [o for o in ou_exclues if o.strip()]
 
     def _serveur(self) -> Any:
         import ssl
@@ -238,7 +269,11 @@ class AnnuaireLdap:
                     size_limit=limite,
                     time_limit=self.timeout_seconds,
                 )
-                entrees = [e.get("attributes", {}) for e in connexion.response or []]
+                entrees = [
+                    e.get("attributes", {})
+                    for e in connexion.response or []
+                    if not dans_ou_exclue(e.get("dn"), self.ou_exclues)
+                ]
             finally:
                 connexion.unbind()
         except LDAPException as exc:
@@ -247,10 +282,12 @@ class AnnuaireLdap:
         return sorted(personnes, key=lambda p: ((p.departement or "~"), p.nom_affiche.lower()))
 
     async def rechercher(self, texte: str) -> List[PersonneAnnuaire]:
-        return await asyncio.to_thread(self._chercher, filtre_recherche(texte), self.limite)
+        filtre = filtre_recherche(texte, self.prefixes_exclus)
+        return await asyncio.to_thread(self._chercher, filtre, self.limite)
 
     async def trouver(self, matricule: str) -> Optional[PersonneAnnuaire]:
-        trouvees = await asyncio.to_thread(self._chercher, filtre_matricule(matricule), 2)
+        filtre = filtre_matricule(matricule, self.prefixes_exclus)
+        trouvees = await asyncio.to_thread(self._chercher, filtre, 2)
         return trouvees[0] if len(trouvees) == 1 else None
 
 
@@ -268,4 +305,11 @@ def annuaire_depuis_settings(settings: Any) -> AnnuaireLdap:
         ca_bundle=settings.ad_ca_bundle,
         timeout_seconds=settings.ad_timeout_seconds,
         limite=settings.ad_search_limit,
+        prefixes_exclus=_liste(settings.ad_exclude_prefixes),
+        ou_exclues=_liste(settings.ad_exclude_ous),
     )
+
+
+def _liste(valeur: str) -> List[str]:
+    """« OT2, ADM » -> ["OT2", "ADM"] : une liste lisible dans un .env."""
+    return [v.strip() for v in (valeur or "").split(",") if v.strip()]

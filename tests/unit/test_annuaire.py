@@ -24,6 +24,7 @@ from adam_api.services.annuaire import (
     AnnuaireLdap,
     LimiteurRequetes,
     PersonneAnnuaire,
+    dans_ou_exclue,
     echapper,
     filtre_matricule,
     filtre_recherche,
@@ -78,6 +79,25 @@ class TestFiltres:
         assert personne.nom_affiche == "Daniel Ferreira"
         assert personne.email == "daniel@exemple.fr"
         assert personne_depuis_attributs({"sn": "sans matricule"}) is None
+
+
+class TestExclusions:
+    def test_prefixe_exclu_dans_le_filtre(self) -> None:
+        for filtre in (filtre_recherche("dan", ["OT2"]), filtre_matricule("I21080M", ["OT2"])):
+            assert "(!(sAMAccountName=OT2*))" in filtre
+        assert "(!(" + "sAMAccountName" not in filtre_recherche("dan").replace(
+            "(!(userAccountControl", ""
+        )
+
+    def test_prefixe_echappe(self) -> None:
+        assert "(!(sAMAccountName=a\\2a*))" in filtre_recherche("dan", ["a*"])
+
+    def test_unite_d_organisation_exclue(self) -> None:
+        dn = "CN=Admin,OU=OT2,OU=T2,DC=ADBDFINT,DC=PRIVATE"
+        assert dans_ou_exclue(dn, ["ot2"]) is True
+        assert dans_ou_exclue("CN=x,OU=OT2BIS,OU=T2,DC=A", ["OT2"]) is False
+        assert dans_ou_exclue("CN=x,OU=T2,DC=A", ["OT2"]) is False
+        assert dans_ou_exclue(dn, []) is False
 
 
 class TestLimiteur:
@@ -138,6 +158,17 @@ class TestAnnuaireLdapMock:
             department="SOLAPS",
         )
         compte("Marie", "V00001", True, givenName="Marie", sn="Kochanowicz", mail="m@exemple.fr")
+        connexion_admin.strategy.add_entry(
+            f"CN=Admin Daniel,OU=OT2,{base}",
+            {
+                "objectCategory": "person",
+                "objectClass": "user",
+                "sAMAccountName": "OT2I21080M",
+                "userAccountControl": 512,
+                "givenName": "Daniel",
+                "sn": "Admin",
+            },
+        )
 
         annuaire = AnnuaireLdap(
             host="ad-factice",
@@ -159,11 +190,22 @@ class TestAnnuaireLdapMock:
 
     @pytest.mark.asyncio
     async def test_recherche_et_lecture_par_matricule(self, annuaire: AnnuaireLdap) -> None:
-        trouvees = await annuaire.rechercher("Dan")
+        trouvees = await annuaire.rechercher("Ferreira")
         assert [p.matricule for p in trouvees] == ["I21080M"]
         assert trouvees[0].departement == "SOLAPS"
         personne = await annuaire.trouver("I21080M")
         assert personne is not None and personne.email == "daniel@exemple.fr"
+
+    @pytest.mark.asyncio
+    async def test_comptes_ot2_exclus(self, annuaire: AnnuaireLdap) -> None:
+        """Le compte OT2 est sous la base : sans exclusion, il remonte."""
+        assert "OT2I21080M" in [p.matricule for p in await annuaire.rechercher("Dan")]
+        annuaire.ou_exclues = ["OT2"]
+        assert [p.matricule for p in await annuaire.rechercher("Dan")] == ["I21080M"]
+        annuaire.ou_exclues = []
+        annuaire.prefixes_exclus = ["OT2"]
+        assert [p.matricule for p in await annuaire.rechercher("Dan")] == ["I21080M"]
+        assert await annuaire.trouver("OT2I21080M") is None
 
     @pytest.mark.asyncio
     async def test_matricule_inconnu_rend_none(self, annuaire: AnnuaireLdap) -> None:
