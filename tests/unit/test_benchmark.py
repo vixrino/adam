@@ -140,7 +140,10 @@ class TestEvaluation:
         assert resultat.fields_compared == 2
         assert resultat.fields_human_verified == 1
         assert [e["document_field_id"] for e in resultat.ecarts] == [1001]
-        assert resultat.agregats == {1: Agregat("deposant.nom", compared=1, diff_count=1)}
+        agregat = resultat.agregats[1]
+        assert (agregat.field_key, agregat.compared, agregat.diff_count) == ("deposant.nom", 1, 1)
+        # DUPONT lu DURAND : une substitution, comptee en faux positif ET negatif.
+        assert (agregat.vp, agregat.fp, agregat.fn, agregat.substitutions) == (0, 1, 1, 1)
 
     def test_champ_sensible_rien_en_clair(self) -> None:
         verite = [_champ(1, "FR7630001", sensible=True, section="gestion_budget", cle="iban")]
@@ -210,6 +213,9 @@ class _FauxDepot:
         self.reservations.append((provider, modele))
         execution, self.execution = self.execution, None
         return execution
+
+    async def identifier(self, execution_id: int, version: str, empreinte: str) -> None:
+        self.identite = (version, empreinte)
 
     async def schema(self, schema_id: int) -> Dict[str, Any]:
         return {
@@ -285,6 +291,7 @@ class TestWorker:
         assert depot.fin["agregats"][1].compared == 2
         assert depot.fin["agregats"][1].diff_count == 1
         assert depot.fin["message"] is None
+        assert depot.identite[0] == "1" and len(depot.identite[1]) == 16
 
     def test_rien_en_attente(self) -> None:
         depot = _FauxDepot(None, [])
@@ -405,3 +412,64 @@ class TestDocumentSansImages:
         assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
         assert "images de page absentes : [1]" in depot.fin["message"]
         assert depot.fin["agregats"][1].compared == 1
+
+
+# -- Matrice de l'extraction -------------------------------------------------------
+
+
+class TestMatrice:
+    def test_les_cinq_cas(self) -> None:
+        """vide/vide VN, vide/lu FP, rempli/vide FN, egal VP, different FP+FN."""
+        cas = [
+            (None, None, "vn"),
+            (None, "INVENTE", "fp"),
+            ("DUPONT", None, "fn"),
+            ("Dupont", "DUPONT", "vp"),
+        ]
+        for attendu, lu, classe in cas:
+            verite = [_champ(1, attendu)]
+            ocr = _ocr(_kv("deposant.nom", lu)) if lu else None
+            agregat = evaluer_document(verite, ocr, 9, CLE).agregats[1]
+            comptes = {k: getattr(agregat, k) for k in ("vp", "fp", "fn", "vn")}
+            assert comptes == {k: int(k == classe) for k in comptes}, (attendu, lu)
+        agregat = evaluer_document(
+            [_champ(1, "DUPONT")], _ocr(_kv("deposant.nom", "DURAND")), 9, CLE
+        ).agregats[1]
+        assert (agregat.fp, agregat.fn, agregat.substitutions) == (1, 1, 1)
+
+    def test_taux_par_caractere(self) -> None:
+        agregat = evaluer_document(
+            [_champ(1, "DUPONT")], _ocr(_kv("deposant.nom", "DUPOND")), 9, CLE
+        ).agregats[1]
+        assert (agregat.somme_distance, agregat.somme_longueur_attendue) == (1, 6)
+
+    def test_libelles_figes(self) -> None:
+        champ = _champ(1, "x", sensible=True, value_type="TEXT")
+        agregat = evaluer_document([champ], None, 9, CLE).agregats[1]
+        assert (agregat.section_id, agregat.value_type, agregat.sensitive) == (
+            "deposant",
+            "TEXT",
+            True,
+        )
+
+
+class TestEmpreinteSchema:
+    def test_contenu_et_non_ids(self) -> None:
+        from adam_worker.benchmark.worker import empreinte_schema
+
+        base = {
+            "pages": [{"page_number": 1, "description": "Deposant"}],
+            "field_specs": [
+                {"id": 1, "page": 1, "section_id": "d", "field_key": "nom", "value_type": "TEXT"}
+            ],
+        }
+        autre_base = {
+            "pages": base["pages"],
+            "field_specs": [dict(base["field_specs"][0], id=999, polygon=[1.0] * 8)],
+        }
+        retype = {
+            "pages": base["pages"],
+            "field_specs": [dict(base["field_specs"][0], value_type="NUMBER")],
+        }
+        assert empreinte_schema(base) == empreinte_schema(autre_base)
+        assert empreinte_schema(base) != empreinte_schema(retype)

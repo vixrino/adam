@@ -34,13 +34,16 @@ Echecs
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from adam_api.core.config import settings
 from adam_core.enums.status import TestExecutionStatus, TestRecipeStatus
 from adam_worker.base_worker import BaseWorker
+from adam_worker.benchmark.comparateur import COMPARATEUR_VERSION
 from adam_worker.benchmark.depot import DepotBenchmark, ExecutionReservee
 from adam_worker.benchmark.evaluation import (
     Agregat,
@@ -137,7 +140,9 @@ class TestExecutionWorker(BaseWorker):
                 "COMPARISON_HMAC_KEY absente : les champs sensibles ne peuvent etre juges"
             )
 
-        modele = ModeleDocument.depuis_schema(await self.depot.schema(execution.schema_id))
+        schema = await self.depot.schema(execution.schema_id)
+        await self.depot.identifier(execution.id, COMPARATEUR_VERSION, empreinte_schema(schema))
+        modele = ModeleDocument.depuis_schema(schema)
         documents = await self.depot.documents(execution.document_ids)
         if not documents:
             raise EchecExecution(f"recette {execution.recipe_id} sans document existant")
@@ -187,9 +192,10 @@ class TestExecutionWorker(BaseWorker):
             )
             fusionner_histogrammes(histogramme, resultat.histogramme)
             for field_spec_id, agregat in resultat.agregats.items():
-                cumul = agregats.setdefault(field_spec_id, Agregat(agregat.field_key))
-                cumul.compared += agregat.compared
-                cumul.diff_count += agregat.diff_count
+                if field_spec_id in agregats:
+                    agregats[field_spec_id].ajouter(agregat)
+                else:
+                    agregats[field_spec_id] = agregat
             self.logger.info(
                 "document compare [execution_id=%s document_id=%s verifies=%s ecarts=%s]",
                 execution.id,
@@ -217,3 +223,28 @@ class TestExecutionWorker(BaseWorker):
         """Images de page deja rendues par l'ingestion, dans l'ordre des noms."""
         dossier = self.pvc_root / self.pages_dir(file_id)
         return sorted(dossier.glob("*.png")) if dossier.is_dir() else []
+
+
+def empreinte_schema(schema: Mapping[str, Any]) -> str:
+    """Empreinte du schema tel qu'il pilote l'extraction et la comparaison.
+
+    Faite du contenu, pas des ids : le meme schema en base de dev et en base de
+    recette a la meme empreinte, et un champ ajoute, retype ou redecrit la
+    change. Les polygones, qui ne jouent ni sur la lecture ni sur le verdict,
+    n'y entrent pas.
+    """
+    contenu = {
+        "pages": sorted((p["page_number"], p["description"]) for p in schema.get("pages") or []),
+        "champs": sorted(
+            (
+                s["page"],
+                s.get("section_id") or "",
+                s["field_key"],
+                s.get("group_id") or "",
+                s.get("value_type") or "",
+                s.get("description") or s.get("display_label") or "",
+            )
+            for s in schema.get("field_specs") or []
+        ),
+    }
+    return hashlib.sha256(json.dumps(contenu, ensure_ascii=False).encode()).hexdigest()[:16]
