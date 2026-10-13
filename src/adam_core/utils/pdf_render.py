@@ -1,6 +1,6 @@
 """Rendu des pages d'un PDF en images PNG (mini worker Sprint 3, ticket 8).
 
-PyMuPDF (fitz) fait tout le travail : ouverture/validation du PDF et rendu
+PyMuPDF (module pymupdf) fait tout le travail : ouverture/validation du PDF et rendu
 image page par page.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Sequence
 
-import fitz  # PyMuPDF
+import pymupdf
 
 PAGE_IMAGE_DPI = 300
 
@@ -44,7 +44,7 @@ def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     written: List[Path] = []
     try:
-        with fitz.open(str(pdf_path)) as doc:
+        with pymupdf.open(str(pdf_path)) as doc:
             if doc.page_count == 0:
                 raise PdfRenderError(f"PDF sans page ({pdf_path})")
             for page_number in range(1, doc.page_count + 1):
@@ -57,7 +57,7 @@ def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
         for path in written:
             path.unlink(missing_ok=True)
         raise
-    except fitz.FileDataError as exc:
+    except pymupdf.FileDataError as exc:
         for path in written:
             path.unlink(missing_ok=True)
         raise PdfRenderError(f"PDF illisible ({pdf_path}): {exc}") from exc
@@ -76,11 +76,6 @@ def reorder_pdf(source: Path, destination: Path, ordre: Sequence[int]) -> None:
     i + 1. L'ecriture passe par un fichier temporaire renomme a la fin : un
     echec ne laisse jamais de PDF tronque a l'emplacement final.
     """
-    # Import local, sous le nom pymupdf : le module peut importer PyMuPDF sous
-    # l'alias fitz ou sous pymupdf selon le depot, et cette fonction ne doit
-    # dependre ni de l'un ni de l'autre.
-    import pymupdf
-
     temporaire = destination.with_name(destination.name + ".tmp")
     try:
         with pymupdf.open(str(source)) as doc:

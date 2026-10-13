@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-import fitz
+import pymupdf
 import pytest
 
 from adam_core.utils.pdf_render import (
@@ -14,7 +14,7 @@ from adam_core.utils.pdf_render import (
 
 
 def _make_pdf(path: Path, page_count: int) -> None:
-    doc = fitz.open()
+    doc = pymupdf.open()
     for i in range(page_count):
         page = doc.new_page()
         page.insert_text((72, 72), f"Page {i + 1}")
@@ -79,16 +79,16 @@ def test_render_pages_to_png_cleans_up_partial_output_on_mid_render_failure(
     _make_pdf(pdf_path, page_count=3)
     output_dir = tmp_path / "out"
 
-    original_save = fitz.Pixmap.save
+    original_save = pymupdf.Pixmap.save
     calls = {"n": 0}
 
-    def flaky_save(self: fitz.Pixmap, path: str, *args: object, **kwargs: object) -> None:
+    def flaky_save(self: pymupdf.Pixmap, path: str, *args: object, **kwargs: object) -> None:
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("page illisible")
         original_save(self, path, *args, **kwargs)
 
-    monkeypatch.setattr(fitz.Pixmap, "save", flaky_save)
+    monkeypatch.setattr(pymupdf.Pixmap, "save", flaky_save)
 
     with pytest.raises(PdfRenderError):
         render_pages_to_png(pdf_path, output_dir)

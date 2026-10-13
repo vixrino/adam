@@ -43,7 +43,7 @@ from typing import Tuple
 # Le script est lance depuis la racine du depot : on expose src/ au PYTHONPATH.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import fitz  # PyMuPDF  # noqa: E402
+import pymupdf  # noqa: E402
 from sqlalchemy import delete, select  # noqa: E402
 
 from adam_api.core.config import settings  # noqa: E402
@@ -100,7 +100,7 @@ def ko(message: str) -> None:
 def build_pdf(destination: Path, pages: int) -> None:
     """Ecrit un PDF valide de `pages` pages, une ligne de texte par page."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    document = fitz.open()
+    document = pymupdf.open()
     try:
         for number in range(1, pages + 1):
             page = document.new_page()
@@ -113,7 +113,7 @@ def build_pdf(destination: Path, pages: int) -> None:
 def _is_unreadable(path: Path) -> bool:
     """Vrai si PyMuPDF echoue a ouvrir le fichier ou n'y trouve aucune page."""
     try:
-        with fitz.open(str(path)) as document:
+        with pymupdf.open(str(path)) as document:
             return document.page_count == 0
     except Exception:
         return True
@@ -373,7 +373,7 @@ async def main(args: argparse.Namespace) -> int:
             return 1
         pdf_absolute_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(source, pdf_absolute_path)
-        expected_pages = fitz.open(str(pdf_absolute_path)).page_count
+        expected_pages = pymupdf.open(str(pdf_absolute_path)).page_count
         ok(f"copie de {source} ({expected_pages} page(s))")
     elif args.corrupt:
         build_corrupt_pdf(pdf_absolute_path, args.pages)
