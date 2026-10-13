@@ -11,9 +11,14 @@ normalise ici en une forme plate — une propriete par cle pointee — car c'est
 la seule que le json_schema strict de Mistral accepte, et c'est elle qui fait
 que l'annotation rend directement les field_key du contrat (CA-2 du ticket T5).
 
-Les groupes repetables du script (`<variable_numero_...>`) sont aplatis en une
-seule instance : la repetition des champs est portee par le ticket T7 et ne
-change rien a l'appel OCR, seulement au depliage de la reponse.
+Les groupes repetables du script (`<variable_numero_...>`) sont decrits ici en
+une seule instance. Le seed les deplie en une FIELD_SPEC par ligne (group_id,
+REPEATABLE_SECTIONS), et c'est de ces lignes que l'extraction tire une
+propriete par ligne de tableau (ticket T7, connectors/modele.py).
+
+Les prets a la consommation n° 7 et 8 de la page 11 ne sont pas encore
+declares : le seed place toutes les instances d'une section sur une seule
+page, et il faudrait les repartir entre les pages 10 et 11.
 
 Les types sont ceux du script d'origine, sauf la ou un CERFA reel les a mis
 en defaut : code postal, escalier et etage passent en string, un number

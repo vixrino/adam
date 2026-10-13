@@ -110,8 +110,14 @@ _CONSIGNE = (
     "libelle : les champs qui en dependent restent null. De meme, un champ "
     "que la reponse cochee prive d'objet — un numero de dossier alors que la "
     "case « aucun dossier precedent » est cochee — rend null.\n"
-    "Si une rubrique porte plusieurs lignes, ne rends que la premiere. Ne "
-    "concatene jamais plusieurs lignes dans un meme champ.\n"
+    "Ne concatene jamais plusieurs lignes dans un meme champ.\n"
+    "Tableaux a lignes numerotees (prets, dettes, personnes...) : une "
+    "propriete dont le nom porte une instance, comme pret_5, designe la ligne "
+    "imprimee n° 5 du tableau. Range chaque valeur dans la ligne ou elle est "
+    "ecrite, jamais dans une autre : si la ligne 4 est vide et la ligne 5 "
+    "remplie, la ligne 4 reste null et la 5 recoit ses valeurs. Une ligne "
+    "vide laisse toutes ses proprietes a null. Sans numero imprime, l'ordre "
+    "des lignes de haut en bas fait foi.\n"
     "Les en-tetes, pieds de page, references de formulaire, numeros de notice "
     "et mentions d'impression ne sont pas des donnees saisies : ignore-les. "
     "Une rubrique laissee vide par le deposant rend null pour tous ses champs, "
@@ -199,7 +205,7 @@ class MistralOcrConnector(BaseOcrConnector):
                 # Page reconnue mais sans champs : rien a annoter.
                 continue
             annotation = await self._extract_fields(markdown, page_number, fields)
-            page = self._build_page(page_number, fields, annotation, dims)
+            page = self._build_page(page_number, fields, annotation, dims, modele)
             detected += sum(1 for _, _, kv in _iter_pairs(page) if kv.value is not None)
             pages.append(page)
 
@@ -356,15 +362,24 @@ class MistralOcrConnector(BaseOcrConnector):
         fields: Mapping[str, FieldDef],
         annotation: Mapping[str, Any],
         dims: Mapping[str, Any],
+        modele: ModeleDocument,
     ) -> Page:
         """Itere sur le schema, jamais sur l'annotation : une cle inventee par
         le modele est ignoree, une cle attendue mais absente donne un KVPair
-        sans valeur — le meme contrat que le mock et le seed."""
+        sans valeur — le meme contrat que le mock et le seed.
+
+        La cle d'appel d'une ligne de tableau ("section.pret_2.champ") est
+        redecoupee en id="section.champ" et group_id="pret_2", la forme du
+        contrat que le merger rapproche de la bonne ligne.
+        """
         sections: Dict[str, List[KVPair]] = {}
         for key, spec in fields.items():
             value = _to_kv_value(annotation.get(key), spec)
-            section_id = key.split(".", 1)[0]
-            sections.setdefault(section_id, []).append(KVPair(id=key, value=value))
+            cle, group_id = modele.cible(key)
+            section_id = cle.split(".", 1)[0]
+            sections.setdefault(section_id, []).append(
+                KVPair(id=cle, group_id=group_id, value=value)
+            )
 
         return Page(
             page_number=page_number,
@@ -535,19 +550,26 @@ def _annotation_format(page_number: int, fields: Mapping[str, FieldDef]) -> Dict
     }
 
 
-def _flatten(annotation: Mapping[str, Any], expected: set[str]) -> Dict[str, Any]:
+def _flatten(
+    annotation: Mapping[str, Any], expected: set[str], prefixe: str = ""
+) -> Dict[str, Any]:
     """Ramene l'annotation a un plat cle pointee -> valeur.
 
-    Le schema envoye est plat, mais un modele peut regrouper par section
-    ("deposant": {"deposant.nom": ...}) : on descend dans tout dictionnaire
-    dont la cle n'est pas elle-meme un champ attendu.
+    Le schema envoye est plat, mais un modele peut regrouper : par section
+    ("deposant": {"deposant.nom": ...}), ou par instance d'un tableau
+    ("credits_consommation": {"pret_2": {"reference": ...}}). On descend dans
+    tout dictionnaire dont la cle n'est pas elle-meme un champ attendu, et une
+    cle est retenue telle quelle ou prefixee du chemin qui y mene.
     """
     flat: Dict[str, Any] = {}
     for key, value in annotation.items():
+        chemin = f"{prefixe}.{key}" if prefixe else key
         if key in expected:
             flat[key] = value
+        elif chemin in expected:
+            flat[chemin] = value
         elif isinstance(value, Mapping):
-            flat.update(_flatten(value, expected))
+            flat.update(_flatten(value, expected, chemin))
     return flat
 
 
