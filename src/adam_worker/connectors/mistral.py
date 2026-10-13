@@ -155,6 +155,9 @@ class MistralOcrConnector(BaseOcrConnector):
         self.endpoint = endpoint.rstrip("/")
         self.model = model
         self.annotation_model = annotation_model
+        #: Appels HTTP passes au moteur, reprises comprises. Le benchmark en
+        #: tire ocr_calls_made : c'est ce qu'un passage coute.
+        self.appels = 0
         # Un client injecte appartient a l'appelant, qui gere sa fermeture.
         self._external_client = client is not None
         self._client = client or httpx.AsyncClient(
@@ -234,6 +237,9 @@ class MistralOcrConnector(BaseOcrConnector):
                 "provider": "mistral",
                 "model": self.model,
                 "annotation_model": self.annotation_model,
+                # Mistral ne rend aucune confiance par champ : celle des KVPair
+                # est la valeur par defaut du contrat (1.0), pas une mesure.
+                "confidence_fournie": False,
                 "anomalies_pages": anomalies,
                 # Page du formulaire reconnue -> rang de son image dans le PDF : de
                 # quoi remettre les images dans l'ordre du formulaire.
@@ -306,6 +312,7 @@ class MistralOcrConnector(BaseOcrConnector):
         url = f"{self.endpoint}{path}"
         last_error = ""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
+            self.appels += 1
             try:
                 response = await self._client.post(url, json=payload)
             except httpx.HTTPError as exc:

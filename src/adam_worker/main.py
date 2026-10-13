@@ -23,6 +23,7 @@ from adam_worker.base_worker import BaseWorker
 from adam_worker.consensus_worker import ConsensusWorker
 from adam_worker.document_progress_worker import DocumentProgressWorker
 from adam_worker.page_image_worker import PageImageWorker
+from adam_worker.benchmark.worker import TestExecutionWorker
 from adam_worker.prepopulation.poller import PrepopulationWorker
 
 
@@ -56,6 +57,7 @@ async def main() -> None:
         PrepopulationWorker(),
         ConsensusWorker(),
         DocumentProgressWorker(),
+        TestExecutionWorker(),
     ]
     _install_signal_handlers(workers)
     await asyncio.gather(*(worker.run_forever() for worker in workers))

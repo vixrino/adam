@@ -62,6 +62,12 @@ class Settings(CoreSettings):
     #: Une recherche au plus toutes les N secondes par utilisateur.
     ad_rate_seconds: float = 2.0
 
+    #: Cle du HMAC des valeurs lues sur les champs sensibles, dans les ecarts du
+    #: benchmark : une erreur recurrente sur un IBAN se reconnait a son
+    #: empreinte, sans que l'IBAN soit stocke. Vide : le benchmark refuse de
+    #: tourner. Ne vit que dans l'environnement, jamais en base ni en commit.
+    comparison_hmac_key: str = ""
+
     @property
     def cors_origins(self) -> List[str]:
         return [o.strip() for o in self.api_cors_origins.split(",")]
