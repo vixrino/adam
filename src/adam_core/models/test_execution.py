@@ -73,6 +73,11 @@ class TestExecution(OrganisationScoped, ProjectScoped, Base):
     ocr_provider: Mapped[str] = mapped_column(String, nullable=False)
     ocr_model_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: Ce qui doit etre identique pour que deux scores se comparent : la regle
+    #: de comparaison (normalisation, verdicts) et le schema (champs, types,
+    #: descriptions de pages). Ecrits par le worker au lancement.
+    comparateur_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    schema_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # -- Totaux du passage ---------------------------------------------------
     documents_compared: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

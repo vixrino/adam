@@ -1,0 +1,1830 @@
+diff --git a/scripts/migrer_expected_page_count.py b/scripts/migrer_expected_page_count.py
+index 73d3b03..78eaf8c 100644
+--- a/scripts/migrer_expected_page_count.py
++++ b/scripts/migrer_expected_page_count.py
+@@ -6,7 +6,10 @@ Met une base au niveau des derniers changements de modele, en une commande :
+   - dataset.expected_page_count : nombre de pages exige des PDF ingeres ;
+   - schema_page : description de chaque page d'un schema, qui sert a
+     reconnaitre les pages et a les remettre en ordre (extraction generique) ;
+-  - field_spec.description : ce que le champ contient, dit au moteur OCR.
++  - field_spec.description : ce que le champ contient, dit au moteur OCR ;
++  - metriques du benchmark : matrice et libelles sur evaluation_report,
++    version du comparateur et empreinte du schema sur test_execution, config
++    sur test_recipe.
+ 
+ Etapes :
+   1. cree les migrations alembic manquantes, branchees sur la tete actuelle
+@@ -149,6 +152,53 @@ def downgrade() -> None:
+ """
+ )
+ 
++MIGRATION_METRIQUES = (
++    _ENTETE.format(
++        titre="metriques du benchmark OCR",
++        explication=(
++            "Matrice de l'extraction (vp, fp, fn, vn, substitutions) et libelles figes sur\n"
++            "evaluation_report, version du comparateur et empreinte du schema sur\n"
++            "test_execution, config du test sur test_recipe."
++        ),
++    )
++    + """
++from sqlalchemy.dialects import postgresql
++
++_COMPTES = ("vp", "fp", "fn", "vn", "substitutions", "somme_distance", "somme_longueur_attendue")
++
++
++def upgrade() -> None:
++    for nom in _COMPTES:
++        op.add_column(
++            "evaluation_report",
++            sa.Column(nom, sa.Integer(), nullable=False, server_default="0"),
++        )
++    op.add_column("evaluation_report", sa.Column("page", sa.Integer(), nullable=True))
++    op.add_column("evaluation_report", sa.Column("section_id", sa.String(), nullable=True))
++    op.add_column("evaluation_report", sa.Column("value_type", sa.String(), nullable=True))
++    op.add_column(
++        "evaluation_report",
++        sa.Column("sensitive", sa.Boolean(), nullable=False, server_default="false"),
++    )
++    op.add_column("test_execution", sa.Column("comparateur_version", sa.String(), nullable=True))
++    op.add_column("test_execution", sa.Column("schema_hash", sa.String(), nullable=True))
++    op.add_column(
++        "test_recipe",
++        sa.Column(
++            "config", postgresql.JSONB(), nullable=False, server_default=sa.text("'{}'::jsonb")
++        ),
++    )
++
++
++def downgrade() -> None:
++    op.drop_column("test_recipe", "config")
++    op.drop_column("test_execution", "schema_hash")
++    op.drop_column("test_execution", "comparateur_version")
++    for nom in ("sensitive", "value_type", "section_id", "page", *reversed(_COMPTES)):
++        op.drop_column("evaluation_report", nom)
++"""
++)
++
+ #: DDL direct pour une base non suivie par alembic, rejouable sans effet.
+ DDL_DIRECT = [
+     "ALTER TABLE dataset ADD COLUMN IF NOT EXISTS expected_page_count INTEGER",
+@@ -165,6 +215,25 @@ DDL_DIRECT = [
+     )
+     """,
+     "CREATE INDEX IF NOT EXISTS ix_schema_page_schema_id ON schema_page (schema_id)",
++    *(
++        f"ALTER TABLE evaluation_report ADD COLUMN IF NOT EXISTS {nom} INTEGER NOT NULL DEFAULT 0"
++        for nom in (
++            "vp",
++            "fp",
++            "fn",
++            "vn",
++            "substitutions",
++            "somme_distance",
++            "somme_longueur_attendue",
++        )
++    ),
++    "ALTER TABLE evaluation_report ADD COLUMN IF NOT EXISTS page INTEGER",
++    "ALTER TABLE evaluation_report ADD COLUMN IF NOT EXISTS section_id VARCHAR",
++    "ALTER TABLE evaluation_report ADD COLUMN IF NOT EXISTS value_type VARCHAR",
++    "ALTER TABLE evaluation_report ADD COLUMN IF NOT EXISTS sensitive BOOLEAN NOT NULL DEFAULT false",
++    "ALTER TABLE test_execution ADD COLUMN IF NOT EXISTS comparateur_version VARCHAR",
++    "ALTER TABLE test_execution ADD COLUMN IF NOT EXISTS schema_hash VARCHAR",
++    "ALTER TABLE test_recipe ADD COLUMN IF NOT EXISTS config JSONB NOT NULL DEFAULT '{}'::jsonb",
+ ]
+ 
+ 
+@@ -191,6 +260,11 @@ CHANGEMENTS = [
+         contenu=MIGRATION_SCHEMA_PAGE,
+         deja_couvert=lambda t: "create_table" in t and '"schema_page"' in t,
+     ),
++    Changement(
++        slug="metriques_benchmark",
++        contenu=MIGRATION_METRIQUES,
++        deja_couvert=lambda t: '"somme_longueur_attendue"' in t and '"evaluation_report"' in t,
++    ),
+ ]
+ 
+ 
+@@ -308,10 +382,13 @@ async def _etat(core: str) -> Dict[str, bool]:
+                 requete_colonne, {"t": "field_spec", "c": "description"}
+             )
+             schema_page = await conn.execute(text("SELECT to_regclass('schema_page') IS NOT NULL"))
++            # La derniere colonne ajoutee par le changement : si elle est la, tout l'est.
++            metriques = await conn.execute(requete_colonne, {"t": "test_recipe", "c": "config"})
+             return {
+                 "expected_page_count": bool(page_count.scalar_one()),
+                 "description": bool(description.scalar_one()),
+                 "schema_page": bool(schema_page.scalar_one()),
++                "metriques": bool(metriques.scalar_one()),
+             }
+     finally:
+         await engine.dispose()
+diff --git a/src/nota_api/main.py b/src/nota_api/main.py
+index f839fa1..1fddae2 100644
+--- a/src/nota_api/main.py
++++ b/src/nota_api/main.py
+@@ -15,6 +15,7 @@ from nota_api.core.security import install_jwt_middleware
+ from nota_api.dependencies.auth import get_caller, require_service
+ from nota_api.routers.admin import router as admin_router
+ from nota_api.routers.annuaire import router as annuaire_router
++from nota_api.routers.benchmark import router as benchmark_router
+ from nota_api.routers.datasets import router as datasets_router
+ from nota_api.routers.document_fields import router as document_fields_router
+ from nota_api.routers.documents import router as documents_router
+@@ -71,6 +72,7 @@ app.include_router(admin_router, prefix=PREFIX, dependencies=[Depends(get_caller
+ app.include_router(orgs_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+ app.include_router(users_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+ app.include_router(annuaire_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
++app.include_router(benchmark_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+ app.include_router(projects_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+ app.include_router(schemas_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+ app.include_router(datasets_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+diff --git a/src/nota_api/routers/benchmark.py b/src/nota_api/routers/benchmark.py
+new file mode 100644
+index 0000000..5d02c88
+--- /dev/null
++++ b/src/nota_api/routers/benchmark.py
+@@ -0,0 +1,463 @@
++"""Benchmark OCR : recettes de test, executions et metriques, pour l'IHM.
++
++Le parcours d'un test, tel que l'IHM le deroule :
++
++    POST /test-recipes                     figer un lot de documents de reference
++    POST /test-executions                  lancer un passage (PENDING)
++    GET  /test-executions/{id}             suivre l'avancement (RUNNING...)
++    GET  /test-executions/{id}/metriques   precision, rappel, F1, decompositions
++    GET  /test-executions/{id}/ecarts      les erreurs du moteur, champ par champ
++    GET  /test-executions/comparaison      deux passages cote a cote
++
++Le passage lui-meme est fait par le worker de benchmark : ces routes ne font
++que creer, lire et calculer. Les metriques sont calculees a la lecture depuis
++les comptes figes par le worker (nota_core.benchmark.metriques).
++
++Droits : superviseurs et administrateurs NOTA, a qui le RACI confie les
++recettes de tests, les campagnes et les rapports.
++"""
++
++from __future__ import annotations
++
++from datetime import datetime, timezone
++from typing import Any, Dict, List, Optional
++
++from fastapi import APIRouter, Depends, HTTPException, Query
++from pydantic import BaseModel, Field
++from sqlalchemy import func, select
++from sqlalchemy.ext.asyncio import AsyncSession
++
++from nota_api.dependencies.auth import UserCaller, require_user
++from nota_api.dependencies.db import get_db
++from nota_core.benchmark.metriques import calculer, comparer
++from nota_core.enums.roles import PlatformRole
++from nota_core.enums.status import TestExecutionStatus, TestRecipeStatus
++from nota_core.models import (
++    ComparisonResult,
++    Dataset,
++    Document,
++    DocumentField,
++    EvaluationReport,
++    FieldProposal,
++    FieldSpec,
++    TestExecution,
++    TestRecipe,
++    User,
++)
++
++router = APIRouter(tags=["Benchmark OCR"])
++
++_ROLES = {PlatformRole.NOTA_SUPERVISOR.value, PlatformRole.NOTA_ADMIN.value}
++
++
++async def require_benchmark(caller: UserCaller = Depends(require_user)) -> UserCaller:
++    if caller.platform_role not in _ROLES:
++        raise HTTPException(
++            status_code=403, detail="Reserve aux superviseurs et administrateurs NOTA"
++        )
++    return caller
++
++
++# -- Schemas ---------------------------------------------------------------------
++
++
++class ConfigTest(BaseModel):
++    """Configuration du test, figee avec la recette."""
++
++    #: F1 global minimal pour que le passage soit « reussi ».
++    seuil_f1: Optional[float] = Field(default=None, ge=0, le=1)
++    #: Taux d'erreur maximal par champ (cle exacte ou prefixe), pour les champs
++    #: critiques : {"gestion_budget.iban": 0.0}.
++    seuils_par_champ: Dict[str, float] = Field(default_factory=dict)
++    #: Prefixes de cle ignores par les metriques : ["certification."].
++    champs_exclus: List[str] = Field(default_factory=list)
++
++
++class RecetteIn(BaseModel):
++    dataset_id: int
++    name: str = Field(min_length=1)
++    description: Optional[str] = None
++    #: Documents de reference. Vide : ceux du dataset qui portent au moins une
++    #: proposition humaine, seuls a avoir une verite terrain.
++    document_ids: List[int] = Field(default_factory=list)
++    config: ConfigTest = Field(default_factory=ConfigTest)
++    #: Figer tout de suite (une execution exige une recette figee).
++    verrouiller: bool = True
++
++
++class RecettePatch(BaseModel):
++    name: Optional[str] = None
++    description: Optional[str] = None
++    document_ids: Optional[List[int]] = None
++    config: Optional[ConfigTest] = None
++
++
++class RecetteOut(BaseModel):
++    id: int
++    dataset_id: int
++    name: str
++    description: Optional[str] = None
++    document_ids: List[int]
++    status: str
++    config: Dict[str, Any]
++    locked_at: Optional[datetime] = None
++    created_at: Optional[datetime] = None
++
++
++class ExecutionIn(BaseModel):
++    recipe_id: int
++
++
++class ExecutionOut(BaseModel):
++    id: int
++    recipe_id: int
++    status: str
++    ocr_provider: str
++    ocr_model_id: Optional[str] = None
++    comparateur_version: Optional[str] = None
++    schema_hash: Optional[str] = None
++    error_message: Optional[str] = None
++    documents_compared: int
++    fields_compared: int
++    fields_human_verified: int
++    diff_count: int
++    unexpected_count: int
++    ocr_calls_made: int
++    pages_processed: int
++    created_at: Optional[datetime] = None
++    started_at: Optional[datetime] = None
++    finished_at: Optional[datetime] = None
++
++
++class EcartOut(BaseModel):
++    document_id: int
++    field_key: str
++    group_id: Optional[str] = None
++    page: int
++    verdict: str
++    diff_kind: Optional[str] = None
++    #: Vides pour un champ sensible : seules l'empreinte et l'ampleur sortent.
++    expected_value: Optional[str] = None
++    observed_value: Optional[str] = None
++    edit_distance: Optional[int] = None
++    sensitive: bool
++
++
++def _recette_out(r: TestRecipe) -> RecetteOut:
++    return RecetteOut(
++        id=r.id,
++        dataset_id=r.dataset_id,
++        name=r.name,
++        description=r.description,
++        document_ids=list(r.document_ids or []),
++        status=r.status,
++        config=dict(r.config or {}),
++        locked_at=r.locked_at,
++        created_at=r.created_at,
++    )
++
++
++def _execution_out(e: TestExecution) -> ExecutionOut:
++    return ExecutionOut.model_validate(e, from_attributes=True)
++
++
++async def _createur(db: AsyncSession, caller: UserCaller) -> int:
++    user_id = (
++        await db.execute(
++            select(User.id).where(func.upper(User.matricule) == caller.matricule.upper())
++        )
++    ).scalar_one_or_none()
++    if user_id is None:
++        raise HTTPException(status_code=403, detail="Appelant inconnu de la table user")
++    return int(user_id)
++
++
++async def _documents_verifies(db: AsyncSession, dataset_id: int) -> List[int]:
++    """Documents du dataset portant au moins une proposition humaine."""
++    verifies = (
++        select(DocumentField.document_id)
++        .join(FieldProposal, FieldProposal.document_field_id == DocumentField.id)
++        .distinct()
++    )
++    return list(
++        (
++            await db.execute(
++                select(Document.id)
++                .where(Document.dataset_id == dataset_id)
++                .where(Document.id.in_(verifies))
++                .order_by(Document.id)
++            )
++        )
++        .scalars()
++        .all()
++    )
++
++
++# -- Recettes ------------------------------------------------------------------------
++
++
++@router.get("/test-recipes", response_model=List[RecetteOut])
++async def lister_recettes(
++    dataset_id: Optional[int] = None,
++    _: UserCaller = Depends(require_benchmark),
++    db: AsyncSession = Depends(get_db),
++) -> List[RecetteOut]:
++    requete = select(TestRecipe).order_by(TestRecipe.created_at.desc())
++    if dataset_id is not None:
++        requete = requete.where(TestRecipe.dataset_id == dataset_id)
++    return [_recette_out(r) for r in (await db.execute(requete)).scalars().all()]
++
++
++@router.get("/test-recipes/{recipe_id}", response_model=RecetteOut)
++async def lire_recette(
++    recipe_id: int,
++    _: UserCaller = Depends(require_benchmark),
++    db: AsyncSession = Depends(get_db),
++) -> RecetteOut:
++    recette = await db.get(TestRecipe, recipe_id)
++    if recette is None:
++        raise HTTPException(status_code=404, detail="Recette introuvable")
++    return _recette_out(recette)
++
++
++@router.post("/test-recipes", response_model=RecetteOut, status_code=201)
++async def creer_recette(
++    body: RecetteIn,
++    caller: UserCaller = Depends(require_benchmark),
++    db: AsyncSession = Depends(get_db),
++) -> RecetteOut:
++    if await db.get(Dataset, body.dataset_id) is None:
++        raise HTTPException(status_code=404, detail="Dataset introuvable")
++    documents = body.document_ids or await _documents_verifies(db, body.dataset_id)
++    if not documents:
++        raise HTTPException(
++            status_code=422,
++            detail="aucun document avec une proposition humaine : sans verite terrain, "
++            "il n'y a rien a mesurer",
++        )
++    maintenant = datetime.now(timezone.utc)
++    recette = TestRecipe(
++        dataset_id=body.dataset_id,
++        name=body.name,
++        description=body.description,
++        document_ids=documents,
++        config=body.config.model_dump(),
++        status=(TestRecipeStatus.LOCKED if body.verrouiller else TestRecipeStatus.DRAFT).value,
++        locked_at=maintenant if body.verrouiller else None,
++        created_by_user_id=await _createur(db, caller),
++    )
++    db.add(recette)
++    await db.flush()
++    return _recette_out(recette)
++
++
++@router.patch("/test-recipes/{recipe_id}", response_model=RecetteOut)
++async def modifier_recette(
++    recipe_id: int,
++    body: RecettePatch,
++    _: UserCaller = Depends(require_benchmark),
++    db: AsyncSession = Depends(get_db),
++) -> RecetteOut:
++    """Modifiable tant que la recette est un brouillon : une fois figee, deux
++    passages ne seraient plus comparables."""
++    recette = await db.get(TestRecipe, recipe_id)
++    if recette is None:
++        raise HTTPException(status_code=404, detail="Recette introuvable")
++    if recette.status != TestRecipeStatus.DRAFT.value:
++        raise HTTPException(status_code=409, detail="recette figee : en creer une nouvelle")
++    champs = body.model_dump(exclude_unset=True)
++    for cle, valeur in champs.items():
++        setattr(recette, cle, valeur)
++    await db.flush()
++    return _recette_out(recette)
++
++
++@router.post("/test-recipes/{recipe_id}/lock", response_model=RecetteOut)
++async def verrouiller_recette(
++    recipe_id: int,
++    _: UserCaller = Depends(require_benchmark),
++    db: AsyncSession = Depends(get_db),
++) -> RecetteOut:
++    recette = await db.get(TestRecipe, recipe_id)
++    if recette is None:
++        raise HTTPException(status_code=404, detail="Recette introuvable")
++    if recette.status != TestRecipeStatus.DRAFT.value:
++        raise HTTPException(status_code=409, detail=f"recette deja {recette.status}")
++    if not recette.document_ids:
++        raise HTTPException(status_code=422, detail="recette sans document")
++    recette.status = TestRecipeStatus.LOCKED.value
++    recette.locked_at = datetime.now(timezone.utc)
++    await db.flush()
++    return _recette_out(recette)
++
++
++# -- Executions ----------------------------------------------------------------------
++
++
++@router.post("/test-executions", response_model=ExecutionOut, status_code=201)
++async def lancer_execution(
++    body: ExecutionIn,
++    caller: UserCaller = Depends(require_benchmark),
++    db: AsyncSession = Depends(get_db),
++) -> ExecutionOut:
++    """Cree un passage en attente ; le worker de benchmark le prend."""
++    recette = await db.get(TestRecipe, body.recipe_id)
++    if recette is None:
++        raise HTTPException(status_code=404, detail="Recette introuvable")
++    if recette.status != TestRecipeStatus.LOCKED.value:
++        raise HTTPException(
++            status_code=409, detail="recette non figee : la verrouiller avant de la lancer"
++        )
++    dataset = await db.get(Dataset, recette.dataset_id)
++    execution = TestExecution(
++        recipe_id=recette.id,
++        status=TestExecutionStatus.PENDING.value,
++        # Provisoire : le worker y recopie le moteur reellement utilise.
++        ocr_provider=dataset.ocr_provider if dataset else "inconnu",
++        ocr_model_id=dataset.ocr_model_id if dataset else None,
++        created_by_user_id=await _createur(db, caller),
++    )
++    db.add(execution)
++    await db.flush()
++    return _execution_out(execution)
++
++
++@router.get("/test-executions", response_model=List[ExecutionOut])
++async def lister_executions(
++    recipe_id: Optional[int] = None,
++    status: Optional[str] = None,
++    _: UserCaller = Depends(require_benchmark),
++    db: AsyncSession = Depends(get_db),
++) -> List[ExecutionOut]:
++    requete = select(TestExecution).order_by(TestExecution.created_at.desc())
++    if recipe_id is not None:
++        requete = requete.where(TestExecution.recipe_id == recipe_id)
++    if status is not None:
++        requete = requete.where(TestExecution.status == status)
++    return [_execution_out(e) for e in (await db.execute(requete)).scalars().all()]
++
++
++async def _metriques(db: AsyncSession, execution_id: int) -> Dict[str, Any]:
++    execution = await db.get(TestExecution, execution_id)
++    if execution is None:
++        raise HTTPException(status_code=404, detail=f"Execution {execution_id} introuvable")
++    if execution.status != TestExecutionStatus.COMPLETED.value:
++        raise HTTPException(
++            status_code=409,
++            detail=f"execution {execution_id} {execution.status} : metriques disponibles "
++            "une fois COMPLETED",
++        )
++    recette = await db.get(TestRecipe, execution.recipe_id)
++    lignes = (
++        (
++            await db.execute(
++                select(EvaluationReport).where(EvaluationReport.execution_id == execution_id)
++            )
++        )
++        .scalars()
++        .all()
++    )
++    categories = {
++        str(kind or verdict): int(n)
++        for kind, verdict, n in (
++            await db.execute(
++                select(ComparisonResult.diff_kind, ComparisonResult.verdict, func.count())
++                .where(ComparisonResult.execution_id == execution_id)
++                .group_by(ComparisonResult.diff_kind, ComparisonResult.verdict)
++            )
++        ).all()
++    }
++    colonnes = [c.name for c in EvaluationReport.__table__.columns]
++    return calculer(
++        [{c: getattr(rapport, c) for c in colonnes} for rapport in lignes],
++        {c.name: getattr(execution, c.name) for c in TestExecution.__table__.columns},
++        recette.config if recette else {},
++        categories,
++    )
++
++
++@router.get("/test-executions/comparaison")
++async def comparer_executions(
++    a: int = Query(..., description="Execution de reference"),
++    b: int = Query(..., description="Execution comparee a la reference"),
++    _: UserCaller = Depends(require_benchmark),
++    db: AsyncSession = Depends(get_db),
++) -> Dict[str, Any]:
++    """Deux passages cote a cote ; « comparable » faux si la recette, la version
++    du comparateur ou le schema different."""
++    return comparer(await _metriques(db, a), await _metriques(db, b))
++
++
++@router.get("/test-executions/{execution_id}", response_model=ExecutionOut)
++async def lire_execution(
++    execution_id: int,
++    _: UserCaller = Depends(require_benchmark),
++    db: AsyncSession = Depends(get_db),
++) -> ExecutionOut:
++    execution = await db.get(TestExecution, execution_id)
++    if execution is None:
++        raise HTTPException(status_code=404, detail="Execution introuvable")
++    return _execution_out(execution)
++
++
++@router.get("/test-executions/{execution_id}/metriques")
++async def metriques_execution(
++    execution_id: int,
++    _: UserCaller = Depends(require_benchmark),
++    db: AsyncSession = Depends(get_db),
++) -> Dict[str, Any]:
++    """Precision, rappel, F1, intervalles de confiance, decompositions par type,
++    criticite, section, page et champ, verdict de la config, avertissements."""
++    return await _metriques(db, execution_id)
++
++
++@router.get("/test-executions/{execution_id}/ecarts", response_model=List[EcartOut])
++async def ecarts_execution(
++    execution_id: int,
++    verdict: Optional[str] = Query(None, description="MISSING ou WRONG"),
++    field_key: Optional[str] = Query(None, description="Prefixe de cle"),
++    limit: int = Query(100, ge=1, le=1000),
++    offset: int = Query(0, ge=0),
++    _: UserCaller = Depends(require_benchmark),
++    db: AsyncSession = Depends(get_db),
++) -> List[EcartOut]:
++    """Les erreurs du moteur, champ par champ. Un champ sensible n'y montre
++    jamais de valeur : seuls le verdict, la categorie et l'ampleur."""
++    if await db.get(TestExecution, execution_id) is None:
++        raise HTTPException(status_code=404, detail="Execution introuvable")
++    cle = func.concat(FieldSpec.section_id, ".", FieldSpec.field_key)
++    requete = (
++        select(ComparisonResult, DocumentField, FieldSpec)
++        .join(DocumentField, DocumentField.id == ComparisonResult.document_field_id)
++        .join(FieldSpec, FieldSpec.id == DocumentField.field_spec_id)
++        .where(ComparisonResult.execution_id == execution_id)
++        .order_by(DocumentField.document_id, FieldSpec.page, FieldSpec.display_order)
++        .limit(limit)
++        .offset(offset)
++    )
++    if verdict is not None:
++        requete = requete.where(ComparisonResult.verdict == verdict)
++    if field_key is not None:
++        requete = requete.where(
++            (FieldSpec.field_key.startswith(field_key)) | (cle.startswith(field_key))
++        )
++    lignes = (await db.execute(requete)).all()
++    return [
++        EcartOut(
++            document_id=df.document_id,
++            field_key=(
++                fs.field_key
++                if fs.field_key.startswith(f"{fs.section_id}.")
++                else f"{fs.section_id}.{fs.field_key}"
++            ),
++            group_id=df.group_id,
++            page=fs.page,
++            verdict=cr.verdict,
++            diff_kind=cr.diff_kind,
++            expected_value=cr.expected_value,
++            observed_value=cr.observed_value,
++            edit_distance=cr.edit_distance,
++            sensitive=bool(fs.sensitive),
++        )
++        for cr, df, fs in lignes
++    ]
+diff --git a/src/nota_core/benchmark/__init__.py b/src/nota_core/benchmark/__init__.py
+new file mode 100644
+index 0000000..f69cd84
+--- /dev/null
++++ b/src/nota_core/benchmark/__init__.py
+@@ -0,0 +1 @@
++"""Benchmark OCR : ce que l API et le worker partagent (calcul des metriques)."""
+diff --git a/src/nota_core/benchmark/metriques.py b/src/nota_core/benchmark/metriques.py
+new file mode 100644
+index 0000000..4f5e9b4
+--- /dev/null
++++ b/src/nota_core/benchmark/metriques.py
+@@ -0,0 +1,331 @@
++"""Metriques d'une execution de benchmark OCR, calculees a la lecture.
++
++Fonctions pures : elles prennent les comptes que le worker a figes
++(evaluation_report, un par champ) et rendent les indicateurs. Les ratios ne
++sont jamais stockes : une formule ou un seuil qui change ne demande pas de
++relancer le moteur.
++
++Definitions (champs verifies par un humain seulement)
++------------------------------------------------------
++    vp  verite remplie, lecture egale
++    fp  lecture remplie et fausse : valeur inventee, ou substitution
++    fn  verite remplie mal lue : valeur manquee, ou substitution
++    vn  verite vide, lecture vide
++
++    precision = vp / (vp + fp)   quand le moteur ecrit, a-t-il raison ?
++    rappel    = vp / (vp + fn)   des valeurs du document, combien sont lues ?
++    F1        = 2PR / (P + R) = 2vp / (2vp + fp + fn)
++                                 le score global, en micro (comptes sommes)
++
++Une substitution (verite remplie, lecture differente) compte en fp ET en fn :
++c'est l'erreur la plus dangereuse, celle qui passe inapercue.
++
++Garde-fous
++----------
++- Les vn n'entrent dans aucun ratio : un CERFA est surtout vide, et un moteur
++  muet aurait sinon une « exactitude » excellente.
++- Chaque taux porte son intervalle de confiance (Wilson, 95 %), et un bloc de
++  moins de EFFECTIF_MINIMAL valeurs est marque insuffisant.
++- Le score global n'est pas pondere : la decomposition par type et par
++  criticite est toujours rendue a cote.
++- Deux executions ne se comparent que sur la meme recette, avec la meme
++  version de comparateur et la meme empreinte de schema.
++"""
++
++from __future__ import annotations
++
++import math
++from collections import defaultdict
++from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
++
++#: En dessous, un taux est publie mais marque « effectif insuffisant ».
++EFFECTIF_MINIMAL = 5
++#: Une execution sur moins de documents est marquee « echantillon faible ».
++DOCUMENTS_MINIMUM = 10
++
++_COMPTES = (
++    "vp",
++    "fp",
++    "fn",
++    "vn",
++    "substitutions",
++    "somme_distance",
++    "somme_longueur_attendue",
++)
++
++
++def _ratio(numerateur: int, denominateur: int) -> Optional[float]:
++    return numerateur / denominateur if denominateur else None
++
++
++def wilson(succes: int, total: int, z: float = 1.96) -> Optional[Tuple[float, float]]:
++    """Intervalle de Wilson a 95 % d'une proportion : juste meme sur peu de cas,
++    la ou l'approximation normale donne des bornes hors de [0, 1]."""
++    if total == 0:
++        return None
++    p = succes / total
++    denominateur = 1 + z * z / total
++    centre = (p + z * z / (2 * total)) / denominateur
++    marge = z * math.sqrt(p * (1 - p) / total + z * z / (4 * total * total)) / denominateur
++    return (round(max(0.0, centre - marge), 4), round(min(1.0, centre + marge), 4))
++
++
++def bloc(lignes: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
++    """Indicateurs d'un ensemble de champs (global, une section, un type...)."""
++    c = {nom: 0 for nom in _COMPTES}
++    for ligne in lignes:
++        for nom in _COMPTES:
++            c[nom] += int(ligne.get(nom) or 0)
++    vp, fp, fn = c["vp"], c["fp"], c["fn"]
++    inventees = fp - c["substitutions"]
++    #: Valeurs en jeu : remplies d'un cote ou de l'autre (les vn exclus).
++    valeurs = vp + fn + inventees
++    precision = _ratio(vp, vp + fp)
++    rappel = _ratio(vp, vp + fn)
++    # Forme equivalente a 2PR/(P+R), mais definie des qu'une valeur est en jeu :
++    # un champ jamais lu (0 vp, 5 fn) n'a pas de precision, et son F1 vaut 0,
++    # pas « indefini » — sinon le pire champ disparaitrait du classement.
++    f1 = _ratio(2 * vp, 2 * vp + fp + fn)
++    return {
++        **c,
++        "inventees": inventees,
++        "valeurs": valeurs,
++        "vides_confirmes": c["vn"],
++        "precision": _arrondi(precision),
++        "rappel": _arrondi(rappel),
++        "f1": _arrondi(f1),
++        "taux_erreur": _arrondi(_ratio(valeurs - vp, valeurs)),
++        "taux_erreur_caracteres": _arrondi(
++            _ratio(c["somme_distance"], c["somme_longueur_attendue"])
++        ),
++        "ic95_precision": wilson(vp, vp + fp),
++        "ic95_rappel": wilson(vp, vp + fn),
++        "effectif_suffisant": valeurs >= EFFECTIF_MINIMAL,
++    }
++
++
++def _arrondi(valeur: Optional[float]) -> Optional[float]:
++    return round(valeur, 4) if valeur is not None else None
++
++
++def _criticite(ligne: Mapping[str, Any]) -> str:
++    """Critique : donnee personnelle ou montant, dont l'erreur coute le plus."""
++    if ligne.get("sensitive") or str(ligne.get("value_type") or "").upper() == "NUMBER":
++        return "critique"
++    return "standard"
++
++
++def _par(
++    lignes: Sequence[Mapping[str, Any]], cle: Callable[[Mapping[str, Any]], Any]
++) -> Dict[str, Dict[str, Any]]:
++    groupes: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
++    for ligne in lignes:
++        groupes[str(cle(ligne))].append(ligne)
++    return {nom: bloc(groupe) for nom, groupe in sorted(groupes.items())}
++
++
++def _exclu(field_key: str, exclus: Sequence[str]) -> bool:
++    return any(field_key.startswith(prefixe) for prefixe in exclus)
++
++
++def _seuil_du_champ(field_key: str, seuils: Mapping[str, float]) -> Optional[float]:
++    """Seuil le plus specifique : cle exacte, sinon le plus long prefixe."""
++    candidats = [p for p in seuils if field_key == p or field_key.startswith(p)]
++    return float(seuils[max(candidats, key=len)]) if candidats else None
++
++
++def calculer(
++    lignes: Sequence[Mapping[str, Any]],
++    execution: Mapping[str, Any],
++    config: Optional[Mapping[str, Any]] = None,
++    categories: Optional[Mapping[str, int]] = None,
++) -> Dict[str, Any]:
++    """Toutes les metriques d'une execution.
++
++    Args:
++        lignes: les evaluation_report de l'execution, en mappings.
++        execution: compteurs et identite de l'execution (test_execution).
++        config: la config de la recette (seuil_f1, seuils_par_champ,
++            champs_exclus).
++        categories: nombre d'ecarts par diff_kind (comparison_result).
++    """
++    config = config or {}
++    exclus = list(config.get("champs_exclus") or [])
++    retenues = [ligne for ligne in lignes if not _exclu(str(ligne.get("field_key", "")), exclus)]
++
++    global_ = bloc(retenues)
++    par_champ = [
++        {
++            "field_key": ligne.get("field_key"),
++            "page": ligne.get("page"),
++            "section_id": ligne.get("section_id"),
++            "value_type": ligne.get("value_type"),
++            "sensitive": bool(ligne.get("sensitive")),
++            **bloc([ligne]),
++        }
++        for ligne in retenues
++    ]
++    # Les pires champs d'abord : c'est ce qu'on regarde.
++    par_champ.sort(key=lambda c: (c["f1"] is None, c["f1"] if c["f1"] is not None else 0))
++
++    documents = int(execution.get("documents_compared") or 0)
++    perimetre = int(execution.get("fields_compared") or 0)
++    verifies = int(execution.get("fields_human_verified") or 0)
++
++    return {
++        "execution": {
++            "id": execution.get("id"),
++            "recipe_id": execution.get("recipe_id"),
++            "status": execution.get("status"),
++            "ocr_provider": execution.get("ocr_provider"),
++            "ocr_model_id": execution.get("ocr_model_id"),
++            "comparateur_version": execution.get("comparateur_version"),
++            "schema_hash": execution.get("schema_hash"),
++            "started_at": execution.get("started_at"),
++            "finished_at": execution.get("finished_at"),
++        },
++        "global": global_,
++        "par_type": _par(retenues, lambda ligne: ligne.get("value_type") or "?"),
++        "par_criticite": _par(retenues, _criticite),
++        "par_section": _par(retenues, lambda ligne: ligne.get("section_id") or "?"),
++        "par_page": _par(retenues, lambda ligne: ligne.get("page") or "?"),
++        "par_champ": par_champ,
++        "categories_erreurs": dict(categories or {}),
++        "echantillon": {
++            "documents": documents,
++            "champs_perimetre": perimetre,
++            "champs_juges": verifies,
++            # Champs regardes par un humain, sur le perimetre : sous 1, une
++            # partie de la verite manque, et les taux ne valent que pour elle.
++            "couverture": _arrondi(_ratio(verifies, perimetre)),
++            "champs_exclus_par_config": len(lignes) - len(retenues),
++            "faible": documents < DOCUMENTS_MINIMUM,
++        },
++        "cout": {
++            "appels_ocr": execution.get("ocr_calls_made"),
++            "appels_par_document": _arrondi(
++                _ratio(int(execution.get("ocr_calls_made") or 0), documents)
++            ),
++            "pages_par_document": _arrondi(
++                _ratio(int(execution.get("pages_processed") or 0), documents)
++            ),
++        },
++        "verdict": _verdict(global_, par_champ, config),
++        "avertissements": _avertissements(
++            global_, documents, verifies, perimetre, execution, retenues
++        ),
++    }
++
++
++def _verdict(
++    global_: Mapping[str, Any], par_champ: Sequence[Mapping[str, Any]], config: Mapping[str, Any]
++) -> Dict[str, Any]:
++    """Reussi / echoue selon la config de la recette ; None sans seuil."""
++    seuil_f1 = config.get("seuil_f1")
++    seuils = config.get("seuils_par_champ") or {}
++    champs_en_echec = []
++    for champ in par_champ:
++        seuil = _seuil_du_champ(str(champ["field_key"]), seuils)
++        taux = champ["taux_erreur"]
++        if seuil is not None and taux is not None and taux > seuil:
++            champs_en_echec.append(
++                {"field_key": champ["field_key"], "taux_erreur": taux, "seuil": seuil}
++            )
++    if seuil_f1 is None and not seuils:
++        return {"seuil_f1": None, "reussi": None, "champs_en_echec": []}
++    f1 = global_["f1"]
++    global_ok = seuil_f1 is None or (f1 is not None and f1 >= float(seuil_f1))
++    return {
++        "seuil_f1": seuil_f1,
++        "reussi": bool(global_ok and not champs_en_echec),
++        "champs_en_echec": champs_en_echec,
++    }
++
++
++def _avertissements(
++    global_: Mapping[str, Any],
++    documents: int,
++    verifies: int,
++    perimetre: int,
++    execution: Mapping[str, Any],
++    lignes: Sequence[Mapping[str, Any]] = (),
++) -> List[str]:
++    """Ce qu'il faut savoir avant de croire le score."""
++    messages = []
++    juges = sum(int(ligne.get("compared") or 0) for ligne in lignes)
++    matrice = sum(int(ligne.get(nom) or 0) for ligne in lignes for nom in ("vp", "fp", "fn", "vn"))
++    if juges and not matrice:
++        # Execution faite avant que le worker ne compte la matrice : ses champs
++        # ont ete juges, mais vp/fp/fn/vn valent leur defaut, 0.
++        messages.append(
++            "execution anterieure aux metriques : matrice non enregistree, "
++            "relancer la recette pour obtenir precision et rappel"
++        )
++    if documents < DOCUMENTS_MINIMUM:
++        messages.append(
++            f"echantillon faible : {documents} document(s), moins de {DOCUMENTS_MINIMUM}"
++        )
++    if not global_["effectif_suffisant"]:
++        messages.append(
++            f"effectif insuffisant : {global_['valeurs']} valeur(s) jugee(s), "
++            f"moins de {EFFECTIF_MINIMAL}"
++        )
++    if perimetre and verifies < perimetre:
++        messages.append(
++            f"couverture partielle : {verifies} champ(s) verifie(s) sur {perimetre} ; "
++            "les taux ne valent que pour les champs regardes par un humain"
++        )
++    if execution.get("error_message"):
++        messages.append(str(execution["error_message"]))
++    return messages
++
++
++def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
++    """Compare deux resultats de calculer() : b par rapport a a.
++
++    La comparaison est toujours rendue, mais signalee non comparable si la
++    recette, la version du comparateur ou l'empreinte du schema different :
++    un ecart de score n'y mesurerait pas le moteur.
++    """
++    ea, eb = a["execution"], b["execution"]
++    raisons = [
++        f"{libelle} differente"
++        for cle, libelle in (
++            ("recipe_id", "recette"),
++            ("comparateur_version", "version du comparateur"),
++            ("schema_hash", "empreinte du schema"),
++        )
++        if ea.get(cle) != eb.get(cle) or ea.get(cle) is None
++    ]
++    indicateurs = ("precision", "rappel", "f1", "taux_erreur", "taux_erreur_caracteres")
++
++    def delta(x: Optional[float], y: Optional[float]) -> Optional[float]:
++        return round(y - x, 4) if x is not None and y is not None else None
++
++    champs_a = {c["field_key"]: c for c in a["par_champ"]}
++    champs_b = {c["field_key"]: c for c in b["par_champ"]}
++    par_champ = [
++        {
++            "field_key": cle,
++            "f1_a": champs_a[cle]["f1"],
++            "f1_b": champs_b[cle]["f1"],
++            "delta_f1": delta(champs_a[cle]["f1"], champs_b[cle]["f1"]),
++        }
++        for cle in sorted(champs_a.keys() & champs_b.keys())
++    ]
++    par_champ.sort(key=lambda c: c["delta_f1"] if c["delta_f1"] is not None else 0)
++    return {
++        "a": ea,
++        "b": eb,
++        "comparable": not raisons,
++        "raisons": raisons,
++        "global": {
++            nom: {
++                "a": a["global"][nom],
++                "b": b["global"][nom],
++                "delta": delta(a["global"][nom], b["global"][nom]),
++            }
++            for nom in indicateurs
++        },
++        "par_champ": par_champ,
++    }
+diff --git a/src/nota_core/models/evaluation_report.py b/src/nota_core/models/evaluation_report.py
+index 25d4a45..edcda16 100644
+--- a/src/nota_core/models/evaluation_report.py
++++ b/src/nota_core/models/evaluation_report.py
+@@ -21,7 +21,9 @@ mesures agregees deja publiees.
+ 
+ from typing import TYPE_CHECKING
+ 
+-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
++from typing import Optional
++
++from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
+ from sqlalchemy.orm import Mapped, mapped_column
+ 
+ from nota_core.db.base import Base
+@@ -67,6 +69,39 @@ class EvaluationReport(OrganisationScoped, ProjectScoped, Base):
+     compared: Mapped[int] = mapped_column(Integer, nullable=False)
+     diff_count: Mapped[int] = mapped_column(Integer, nullable=False)
+ 
++    # -- Matrice de l'extraction (champs verifies par un humain) --------------
++    # Les ratios (precision, rappel, F1) se calculent a la lecture
++    # (benchmark/metriques.py) ; ces comptes, eux, ne se reconstituent pas
++    # apres coup, les champs justes n'ayant pas de ligne d'ecart.
++    #: Verite remplie, lecture egale.
++    vp: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
++    #: Lecture remplie et fausse : valeur inventee ou substitution.
++    fp: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
++    #: Verite remplie, mal lue : manquee ou substitution.
++    fn: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
++    #: Verite vide, lecture vide : exclus du score, la majorite d'un CERFA.
++    vn: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
++    #: Sous-ensemble compte a la fois en fp et en fn : une valeur lue a la place
++    #: d'une autre, l'erreur qui passe inapercue en auto-validation.
++    substitutions: Mapped[int] = mapped_column(
++        Integer, nullable=False, default=0, server_default="0"
++    )
++    #: Taux d'erreur par caractere : somme des distances d'edition sur la somme
++    #: des longueurs attendues (normalisees). Aucune valeur n'est stockee.
++    somme_distance: Mapped[int] = mapped_column(
++        Integer, nullable=False, default=0, server_default="0"
++    )
++    somme_longueur_attendue: Mapped[int] = mapped_column(
++        Integer, nullable=False, default=0, server_default="0"
++    )
++    # -- Libelles figes, pour agreger sans dependre d'un schema qui evolue ----
++    page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
++    section_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
++    value_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
++    sensitive: Mapped[bool] = mapped_column(
++        Boolean, nullable=False, default=False, server_default="false"
++    )
++
+     @classmethod
+     def __organisation_filter__(cls, organisation_id: int) -> "ColumnElement[bool]":
+         # evaluation_report -> test_execution -> test_recipe -> dataset -> project
+diff --git a/src/nota_core/models/test_execution.py b/src/nota_core/models/test_execution.py
+index a1759db..c408786 100644
+--- a/src/nota_core/models/test_execution.py
++++ b/src/nota_core/models/test_execution.py
+@@ -73,6 +73,11 @@ class TestExecution(OrganisationScoped, ProjectScoped, Base):
+     ocr_provider: Mapped[str] = mapped_column(String, nullable=False)
+     ocr_model_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
++    #: Ce qui doit etre identique pour que deux scores se comparent : la regle
++    #: de comparaison (normalisation, verdicts) et le schema (champs, types,
++    #: descriptions de pages). Ecrits par le worker au lancement.
++    comparateur_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
++    schema_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+ 
+     # -- Totaux du passage ---------------------------------------------------
+     documents_compared: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+diff --git a/src/nota_core/models/test_recipe.py b/src/nota_core/models/test_recipe.py
+index 191aafd..3eff51c 100644
+--- a/src/nota_core/models/test_recipe.py
++++ b/src/nota_core/models/test_recipe.py
+@@ -20,10 +20,10 @@ d'ou le statut LOCKED, prerequis de toute execution.
+ """
+ 
+ from datetime import datetime
+-from typing import List, Optional
++from typing import Any, Dict, List, Optional
+ 
+ from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+-from sqlalchemy.dialects.postgresql import ARRAY
++from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+ from sqlalchemy.orm import Mapped, mapped_column
+ 
+ from nota_core.db.base import Base
+@@ -70,6 +70,13 @@ class TestRecipe(OrganisationScoped, ProjectScoped, Base):
+         default=TestRecipeStatus.DRAFT.value,
+         comment="Cycle de vie : DRAFT, LOCKED, ARCHIVED",
+     )
++    #: Configuration du test, figee avec la recette : deux passages ne se
++    #: comparent que sous la meme. {"seuil_f1": 0.9, "seuils_par_champ":
++    #: {"gestion_budget.iban": 0.0}, "champs_exclus": ["certification."]}.
++    #: Le verdict reussi / echoue se calcule a la lecture, jamais stocke.
++    config: Mapped[Dict[str, Any]] = mapped_column(
++        JSONB, nullable=False, default=dict, server_default="{}"
++    )
+     locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+     created_by_user_id: Mapped[int] = mapped_column(
+         Integer,
+diff --git a/src/nota_worker/benchmark/comparateur.py b/src/nota_worker/benchmark/comparateur.py
+index 2bdbeba..b0a9197 100644
+--- a/src/nota_worker/benchmark/comparateur.py
++++ b/src/nota_worker/benchmark/comparateur.py
+@@ -37,6 +37,11 @@ from typing import Any, Optional
+ from nota_core.enums.status import ComparisonDiffKind, ComparisonVerdict, FieldValueType
+ from nota_core.utils.field_parser import parse_field_value
+ 
++#: Version de la regle de comparaison (normalisation, verdicts, matrice). A
++#: incrementer a chaque changement : deux executions dont la version differe ne
++#: se comparent pas, un meme moteur pouvant y gagner ou perdre des points.
++COMPARATEUR_VERSION = "1"
++
+ #: Tolerance sur les nombres : deux montants lus « 1738.26 » et « 1738.2600001 »
+ #: sont la meme lecture.
+ _TOLERANCE = 1e-6
+diff --git a/src/nota_worker/benchmark/depot.py b/src/nota_worker/benchmark/depot.py
+index 39ea952..a6cf3aa 100644
+--- a/src/nota_worker/benchmark/depot.py
++++ b/src/nota_worker/benchmark/depot.py
+@@ -30,7 +30,7 @@ from nota_core.models import (
+     TestExecution,
+     TestRecipe,
+ )
+-from nota_worker.benchmark.evaluation import Agregat, ChampVerite
++from nota_worker.benchmark.evaluation import COMPTES, Agregat, ChampVerite
+ 
+ 
+ @dataclass(frozen=True)
+@@ -107,6 +107,17 @@ class DepotBenchmark:
+                 schema_id=int(ligne.schema_id),
+             )
+ 
++    async def identifier(
++        self, execution_id: int, comparateur_version: str, schema_hash: str
++    ) -> None:
++        """Note ce qui doit concorder pour que deux scores se comparent."""
++        async with get_async_session() as db:
++            await db.execute(
++                update(TestExecution)
++                .where(TestExecution.id == execution_id)
++                .values(comparateur_version=comparateur_version, schema_hash=schema_hash)
++            )
++
+     async def schema(self, schema_id: int) -> Dict[str, Any]:
+         """Le schema sous la forme de GET /schemas/{id}, pour ModeleDocument."""
+         async with get_async_session() as db:
+@@ -185,6 +196,7 @@ class DepotBenchmark:
+                 sensitive=bool(fs.sensitive),
+                 attendu=df.resolved_value,
+                 verifie=bool(est_verifie),
++                page=fs.page,
+             )
+             for df, fs, est_verifie in lignes
+         ]
+@@ -233,8 +245,11 @@ class DepotBenchmark:
+                             "execution_id": execution_id,
+                             "field_spec_id": field_spec_id,
+                             "field_key": agregat.field_key,
+-                            "compared": agregat.compared,
+-                            "diff_count": agregat.diff_count,
++                            "page": agregat.page,
++                            "section_id": agregat.section_id,
++                            "value_type": agregat.value_type,
++                            "sensitive": agregat.sensitive,
++                            **{nom: getattr(agregat, nom) for nom in COMPTES},
+                         }
+                         for field_spec_id, agregat in agregats.items()
+                     ]
+@@ -242,10 +257,7 @@ class DepotBenchmark:
+                 await db.execute(
+                     instruction.on_conflict_do_update(
+                         constraint="uq_evaluation_report_execution_field_spec",
+-                        set_={
+-                            "compared": instruction.excluded.compared,
+-                            "diff_count": instruction.excluded.diff_count,
+-                        },
++                        set_={nom: getattr(instruction.excluded, nom) for nom in COMPTES},
+                     )
+                 )
+             await db.execute(
+diff --git a/src/nota_worker/benchmark/evaluation.py b/src/nota_worker/benchmark/evaluation.py
+index d1fb007..9856521 100644
+--- a/src/nota_worker/benchmark/evaluation.py
++++ b/src/nota_worker/benchmark/evaluation.py
+@@ -26,7 +26,13 @@ from dataclasses import dataclass, field
+ from typing import Any, Dict, List, Optional, Set, Tuple
+ 
+ from nota_core.schemas.interface_contract import SmartdocDocument
+-from nota_worker.benchmark.comparateur import comparer, empreinte
++from nota_worker.benchmark.comparateur import (
++    _texte,
++    comparer,
++    distance_edition,
++    empreinte,
++    normaliser,
++)
+ from nota_worker.prepopulation.merger import index_ocr_pairs, merge, semantic_key
+ 
+ 
+@@ -45,6 +51,7 @@ class ChampVerite:
+     attendu: Optional[str]
+     #: Au moins une field_proposal : le champ a ete regarde par un humain.
+     verifie: bool
++    page: int = 0
+ 
+     @property
+     def cle(self) -> str:
+@@ -58,9 +65,71 @@ class ChampVerite:
+ 
+ @dataclass
+ class Agregat:
++    """Comptes d'un champ (une ligne de tableau compte comme un champ).
++
++    Matrice de l'extraction, sur les champs verifies :
++        verite vide,    lecture vide       vn   (exclu du score)
++        verite vide,    lecture remplie    fp   (valeur inventee)
++        verite remplie, lecture vide       fn   (valeur manquee)
++        verite remplie, lecture egale      vp
++        verite remplie, lecture differente fp + fn, et substitutions
++    """
++
+     field_key: str
+     compared: int = 0
+     diff_count: int = 0
++    vp: int = 0
++    fp: int = 0
++    fn: int = 0
++    vn: int = 0
++    substitutions: int = 0
++    somme_distance: int = 0
++    somme_longueur_attendue: int = 0
++    page: Optional[int] = None
++    section_id: Optional[str] = None
++    value_type: Optional[str] = None
++    sensitive: bool = False
++
++    def ajouter(self, autre: "Agregat") -> None:
++        """Cumule les comptes d'un autre agregat du meme champ."""
++        for nom in COMPTES:
++            setattr(self, nom, getattr(self, nom) + getattr(autre, nom))
++
++
++#: Champs additifs d'un Agregat, dans l'ordre ou ils s'ecrivent en base.
++COMPTES = (
++    "compared",
++    "diff_count",
++    "vp",
++    "fp",
++    "fn",
++    "vn",
++    "substitutions",
++    "somme_distance",
++    "somme_longueur_attendue",
++)
++
++
++def _classer(agregat: Agregat, attendu: Any, lu: Any, ecart: Any) -> None:
++    """Range un champ juge dans la matrice, et cumule le taux par caractere."""
++    texte_attendu = _texte(str(attendu)) if attendu is not None else ""
++    texte_lu = _texte(str(lu)) if lu is not None else ""
++    agregat.somme_longueur_attendue += len(texte_attendu)
++    if attendu is None and lu is None:
++        agregat.vn += 1
++    elif attendu is None:
++        agregat.fp += 1
++        agregat.somme_distance += len(texte_lu)
++    elif lu is None:
++        agregat.fn += 1
++        agregat.somme_distance += len(texte_attendu)
++    elif ecart is None:
++        agregat.vp += 1
++    else:
++        agregat.fp += 1
++        agregat.fn += 1
++        agregat.substitutions += 1
++        agregat.somme_distance += distance_edition(texte_attendu, texte_lu)
+ 
+ 
+ @dataclass
+@@ -125,12 +194,27 @@ def evaluer_document(
+         if not champ.verifie:
+             continue
+         resultat.fields_human_verified += 1
+-        agregat = resultat.agregats.setdefault(champ.field_spec_id, Agregat(champ.libelle))
++        agregat = resultat.agregats.setdefault(
++            champ.field_spec_id,
++            Agregat(
++                champ.libelle,
++                page=champ.page,
++                section_id=champ.section_id,
++                value_type=champ.value_type,
++                sensitive=champ.sensitive,
++            ),
++        )
+         agregat.compared += 1
+ 
+         lu = lecture.get("ocr_value")
+         confiance = lecture.get("ocr_confidence") if confiance_fournie else None
+         ecart = comparer(champ.attendu, lu, champ.value_type)
++        _classer(
++            agregat,
++            normaliser(champ.attendu, champ.value_type),
++            normaliser(lu, champ.value_type),
++            ecart,
++        )
+         if confiance is not None:
+             compte = histogramme[champ.value_type].setdefault(_tranche(confiance), [0, 0])
+             compte[1 if ecart else 0] += 1
+diff --git a/src/nota_worker/benchmark/worker.py b/src/nota_worker/benchmark/worker.py
+index 7e1e803..3b181b8 100644
+--- a/src/nota_worker/benchmark/worker.py
++++ b/src/nota_worker/benchmark/worker.py
+@@ -34,13 +34,16 @@ Echecs
+ 
+ from __future__ import annotations
+ 
++import hashlib
++import json
+ from datetime import timedelta
+ from pathlib import Path
+-from typing import Any, Callable, Dict, List, Optional
++from typing import Any, Callable, Dict, List, Mapping, Optional
+ 
+ from nota_api.core.config import settings
+ from nota_core.enums.status import TestExecutionStatus, TestRecipeStatus
+ from nota_worker.base_worker import BaseWorker
++from nota_worker.benchmark.comparateur import COMPARATEUR_VERSION
+ from nota_worker.benchmark.depot import DepotBenchmark, ExecutionReservee
+ from nota_worker.benchmark.evaluation import (
+     Agregat,
+@@ -137,7 +140,9 @@ class TestExecutionWorker(BaseWorker):
+                 "COMPARISON_HMAC_KEY absente : les champs sensibles ne peuvent etre juges"
+             )
+ 
+-        modele = ModeleDocument.depuis_schema(await self.depot.schema(execution.schema_id))
++        schema = await self.depot.schema(execution.schema_id)
++        await self.depot.identifier(execution.id, COMPARATEUR_VERSION, empreinte_schema(schema))
++        modele = ModeleDocument.depuis_schema(schema)
+         documents = await self.depot.documents(execution.document_ids)
+         if not documents:
+             raise EchecExecution(f"recette {execution.recipe_id} sans document existant")
+@@ -187,9 +192,10 @@ class TestExecutionWorker(BaseWorker):
+             )
+             fusionner_histogrammes(histogramme, resultat.histogramme)
+             for field_spec_id, agregat in resultat.agregats.items():
+-                cumul = agregats.setdefault(field_spec_id, Agregat(agregat.field_key))
+-                cumul.compared += agregat.compared
+-                cumul.diff_count += agregat.diff_count
++                if field_spec_id in agregats:
++                    agregats[field_spec_id].ajouter(agregat)
++                else:
++                    agregats[field_spec_id] = agregat
+             self.logger.info(
+                 "document compare [execution_id=%s document_id=%s verifies=%s ecarts=%s]",
+                 execution.id,
+@@ -217,3 +223,28 @@ class TestExecutionWorker(BaseWorker):
+         """Images de page deja rendues par l'ingestion, dans l'ordre des noms."""
+         dossier = self.pvc_root / self.pages_dir(file_id)
+         return sorted(dossier.glob("*.png")) if dossier.is_dir() else []
++
++
++def empreinte_schema(schema: Mapping[str, Any]) -> str:
++    """Empreinte du schema tel qu'il pilote l'extraction et la comparaison.
++
++    Faite du contenu, pas des ids : le meme schema en base de dev et en base de
++    recette a la meme empreinte, et un champ ajoute, retype ou redecrit la
++    change. Les polygones, qui ne jouent ni sur la lecture ni sur le verdict,
++    n'y entrent pas.
++    """
++    contenu = {
++        "pages": sorted((p["page_number"], p["description"]) for p in schema.get("pages") or []),
++        "champs": sorted(
++            (
++                s["page"],
++                s.get("section_id") or "",
++                s["field_key"],
++                s.get("group_id") or "",
++                s.get("value_type") or "",
++                s.get("description") or s.get("display_label") or "",
++            )
++            for s in schema.get("field_specs") or []
++        ),
++    }
++    return hashlib.sha256(json.dumps(contenu, ensure_ascii=False).encode()).hexdigest()[:16]
+diff --git a/tests/unit/test_benchmark.py b/tests/unit/test_benchmark.py
+index d7bdc2f..66169e4 100644
+--- a/tests/unit/test_benchmark.py
++++ b/tests/unit/test_benchmark.py
+@@ -140,7 +140,10 @@ class TestEvaluation:
+         assert resultat.fields_compared == 2
+         assert resultat.fields_human_verified == 1
+         assert [e["document_field_id"] for e in resultat.ecarts] == [1001]
+-        assert resultat.agregats == {1: Agregat("deposant.nom", compared=1, diff_count=1)}
++        agregat = resultat.agregats[1]
++        assert (agregat.field_key, agregat.compared, agregat.diff_count) == ("deposant.nom", 1, 1)
++        # DUPONT lu DURAND : une substitution, comptee en faux positif ET negatif.
++        assert (agregat.vp, agregat.fp, agregat.fn, agregat.substitutions) == (0, 1, 1, 1)
+ 
+     def test_champ_sensible_rien_en_clair(self) -> None:
+         verite = [_champ(1, "FR7630001", sensible=True, section="gestion_budget", cle="iban")]
+@@ -211,6 +214,9 @@ class _FauxDepot:
+         execution, self.execution = self.execution, None
+         return execution
+ 
++    async def identifier(self, execution_id: int, version: str, empreinte: str) -> None:
++        self.identite = (version, empreinte)
++
+     async def schema(self, schema_id: int) -> Dict[str, Any]:
+         return {
+             "name": "Test",
+@@ -285,6 +291,7 @@ class TestWorker:
+         assert depot.fin["agregats"][1].compared == 2
+         assert depot.fin["agregats"][1].diff_count == 1
+         assert depot.fin["message"] is None
++        assert depot.identite[0] == "1" and len(depot.identite[1]) == 16
+ 
+     def test_rien_en_attente(self) -> None:
+         depot = _FauxDepot(None, [])
+@@ -405,3 +412,64 @@ class TestDocumentSansImages:
+         assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
+         assert "images de page absentes : [1]" in depot.fin["message"]
+         assert depot.fin["agregats"][1].compared == 1
++
++
++# -- Matrice de l'extraction -------------------------------------------------------
++
++
++class TestMatrice:
++    def test_les_cinq_cas(self) -> None:
++        """vide/vide VN, vide/lu FP, rempli/vide FN, egal VP, different FP+FN."""
++        cas = [
++            (None, None, "vn"),
++            (None, "INVENTE", "fp"),
++            ("DUPONT", None, "fn"),
++            ("Dupont", "DUPONT", "vp"),
++        ]
++        for attendu, lu, classe in cas:
++            verite = [_champ(1, attendu)]
++            ocr = _ocr(_kv("deposant.nom", lu)) if lu else None
++            agregat = evaluer_document(verite, ocr, 9, CLE).agregats[1]
++            comptes = {k: getattr(agregat, k) for k in ("vp", "fp", "fn", "vn")}
++            assert comptes == {k: int(k == classe) for k in comptes}, (attendu, lu)
++        agregat = evaluer_document(
++            [_champ(1, "DUPONT")], _ocr(_kv("deposant.nom", "DURAND")), 9, CLE
++        ).agregats[1]
++        assert (agregat.fp, agregat.fn, agregat.substitutions) == (1, 1, 1)
++
++    def test_taux_par_caractere(self) -> None:
++        agregat = evaluer_document(
++            [_champ(1, "DUPONT")], _ocr(_kv("deposant.nom", "DUPOND")), 9, CLE
++        ).agregats[1]
++        assert (agregat.somme_distance, agregat.somme_longueur_attendue) == (1, 6)
++
++    def test_libelles_figes(self) -> None:
++        champ = _champ(1, "x", sensible=True, value_type="TEXT")
++        agregat = evaluer_document([champ], None, 9, CLE).agregats[1]
++        assert (agregat.section_id, agregat.value_type, agregat.sensitive) == (
++            "deposant",
++            "TEXT",
++            True,
++        )
++
++
++class TestEmpreinteSchema:
++    def test_contenu_et_non_ids(self) -> None:
++        from nota_worker.benchmark.worker import empreinte_schema
++
++        base = {
++            "pages": [{"page_number": 1, "description": "Deposant"}],
++            "field_specs": [
++                {"id": 1, "page": 1, "section_id": "d", "field_key": "nom", "value_type": "TEXT"}
++            ],
++        }
++        autre_base = {
++            "pages": base["pages"],
++            "field_specs": [dict(base["field_specs"][0], id=999, polygon=[1.0] * 8)],
++        }
++        retype = {
++            "pages": base["pages"],
++            "field_specs": [dict(base["field_specs"][0], value_type="NUMBER")],
++        }
++        assert empreinte_schema(base) == empreinte_schema(autre_base)
++        assert empreinte_schema(base) != empreinte_schema(retype)
+diff --git a/tests/unit/test_benchmark_metriques.py b/tests/unit/test_benchmark_metriques.py
+new file mode 100644
+index 0000000..4a26ac9
+--- /dev/null
++++ b/tests/unit/test_benchmark_metriques.py
+@@ -0,0 +1,143 @@
++"""Metriques du benchmark : formules, garde-fous, verdict et comparaison."""
++
++from __future__ import annotations
++
++from typing import Any, Dict
++
++from nota_core.benchmark.metriques import bloc, calculer, comparer, wilson
++
++
++def _ligne(field_key: str, **comptes: Any) -> Dict[str, Any]:
++    base = {
++        "field_key": field_key,
++        "page": 1,
++        "section_id": field_key.split(".")[0],
++        "value_type": "TEXT",
++        "sensitive": False,
++    }
++    return {**base, **comptes}
++
++
++EXECUTION = {
++    "id": 1,
++    "recipe_id": 3,
++    "status": "COMPLETED",
++    "comparateur_version": "1",
++    "schema_hash": "abc",
++    "documents_compared": 12,
++    "fields_compared": 100,
++    "fields_human_verified": 100,
++    "ocr_calls_made": 360,
++    "pages_processed": 144,
++}
++
++
++class TestFormules:
++    def test_precision_rappel_f1(self) -> None:
++        # 8 justes, 1 inventee, 1 manquee, 1 substitution (fp ET fn).
++        b = bloc([_ligne("a.b", vp=8, fp=2, fn=2, substitutions=1, vn=50)])
++        assert b["precision"] == 0.8 and b["rappel"] == 0.8 and b["f1"] == 0.8
++        assert b["inventees"] == 1
++        assert b["valeurs"] == 11  # 8 + 2 manquees/substituees + 1 inventee
++        assert b["taux_erreur"] == round(3 / 11, 4)
++
++    def test_les_vides_n_entrent_pas_dans_le_score(self) -> None:
++        """Un moteur muet sur un formulaire surtout vide : rappel nul, pas 90 %."""
++        b = bloc([_ligne("a.b", vp=0, fn=10, vn=90)])
++        assert b["rappel"] == 0.0
++        assert b["precision"] is None  # il n'a rien ecrit
++        assert b["f1"] == 0.0  # mais son score est nul, pas indefini
++        assert b["vides_confirmes"] == 90
++
++    def test_taux_par_caractere(self) -> None:
++        b = bloc([_ligne("a.b", vp=1, somme_distance=3, somme_longueur_attendue=30)])
++        assert b["taux_erreur_caracteres"] == 0.1
++
++    def test_wilson(self) -> None:
++        bas, haut = wilson(8, 10)
++        assert 0.4 < bas < 0.8 < haut < 1.0
++        assert wilson(0, 0) is None
++        assert wilson(0, 3)[0] == 0.0
++
++    def test_effectif_insuffisant(self) -> None:
++        assert bloc([_ligne("a.b", vp=3)])["effectif_suffisant"] is False
++        assert bloc([_ligne("a.b", vp=5)])["effectif_suffisant"] is True
++
++
++class TestCalculer:
++    def _lignes(self) -> list:
++        return [
++            _ligne("deposant.nom", vp=9, fn=1),
++            _ligne("gestion_budget.iban", vp=4, fp=1, fn=1, substitutions=1, sensitive=True),
++            _ligne("credits.montant", vp=2, fp=2, value_type="NUMBER"),
++            _ligne("certification.signature", vp=0, fn=5, value_type="BOOLEAN"),
++        ]
++
++    def test_decompositions(self) -> None:
++        m = calculer(self._lignes(), EXECUTION, categories={"DIGIT": 3})
++        assert set(m["par_type"]) == {"TEXT", "NUMBER", "BOOLEAN"}
++        assert set(m["par_criticite"]) == {"critique", "standard"}
++        # IBAN (sensible) et montant (NUMBER) sont critiques.
++        assert m["par_criticite"]["critique"]["vp"] == 6
++        assert m["par_champ"][0]["field_key"] == "certification.signature"  # le pire d'abord
++        assert m["categories_erreurs"] == {"DIGIT": 3}
++        assert m["cout"]["appels_par_document"] == 30.0
++        assert m["echantillon"]["couverture"] == 1.0
++
++    def test_champs_exclus_par_config(self) -> None:
++        m = calculer(self._lignes(), EXECUTION, {"champs_exclus": ["certification."]})
++        assert all(c["field_key"] != "certification.signature" for c in m["par_champ"])
++        assert m["echantillon"]["champs_exclus_par_config"] == 1
++        assert m["global"]["fn"] == 2
++
++    def test_verdict(self) -> None:
++        sans_seuil = calculer(self._lignes(), EXECUTION)
++        assert sans_seuil["verdict"]["reussi"] is None
++        exigeant = calculer(
++            self._lignes(),
++            EXECUTION,
++            {"seuil_f1": 0.5, "seuils_par_champ": {"gestion_budget.iban": 0.0}},
++        )
++        assert exigeant["verdict"]["reussi"] is False
++        assert exigeant["verdict"]["champs_en_echec"][0]["field_key"] == "gestion_budget.iban"
++        indulgent = calculer(self._lignes(), EXECUTION, {"seuil_f1": 0.1})
++        assert indulgent["verdict"]["reussi"] is True
++
++    def test_avertissements(self) -> None:
++        petite = dict(EXECUTION, documents_compared=1, fields_human_verified=40)
++        m = calculer([_ligne("a.b", vp=2)], petite)
++        texte = " ".join(m["avertissements"])
++        assert "echantillon faible" in texte
++        assert "effectif insuffisant" in texte
++        assert "couverture partielle" in texte
++        assert m["echantillon"]["faible"] is True
++
++
++class TestComparer:
++    def test_meme_recette_meme_regle(self) -> None:
++        a = calculer([_ligne("a.b", vp=6, fn=4)], EXECUTION)
++        b = calculer([_ligne("a.b", vp=9, fn=1)], dict(EXECUTION, id=2))
++        c = comparer(a, b)
++        assert c["comparable"] is True
++        assert c["global"]["rappel"]["delta"] == 0.3
++        assert c["par_champ"][0]["field_key"] == "a.b"
++
++    def test_non_comparable_signale(self) -> None:
++        a = calculer([_ligne("a.b", vp=6)], EXECUTION)
++        b = calculer([_ligne("a.b", vp=6)], dict(EXECUTION, id=2, schema_hash="autre"))
++        c = comparer(a, b)
++        assert c["comparable"] is False
++        assert c["raisons"] == ["empreinte du schema differente"]
++
++
++class TestGardeFousLecture:
++    def test_execution_anterieure_aux_metriques_signalee(self) -> None:
++        """Lignes ecrites avant la matrice : compared > 0, vp/fp/fn/vn a 0."""
++        m = calculer([_ligne("a.b", compared=7, diff_count=2)], EXECUTION)
++        assert any("anterieure aux metriques" in a for a in m["avertissements"])
++
++    def test_sans_version_non_comparable(self) -> None:
++        sans = dict(EXECUTION, comparateur_version=None)
++        c = comparer(calculer([_ligne("a.b", vp=5)], sans), calculer([_ligne("a.b", vp=5)], sans))
++        assert c["comparable"] is False
++        assert "version du comparateur differente" in c["raisons"]
+diff --git a/tests/unit/test_router_benchmark.py b/tests/unit/test_router_benchmark.py
+new file mode 100644
+index 0000000..8ff8c26
+--- /dev/null
++++ b/tests/unit/test_router_benchmark.py
+@@ -0,0 +1,234 @@
++"""Routes du benchmark OCR (recettes, executions, metriques), base simulee."""
++
++from __future__ import annotations
++
++from datetime import datetime, timezone
++from types import SimpleNamespace
++from typing import Any, Dict, List, Optional
++from unittest.mock import AsyncMock, MagicMock
++
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++
++from nota_api.dependencies.auth import UserCaller, require_user
++from nota_api.dependencies.db import get_db
++from nota_api.routers.benchmark import router
++
++SUPERVISEUR = UserCaller(matricule="V1", organisation_id=1, platform_role="NOTA_SUPERVISOR")
++OPERATEUR = UserCaller(matricule="I1", organisation_id=1)
++_NOW = datetime(2026, 10, 13, tzinfo=timezone.utc)
++
++
++def _resultat(
++    *, scalar: Any = None, scalars: Optional[List[Any]] = None, all_: Optional[List[Any]] = None
++) -> MagicMock:
++    r = MagicMock()
++    r.scalar_one_or_none.return_value = scalar
++    r.scalars.return_value.all.return_value = scalars or []
++    r.all.return_value = all_ or []
++    return r
++
++
++def _client(caller: UserCaller, db: AsyncMock) -> TestClient:
++    app = FastAPI()
++    app.include_router(router)
++    app.dependency_overrides[require_user] = lambda: caller
++    app.dependency_overrides[get_db] = lambda: db
++    return TestClient(app)
++
++
++def _db(objets: Dict[str, Any], *resultats: MagicMock) -> AsyncMock:
++    db = AsyncMock()
++    ajoutes: List[Any] = []
++
++    def add(objet: Any) -> None:
++        objet.id = 50
++        objet.created_at = _NOW
++        for nom, defaut in (
++            ("documents_compared", 0),
++            ("fields_compared", 0),
++            ("fields_human_verified", 0),
++            ("diff_count", 0),
++            ("unexpected_count", 0),
++            ("ocr_calls_made", 0),
++            ("pages_processed", 0),
++        ):
++            if hasattr(type(objet), nom) and getattr(objet, nom) is None:
++                setattr(objet, nom, defaut)
++        ajoutes.append(objet)
++
++    db.add = MagicMock(side_effect=add)
++    db.ajoutes = ajoutes
++    db.get = AsyncMock(side_effect=lambda modele, cle: objets.get(modele.__name__))
++    db.execute = AsyncMock(side_effect=list(resultats))
++    return db
++
++
++def _recette(status: str = "LOCKED", config: Optional[Dict[str, Any]] = None) -> Any:
++    return SimpleNamespace(
++        id=3,
++        dataset_id=4,
++        name="r",
++        description=None,
++        document_ids=[14],
++        status=status,
++        config=config or {},
++        locked_at=_NOW,
++        created_at=_NOW,
++    )
++
++
++def _execution(status: str = "COMPLETED") -> Any:
++    return SimpleNamespace(
++        id=1,
++        recipe_id=3,
++        status=status,
++        ocr_provider="mistral",
++        ocr_model_id="ocr + annot",
++        comparateur_version="1",
++        schema_hash="abc",
++        error_message=None,
++        documents_compared=1,
++        fields_compared=41,
++        fields_human_verified=41,
++        diff_count=2,
++        unexpected_count=0,
++        ocr_calls_made=35,
++        pages_processed=12,
++        created_at=_NOW,
++        started_at=_NOW,
++        finished_at=_NOW,
++        created_by_user_id=1,
++        updated_at=_NOW,
++        confidence_histogram=None,
++    )
++
++
++def _rapport(field_key: str, **comptes: Any) -> Any:
++    base = dict(
++        id=1,
++        execution_id=1,
++        field_spec_id=1,
++        field_key=field_key,
++        compared=1,
++        diff_count=0,
++        vp=0,
++        fp=0,
++        fn=0,
++        vn=0,
++        substitutions=0,
++        somme_distance=0,
++        somme_longueur_attendue=0,
++        page=1,
++        section_id=field_key.split(".")[0],
++        value_type="TEXT",
++        sensitive=False,
++    )
++    return SimpleNamespace(**{**base, **comptes})
++
++
++class TestDroits:
++    def test_operateur_refuse(self) -> None:
++        r = _client(OPERATEUR, _db({})).get("/test-recipes")
++        assert r.status_code == 403
++
++
++class TestRecettes:
++    def test_creation_figee_sur_les_documents_verifies(self) -> None:
++        db = _db(
++            {"Dataset": SimpleNamespace(id=4)},
++            _resultat(scalars=[14, 15]),  # documents avec proposition humaine
++            _resultat(scalar=1),  # createur
++        )
++        r = _client(SUPERVISEUR, db).post(
++            "/test-recipes", json={"dataset_id": 4, "name": "cerfa", "config": {"seuil_f1": 0.9}}
++        )
++        assert r.status_code == 201, r.text
++        corps = r.json()
++        assert corps["status"] == "LOCKED" and corps["document_ids"] == [14, 15]
++        assert corps["config"]["seuil_f1"] == 0.9
++
++    def test_sans_verite_terrain_422(self) -> None:
++        db = _db({"Dataset": SimpleNamespace(id=4)}, _resultat(scalars=[]))
++        r = _client(SUPERVISEUR, db).post("/test-recipes", json={"dataset_id": 4, "name": "x"})
++        assert r.status_code == 422
++
++    def test_recette_figee_non_modifiable(self) -> None:
++        db = _db({"TestRecipe": _recette("LOCKED")})
++        r = _client(SUPERVISEUR, db).patch("/test-recipes/3", json={"name": "autre"})
++        assert r.status_code == 409
++
++
++class TestExecutions:
++    def test_lancement(self) -> None:
++        db = _db(
++            {
++                "TestRecipe": _recette(),
++                "Dataset": SimpleNamespace(ocr_provider="mistral", ocr_model_id=None),
++            },
++            _resultat(scalar=1),
++        )
++        r = _client(SUPERVISEUR, db).post("/test-executions", json={"recipe_id": 3})
++        assert r.status_code == 201, r.text
++        assert r.json()["status"] == "PENDING"
++
++    def test_recette_brouillon_refusee(self) -> None:
++        db = _db({"TestRecipe": _recette("DRAFT")})
++        r = _client(SUPERVISEUR, db).post("/test-executions", json={"recipe_id": 3})
++        assert r.status_code == 409
++
++    def test_metriques_avant_la_fin_409(self) -> None:
++        db = _db({"TestExecution": _execution("RUNNING")})
++        r = _client(SUPERVISEUR, db).get("/test-executions/1/metriques")
++        assert r.status_code == 409
++
++    def test_metriques(self) -> None:
++        db = _db(
++            {"TestExecution": _execution(), "TestRecipe": _recette(config={"seuil_f1": 0.5})},
++            _resultat(
++                scalars=[
++                    _rapport("deposant.nom", vp=8, fn=2),
++                    _rapport("deposant.prenoms", vp=1, fp=1, fn=1, substitutions=1),
++                ]
++            ),
++            _resultat(all_=[("DIGIT", "WRONG", 1), (None, "MISSING", 2)]),
++        )
++        r = _client(SUPERVISEUR, db).get("/test-executions/1/metriques")
++        assert r.status_code == 200, r.text
++        m = r.json()
++        assert m["global"]["vp"] == 9
++        assert m["global"]["rappel"] == round(9 / 12, 4)
++        assert m["categories_erreurs"] == {"DIGIT": 1, "MISSING": 2}
++        assert m["verdict"]["reussi"] is True
++        assert m["execution"]["schema_hash"] == "abc"
++
++    def test_comparaison_n_est_pas_prise_pour_un_id(self) -> None:
++        execution = _execution()
++        db = _db(
++            {"TestExecution": execution, "TestRecipe": _recette()},
++            _resultat(scalars=[_rapport("a.b", vp=5)]),
++            _resultat(),
++            _resultat(scalars=[_rapport("a.b", vp=4, fn=1)]),
++            _resultat(),
++        )
++        r = _client(SUPERVISEUR, db).get("/test-executions/comparaison", params={"a": 1, "b": 1})
++        assert r.status_code == 200, r.text
++        assert r.json()["comparable"] is True
++        assert r.json()["global"]["rappel"]["delta"] == -0.2
++
++    def test_ecarts(self) -> None:
++        cr = SimpleNamespace(
++            verdict="WRONG",
++            diff_kind="DIGIT",
++            expected_value=None,
++            observed_value=None,
++            edit_distance=1,
++        )
++        df = SimpleNamespace(document_id=14, group_id=None)
++        fs = SimpleNamespace(section_id="gestion_budget", field_key="iban", page=4, sensitive=True)
++        db = _db({"TestExecution": _execution()}, _resultat(all_=[(cr, df, fs)]))
++        r = _client(SUPERVISEUR, db).get("/test-executions/1/ecarts")
++        assert r.status_code == 200, r.text
++        ecart = r.json()[0]
++        assert ecart["field_key"] == "gestion_budget.iban"
++        assert ecart["sensitive"] is True and ecart["expected_value"] is None

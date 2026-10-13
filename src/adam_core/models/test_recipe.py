@@ -20,10 +20,10 @@ d'ou le statut LOCKED, prerequis de toute execution.
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from adam_core.db.base import Base
@@ -69,6 +69,13 @@ class TestRecipe(OrganisationScoped, ProjectScoped, Base):
         nullable=False,
         default=TestRecipeStatus.DRAFT.value,
         comment="Cycle de vie : DRAFT, LOCKED, ARCHIVED",
+    )
+    #: Configuration du test, figee avec la recette : deux passages ne se
+    #: comparent que sous la meme. {"seuil_f1": 0.9, "seuils_par_champ":
+    #: {"gestion_budget.iban": 0.0}, "champs_exclus": ["certification."]}.
+    #: Le verdict reussi / echoue se calcule a la lecture, jamais stocke.
+    config: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
     )
     locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by_user_id: Mapped[int] = mapped_column(

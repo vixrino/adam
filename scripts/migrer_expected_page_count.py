@@ -6,7 +6,10 @@ Met une base au niveau des derniers changements de modele, en une commande :
   - dataset.expected_page_count : nombre de pages exige des PDF ingeres ;
   - schema_page : description de chaque page d'un schema, qui sert a
     reconnaitre les pages et a les remettre en ordre (extraction generique) ;
-  - field_spec.description : ce que le champ contient, dit au moteur OCR.
+  - field_spec.description : ce que le champ contient, dit au moteur OCR ;
+  - metriques du benchmark : matrice et libelles sur evaluation_report,
+    version du comparateur et empreinte du schema sur test_execution, config
+    sur test_recipe.
 
 Etapes :
   1. cree les migrations alembic manquantes, branchees sur la tete actuelle
@@ -149,6 +152,53 @@ def downgrade() -> None:
 """
 )
 
+MIGRATION_METRIQUES = (
+    _ENTETE.format(
+        titre="metriques du benchmark OCR",
+        explication=(
+            "Matrice de l'extraction (vp, fp, fn, vn, substitutions) et libelles figes sur\n"
+            "evaluation_report, version du comparateur et empreinte du schema sur\n"
+            "test_execution, config du test sur test_recipe."
+        ),
+    )
+    + """
+from sqlalchemy.dialects import postgresql
+
+_COMPTES = ("vp", "fp", "fn", "vn", "substitutions", "somme_distance", "somme_longueur_attendue")
+
+
+def upgrade() -> None:
+    for nom in _COMPTES:
+        op.add_column(
+            "evaluation_report",
+            sa.Column(nom, sa.Integer(), nullable=False, server_default="0"),
+        )
+    op.add_column("evaluation_report", sa.Column("page", sa.Integer(), nullable=True))
+    op.add_column("evaluation_report", sa.Column("section_id", sa.String(), nullable=True))
+    op.add_column("evaluation_report", sa.Column("value_type", sa.String(), nullable=True))
+    op.add_column(
+        "evaluation_report",
+        sa.Column("sensitive", sa.Boolean(), nullable=False, server_default="false"),
+    )
+    op.add_column("test_execution", sa.Column("comparateur_version", sa.String(), nullable=True))
+    op.add_column("test_execution", sa.Column("schema_hash", sa.String(), nullable=True))
+    op.add_column(
+        "test_recipe",
+        sa.Column(
+            "config", postgresql.JSONB(), nullable=False, server_default=sa.text("'{{}}'::jsonb")
+        ),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("test_recipe", "config")
+    op.drop_column("test_execution", "schema_hash")
+    op.drop_column("test_execution", "comparateur_version")
+    for nom in ("sensitive", "value_type", "section_id", "page", *reversed(_COMPTES)):
+        op.drop_column("evaluation_report", nom)
+"""
+)
+
 #: DDL direct pour une base non suivie par alembic, rejouable sans effet.
 DDL_DIRECT = [
     "ALTER TABLE dataset ADD COLUMN IF NOT EXISTS expected_page_count INTEGER",
@@ -165,6 +215,25 @@ DDL_DIRECT = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_schema_page_schema_id ON schema_page (schema_id)",
+    *(
+        f"ALTER TABLE evaluation_report ADD COLUMN IF NOT EXISTS {nom} INTEGER NOT NULL DEFAULT 0"
+        for nom in (
+            "vp",
+            "fp",
+            "fn",
+            "vn",
+            "substitutions",
+            "somme_distance",
+            "somme_longueur_attendue",
+        )
+    ),
+    "ALTER TABLE evaluation_report ADD COLUMN IF NOT EXISTS page INTEGER",
+    "ALTER TABLE evaluation_report ADD COLUMN IF NOT EXISTS section_id VARCHAR",
+    "ALTER TABLE evaluation_report ADD COLUMN IF NOT EXISTS value_type VARCHAR",
+    "ALTER TABLE evaluation_report ADD COLUMN IF NOT EXISTS sensitive BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE test_execution ADD COLUMN IF NOT EXISTS comparateur_version VARCHAR",
+    "ALTER TABLE test_execution ADD COLUMN IF NOT EXISTS schema_hash VARCHAR",
+    "ALTER TABLE test_recipe ADD COLUMN IF NOT EXISTS config JSONB NOT NULL DEFAULT '{}'::jsonb",
 ]
 
 
@@ -190,6 +259,11 @@ CHANGEMENTS = [
         slug="add_schema_page",
         contenu=MIGRATION_SCHEMA_PAGE,
         deja_couvert=lambda t: "create_table" in t and '"schema_page"' in t,
+    ),
+    Changement(
+        slug="metriques_benchmark",
+        contenu=MIGRATION_METRIQUES,
+        deja_couvert=lambda t: '"somme_longueur_attendue"' in t and '"evaluation_report"' in t,
     ),
 ]
 
@@ -308,10 +382,13 @@ async def _etat(core: str) -> Dict[str, bool]:
                 requete_colonne, {"t": "field_spec", "c": "description"}
             )
             schema_page = await conn.execute(text("SELECT to_regclass('schema_page') IS NOT NULL"))
+            # La derniere colonne ajoutee par le changement : si elle est la, tout l'est.
+            metriques = await conn.execute(requete_colonne, {"t": "test_recipe", "c": "config"})
             return {
                 "expected_page_count": bool(page_count.scalar_one()),
                 "description": bool(description.scalar_one()),
                 "schema_page": bool(schema_page.scalar_one()),
+                "metriques": bool(metriques.scalar_one()),
             }
     finally:
         await engine.dispose()
