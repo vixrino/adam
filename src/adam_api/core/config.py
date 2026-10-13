@@ -42,9 +42,25 @@ class Settings(CoreSettings):
     mistral_annotation_model: str = "mistral-medium-latest"
     #: Chemin d'un truststore PEM pour un endpoint prive ; vide = CA systeme.
     mistral_ca_bundle: str = ""
-    #: Nombre de pages exige d'un PDF ingere (12 pour le CERFA) ; 0 = aucun
-    #: controle. Un PDF d'un autre nombre de pages est cree en ERROR.
-    ingestion_page_count: int = 0
+
+    #: Annuaire Active Directory, interroge par le compte de service pour
+    #: affecter quelqu'un a un projet avant sa premiere connexion. Le mot de
+    #: passe ne vit que dans l'environnement, jamais dans le code.
+    ad_enabled: bool = False
+    ad_host: str = ""
+    ad_port: int = 636
+    ad_use_ssl: bool = True
+    ad_bind_dn: str = ""
+    ad_password: str = ""
+    ad_base_dn: str = ""
+    #: Truststore PEM pour verifier le certificat de l'AD ; vide = CA systeme.
+    ad_ca_bundle: str = ""
+    ad_timeout_seconds: int = 5
+    ad_search_limit: int = 25
+    #: Une saisie plus courte ramenerait des milliers de comptes.
+    ad_min_chars: int = 3
+    #: Une recherche au plus toutes les N secondes par utilisateur.
+    ad_rate_seconds: float = 2.0
 
     @property
     def cors_origins(self) -> List[str]:

@@ -14,6 +14,7 @@ from adam_api.core.config import API_PREFIX, settings
 from adam_api.core.security import install_jwt_middleware
 from adam_api.dependencies.auth import get_caller, require_service
 from adam_api.routers.admin import router as admin_router
+from adam_api.routers.annuaire import router as annuaire_router
 from adam_api.routers.datasets import router as datasets_router
 from adam_api.routers.document_fields import router as document_fields_router
 from adam_api.routers.documents import router as documents_router
@@ -69,6 +70,7 @@ if STATIC_DIR.exists():
 app.include_router(admin_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
 app.include_router(orgs_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
 app.include_router(users_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+app.include_router(annuaire_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
 app.include_router(projects_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
 app.include_router(schemas_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
 app.include_router(datasets_router, prefix=PREFIX, dependencies=[Depends(get_caller)])

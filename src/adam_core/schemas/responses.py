@@ -44,6 +44,7 @@ class DatasetOut(BaseModel):
     ocr_provider: str
     required_operators: int
     ocr_job_enabled: bool
+    expected_page_count: Optional[int] = None
 
 
 class DatasetStatsOut(BaseModel):
@@ -493,6 +494,7 @@ class FieldSpecItemOut(BaseModel):
     section_label: str
     field_key: str
     display_label: str
+    description: Optional[str] = None
     value_type: str
     required: bool
     display_order: int
@@ -509,6 +511,7 @@ class FieldSpecDetailOut(BaseModel):
     section_label: str
     field_key: str
     display_label: str
+    description: Optional[str] = None
     value_type: str
     required: bool
     display_order: int
@@ -523,6 +526,13 @@ class FieldSpecCreatedOut(BaseModel):
     schema_id: int
 
 
+class SchemaPageOut(BaseModel):
+    """Description d'une page, qui sert a la reconnaitre a son contenu."""
+
+    page_number: int
+    description: str
+
+
 class SchemaDetailOut(BaseModel):
     id: int
     name: str
@@ -531,6 +541,7 @@ class SchemaDetailOut(BaseModel):
     project_id: int
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    pages: List[SchemaPageOut] = []
     field_specs: List[FieldSpecItemOut] = []
 
 

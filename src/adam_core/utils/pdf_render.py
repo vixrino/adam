@@ -76,9 +76,14 @@ def reorder_pdf(source: Path, destination: Path, ordre: Sequence[int]) -> None:
     i + 1. L'ecriture passe par un fichier temporaire renomme a la fin : un
     echec ne laisse jamais de PDF tronque a l'emplacement final.
     """
+    # Import local, sous le nom pymupdf : le module peut importer PyMuPDF sous
+    # l'alias fitz ou sous pymupdf selon le depot, et cette fonction ne doit
+    # dependre ni de l'un ni de l'autre.
+    import pymupdf
+
     temporaire = destination.with_name(destination.name + ".tmp")
     try:
-        with fitz.open(str(source)) as doc:
+        with pymupdf.open(str(source)) as doc:
             if sorted(ordre) != list(range(1, doc.page_count + 1)):
                 raise PdfRenderError(
                     f"ordre {list(ordre)} incompatible avec {doc.page_count} page(s) ({source})"

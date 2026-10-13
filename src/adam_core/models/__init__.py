@@ -16,6 +16,7 @@ from adam_core.models.test_recipe import TestRecipe
 from adam_core.models.ocr_result import OcrResult
 from adam_core.models.organisation import Organisation
 from adam_core.models.project import Project
+from adam_core.models.schema_page import SchemaPage
 from adam_core.models.user import User
 from adam_core.models.user_project import UserProject
 
@@ -36,6 +37,7 @@ __all__ = [
     "OcrResult",
     "Organisation",
     "Project",
+    "SchemaPage",
     "User",
     "UserProject",
 ]
