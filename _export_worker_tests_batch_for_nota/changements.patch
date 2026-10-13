@@ -1,0 +1,2285 @@
+diff --git a/.env.template b/.env.template
+index 89641d6..fa35eb0 100644
+--- a/.env.template
++++ b/.env.template
+@@ -83,3 +83,8 @@ AD_BASE_DN=
+ AD_CA_BUNDLE=
+ AD_MIN_CHARS=3
+ AD_RATE_SECONDS=2
++
++# Benchmark OCR : cle du HMAC des valeurs lues sur les champs sensibles.
++# Sans elle, le worker de tests refuse de tourner. Ne JAMAIS la commiter.
++# Generer : python -c "import secrets; print(secrets.token_hex(32))"
++COMPARISON_HMAC_KEY=
+diff --git a/scripts/creer_execution_test.py b/scripts/creer_execution_test.py
+new file mode 100644
+index 0000000..72f8c12
+--- /dev/null
++++ b/scripts/creer_execution_test.py
+@@ -0,0 +1,171 @@
++"""
++scripts/creer_execution_test.py
++-------------------------------
++Cree une recette de test figee et une execution en attente, que le worker de
++benchmark (TestExecutionWorker) prend au cycle suivant. Provisoire : le CLI
++Runner fera ce travail proprement.
++
++Une recette designe des documents dont la verite terrain a ete etablie par des
++humains. Par defaut, ce sont les documents du dataset dont au moins un champ
++porte une proposition humaine (field_proposal) : les autres n'apporteraient
++aucun champ au denominateur.
++
++Le paquet *_core (nota_core ou nota_core) est trouve sous src/ : le script
++tourne tel quel dans les deux depots, depuis la racine du depot (.env).
++
++Usage :
++    python scripts/creer_execution_test.py --dataset-id 4
++    python scripts/creer_execution_test.py --dataset-id 4 --documents 12 15 18
++    python scripts/creer_execution_test.py --recipe-id 2        # relancer une recette
++    python scripts/creer_execution_test.py --dataset-id 4 --dry-run
++"""
++
++from __future__ import annotations
++
++import argparse
++import asyncio
++import importlib
++import sys
++from datetime import datetime, timezone
++from pathlib import Path
++from typing import Any, List, Optional
++
++ROOT = Path(__file__).resolve().parents[1]
++SRC = ROOT / "src"
++sys.path.insert(0, str(SRC))
++
++
++def _paquets() -> tuple[str, str]:
++    """(paquet *_core, paquet *_api) presents sous src/."""
++    cores = sorted(p.name for p in SRC.glob("*_core") if (p / "models").is_dir())
++    apis = sorted(p.name for p in SRC.glob("*_api") if (p / "core" / "config.py").is_file())
++    if len(cores) != 1 or len(apis) != 1:
++        raise SystemExit(f"attendu un *_core et un *_api sous src/, trouve {cores} {apis}")
++    return cores[0], apis[0]
++
++
++async def creer(
++    dataset_id: Optional[int],
++    documents: List[int],
++    recipe_id: Optional[int],
++    nom: Optional[str],
++    matricule: Optional[str],
++    dry_run: bool,
++) -> None:
++    core, api = _paquets()
++    from sqlalchemy import func, select
++
++    modeles = importlib.import_module(f"{core}.models")
++    statuts = importlib.import_module(f"{core}.enums.status")
++    session_mod = importlib.import_module(f"{core}.db.session")
++    settings = importlib.import_module(f"{api}.core.config").settings
++    core_settings = importlib.import_module(f"{core}.core.config").get_core_settings()
++    session_mod.init_engine(core_settings.async_database_url)
++
++    Dataset, Document, DocumentField, FieldProposal, TestExecution, TestRecipe, User = (
++        getattr(modeles, n)
++        for n in (
++            "Dataset",
++            "Document",
++            "DocumentField",
++            "FieldProposal",
++            "TestExecution",
++            "TestRecipe",
++            "User",
++        )
++    )
++
++    matricule = (matricule or settings.api_dev_matricule).upper()
++    async with session_mod.get_async_session() as db:
++        createur: Any = (
++            await db.execute(select(User.id).where(func.upper(User.matricule) == matricule))
++        ).scalar_one_or_none()
++        if createur is None:
++            raise SystemExit(f"matricule {matricule} inconnu de la table user (--matricule)")
++
++        if recipe_id is not None:
++            recette = await db.get(TestRecipe, recipe_id)
++            if recette is None:
++                raise SystemExit(f"recette {recipe_id} introuvable")
++            if recette.status != statuts.TestRecipeStatus.LOCKED.value:
++                raise SystemExit(f"recette {recipe_id} non verrouillee ({recette.status})")
++            dataset = await db.get(Dataset, recette.dataset_id)
++            print(f" recette existante id={recette.id} : {len(recette.document_ids)} document(s)")
++        else:
++            if dataset_id is None:
++                raise SystemExit("--dataset-id ou --recipe-id requis")
++            dataset = await db.get(Dataset, dataset_id)
++            if dataset is None:
++                raise SystemExit(f"dataset {dataset_id} introuvable")
++            if not documents:
++                verifies = (
++                    select(DocumentField.document_id)
++                    .join(FieldProposal, FieldProposal.document_field_id == DocumentField.id)
++                    .distinct()
++                )
++                documents = list(
++                    (
++                        await db.execute(
++                            select(Document.id)
++                            .where(Document.dataset_id == dataset_id)
++                            .where(Document.id.in_(verifies))
++                            .order_by(Document.id)
++                        )
++                    )
++                    .scalars()
++                    .all()
++                )
++            if not documents:
++                raise SystemExit(
++                    f"dataset {dataset_id} : aucun document avec une proposition humaine. "
++                    "Sans verite terrain, il n'y a rien a mesurer (--documents pour forcer)."
++                )
++            maintenant = datetime.now(timezone.utc)
++            recette = TestRecipe(
++                dataset_id=dataset_id,
++                name=nom or f"recette {maintenant:%Y-%m-%d %H:%M}",
++                document_ids=documents,
++                status=statuts.TestRecipeStatus.LOCKED.value,
++                locked_at=maintenant,
++                created_by_user_id=createur,
++            )
++            print(f" recette : {recette.name} — documents {documents}")
++            if not dry_run:
++                db.add(recette)
++                await db.flush()
++
++        execution = TestExecution(
++            recipe_id=recette.id,
++            status=statuts.TestExecutionStatus.PENDING.value,
++            # Provisoire : le worker y recopie le moteur reellement utilise.
++            ocr_provider=dataset.ocr_provider,
++            ocr_model_id=dataset.ocr_model_id,
++            created_by_user_id=createur,
++        )
++        if dry_run:
++            print(" (dry-run) rien n'est ecrit")
++            await db.rollback()
++            return
++        db.add(execution)
++        await db.flush()
++        print(f" execution id={execution.id} creee en PENDING : le worker la prendra")
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__.split("Usage")[0])
++    parser.add_argument("--dataset-id", type=int)
++    parser.add_argument("--documents", type=int, nargs="*", default=[])
++    parser.add_argument("--recipe-id", type=int, help="Relancer une recette deja figee")
++    parser.add_argument("--nom", help="Nom de la recette")
++    parser.add_argument("--matricule", help="Createur (defaut : API_DEV_MATRICULE)")
++    parser.add_argument("--dry-run", action="store_true")
++    args = parser.parse_args()
++    asyncio.run(
++        creer(
++            args.dataset_id, args.documents, args.recipe_id, args.nom, args.matricule, args.dry_run
++        )
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/seed.py b/scripts/seed.py
+index 25fd793..daa35e3 100644
+--- a/scripts/seed.py
++++ b/scripts/seed.py
+@@ -913,11 +913,11 @@ def _pdf_page_count(pdf_path: Path) -> int:
+     ce que le worker corrige le compte a son premier cycle.
+     """
+     try:
+-        import fitz  # PyMuPDF
++        import pymupdf
+     except ImportError:
+         print("        PyMuPDF absent : page_count pose a 1, le worker le corrigera")
+         return 1
+-    with fitz.open(pdf_path) as pdf:
++    with pymupdf.open(pdf_path) as pdf:
+         return pdf.page_count
+ 
+ 
+diff --git a/scripts/seed_schema_cerfa.py b/scripts/seed_schema_cerfa.py
+index c7cbeb0..7ac3172 100644
+--- a/scripts/seed_schema_cerfa.py
++++ b/scripts/seed_schema_cerfa.py
+@@ -20,11 +20,10 @@ Champs repetables
+ -----------------
+ Le CERFA ouvre plusieurs emplacements identiques pour un meme objet : six
+ prets a la consommation page 10, plusieurs dettes page 6, plusieurs personnes
+-au domicile page 2. cerfa_v2.py, source des champs du schema, les aplatit
+-volontairement en une seule instance : la repetition ne change rien a ce qu'on
+-demande a Mistral, seulement au depliage de sa reponse.
++au domicile page 2. cerfa_v2.py, source des champs du schema, les decrit en
++une seule instance ; ce script les deplie.
+ 
+-Ici, au contraire, la repetition doit exister : un operateur qui annote le
++Ici, la repetition doit exister : un operateur qui annote le
+ pret n° 3 doit avoir des champs distincts de ceux du pret n° 1. C'est le role
+ de FieldSpec.group_id, et de la contrainte d'unicite
+ (schema_id, section_id, group_id, field_key) qui l'accompagne : le meme
+diff --git a/scripts/test_page_image_worker.py b/scripts/test_page_image_worker.py
+index 826a931..2300864 100644
+--- a/scripts/test_page_image_worker.py
++++ b/scripts/test_page_image_worker.py
+@@ -43,7 +43,7 @@ from typing import Tuple
+ # Le script est lance depuis la racine du depot : on expose src/ au PYTHONPATH.
+ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+ 
+-import fitz  # PyMuPDF  # noqa: E402
++import pymupdf  # noqa: E402
+ from sqlalchemy import delete, select  # noqa: E402
+ 
+ from nota_api.core.config import settings  # noqa: E402
+@@ -100,7 +100,7 @@ def ko(message: str) -> None:
+ def build_pdf(destination: Path, pages: int) -> None:
+     """Ecrit un PDF valide de `pages` pages, une ligne de texte par page."""
+     destination.parent.mkdir(parents=True, exist_ok=True)
+-    document = fitz.open()
++    document = pymupdf.open()
+     try:
+         for number in range(1, pages + 1):
+             page = document.new_page()
+@@ -113,7 +113,7 @@ def build_pdf(destination: Path, pages: int) -> None:
+ def _is_unreadable(path: Path) -> bool:
+     """Vrai si PyMuPDF echoue a ouvrir le fichier ou n'y trouve aucune page."""
+     try:
+-        with fitz.open(str(path)) as document:
++        with pymupdf.open(str(path)) as document:
+             return document.page_count == 0
+     except Exception:
+         return True
+@@ -373,7 +373,7 @@ async def main(args: argparse.Namespace) -> int:
+             return 1
+         pdf_absolute_path.parent.mkdir(parents=True, exist_ok=True)
+         shutil.copy(source, pdf_absolute_path)
+-        expected_pages = fitz.open(str(pdf_absolute_path)).page_count
++        expected_pages = pymupdf.open(str(pdf_absolute_path)).page_count
+         ok(f"copie de {source} ({expected_pages} page(s))")
+     elif args.corrupt:
+         build_corrupt_pdf(pdf_absolute_path, args.pages)
+diff --git a/src/nota_api/core/config.py b/src/nota_api/core/config.py
+index 95202c7..6496ae3 100644
+--- a/src/nota_api/core/config.py
++++ b/src/nota_api/core/config.py
+@@ -62,6 +62,12 @@ class Settings(CoreSettings):
+     #: Une recherche au plus toutes les N secondes par utilisateur.
+     ad_rate_seconds: float = 2.0
+ 
++    #: Cle du HMAC des valeurs lues sur les champs sensibles, dans les ecarts du
++    #: benchmark : une erreur recurrente sur un IBAN se reconnait a son
++    #: empreinte, sans que l'IBAN soit stocke. Vide : le benchmark refuse de
++    #: tourner. Ne vit que dans l'environnement, jamais en base ni en commit.
++    comparison_hmac_key: str = ""
++
+     @property
+     def cors_origins(self) -> List[str]:
+         return [o.strip() for o in self.api_cors_origins.split(",")]
+diff --git a/src/nota_core/schemas/cerfa_v2.py b/src/nota_core/schemas/cerfa_v2.py
+index 8f5ed09..ed15230 100644
+--- a/src/nota_core/schemas/cerfa_v2.py
++++ b/src/nota_core/schemas/cerfa_v2.py
+@@ -11,9 +11,14 @@ normalise ici en une forme plate — une propriete par cle pointee — car c'est
+ la seule que le json_schema strict de Mistral accepte, et c'est elle qui fait
+ que l'annotation rend directement les field_key du contrat (CA-2 du ticket T5).
+ 
+-Les groupes repetables du script (`<variable_numero_...>`) sont aplatis en une
+-seule instance : la repetition des champs est portee par le ticket T7 et ne
+-change rien a l'appel OCR, seulement au depliage de la reponse.
++Les groupes repetables du script (`<variable_numero_...>`) sont decrits ici en
++une seule instance. Le seed les deplie en une FIELD_SPEC par ligne (group_id,
++REPEATABLE_SECTIONS), et c'est de ces lignes que l'extraction tire une
++propriete par ligne de tableau (ticket T7, connectors/modele.py).
++
++Les prets a la consommation n° 7 et 8 de la page 11 ne sont pas encore
++declares : le seed place toutes les instances d'une section sur une seule
++page, et il faudrait les repartir entre les pages 10 et 11.
+ 
+ Les types sont ceux du script d'origine, sauf la ou un CERFA reel les a mis
+ en defaut : code postal, escalier et etage passent en string, un number
+diff --git a/src/nota_core/utils/pdf_render.py b/src/nota_core/utils/pdf_render.py
+index 3417c9b..2e6e1ce 100644
+--- a/src/nota_core/utils/pdf_render.py
++++ b/src/nota_core/utils/pdf_render.py
+@@ -1,6 +1,6 @@
+ """Rendu des pages d'un PDF en images PNG (mini worker Sprint 3, ticket 8).
+ 
+-PyMuPDF (fitz) fait tout le travail : ouverture/validation du PDF et rendu
++PyMuPDF (module pymupdf) fait tout le travail : ouverture/validation du PDF et rendu
+ image page par page.
+ """
+ 
+@@ -9,7 +9,7 @@ from __future__ import annotations
+ from pathlib import Path
+ from typing import List, Sequence
+ 
+-import fitz  # PyMuPDF
++import pymupdf
+ 
+ PAGE_IMAGE_DPI = 300
+ 
+@@ -44,7 +44,7 @@ def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
+     output_dir.mkdir(parents=True, exist_ok=True)
+     written: List[Path] = []
+     try:
+-        with fitz.open(str(pdf_path)) as doc:
++        with pymupdf.open(str(pdf_path)) as doc:
+             if doc.page_count == 0:
+                 raise PdfRenderError(f"PDF sans page ({pdf_path})")
+             for page_number in range(1, doc.page_count + 1):
+@@ -57,7 +57,7 @@ def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
+         for path in written:
+             path.unlink(missing_ok=True)
+         raise
+-    except fitz.FileDataError as exc:
++    except pymupdf.FileDataError as exc:
+         for path in written:
+             path.unlink(missing_ok=True)
+         raise PdfRenderError(f"PDF illisible ({pdf_path}): {exc}") from exc
+@@ -76,11 +76,6 @@ def reorder_pdf(source: Path, destination: Path, ordre: Sequence[int]) -> None:
+     i + 1. L'ecriture passe par un fichier temporaire renomme a la fin : un
+     echec ne laisse jamais de PDF tronque a l'emplacement final.
+     """
+-    # Import local, sous le nom pymupdf : le module peut importer PyMuPDF sous
+-    # l'alias fitz ou sous pymupdf selon le depot, et cette fonction ne doit
+-    # dependre ni de l'un ni de l'autre.
+-    import pymupdf
+-
+     temporaire = destination.with_name(destination.name + ".tmp")
+     try:
+         with pymupdf.open(str(source)) as doc:
+diff --git a/src/nota_worker/benchmark/__init__.py b/src/nota_worker/benchmark/__init__.py
+new file mode 100644
+index 0000000..883da1c
+--- /dev/null
++++ b/src/nota_worker/benchmark/__init__.py
+@@ -0,0 +1 @@
++"""Benchmark OCR : execution des recettes de test et comparaison a la verite."""
+diff --git a/src/nota_worker/benchmark/comparateur.py b/src/nota_worker/benchmark/comparateur.py
+new file mode 100644
+index 0000000..2bdbeba
+--- /dev/null
++++ b/src/nota_worker/benchmark/comparateur.py
+@@ -0,0 +1,162 @@
++"""Comparaison d'une valeur lue par le moteur a la verite terrain.
++
++Fonctions pures : aucune base, aucun reseau. Le worker de benchmark les appelle
++champ par champ, et seuls les ecarts qu'elles signalent sont ecrits.
++
++Comparaison normalisee
++----------------------
++Un ecart doit mesurer une erreur de lecture, pas une difference de forme :
++    TEXT      casse, accents et espaces ignores (« Mme  THÉRY » = « mme thery »)
++    NUMBER    par valeur (« 1 738,26 » = « 1738.26 »)
++    DATE      par date (« 17/09/1969 » = « 17/09/69 » = « 1969-09-17 »)
++    BOOLEAN   par valeur (« true » = « oui »)
++
++Verdicts
++--------
++    MISSING   la verite porte une valeur, le moteur n'a rien rendu
++    WRONG     le moteur a rendu autre chose que la verite — y compris une
++              valeur la ou la verite est vide : un champ invente est une erreur
++
++Confidentialite
++---------------
++Pour un champ sensible, ni la valeur attendue ni la valeur lue ne sortent d'ici :
++seuls un HMAC a cle de la valeur lue (pour reconnaitre une erreur recurrente),
++la distance d'edition (son ampleur) et la categorie de l'ecart sont rendus.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import hmac
++import re
++import unicodedata
++from dataclasses import dataclass
++from datetime import datetime
++from typing import Any, Optional
++
++from nota_core.enums.status import ComparisonDiffKind, ComparisonVerdict, FieldValueType
++from nota_core.utils.field_parser import parse_field_value
++
++#: Tolerance sur les nombres : deux montants lus « 1738.26 » et « 1738.2600001 »
++#: sont la meme lecture.
++_TOLERANCE = 1e-6
++
++
++@dataclass(frozen=True)
++class Ecart:
++    """Un ecart entre lecture et verite, pret a devenir un comparison_result."""
++
++    verdict: ComparisonVerdict
++    diff_kind: Optional[ComparisonDiffKind]
++    #: Valeurs brutes, a ne stocker que pour un champ non sensible.
++    attendu: Optional[str]
++    lu: Optional[str]
++    edit_distance: Optional[int]
++
++
++def _texte(valeur: str) -> str:
++    """Minuscules, sans accents, espaces fusionnes."""
++    sans_accents = "".join(
++        c for c in unicodedata.normalize("NFKD", valeur) if not unicodedata.combining(c)
++    )
++    return " ".join(sans_accents.lower().split())
++
++
++def _date(valeur: str) -> Any:
++    parsee = parse_field_value(valeur, FieldValueType.DATE.value)
++    if parsee != valeur:
++        return parsee
++    # Annee a deux chiffres (« 17/09/69 ») : field_parser ne la lit pas.
++    for format_ in ("%d/%m/%y", "%d-%m-%y", "%d.%m.%y"):
++        try:
++            return datetime.strptime(valeur.strip(), format_).date().isoformat()
++        except ValueError:
++            continue
++    return _texte(valeur)
++
++
++def normaliser(valeur: Optional[str], value_type: Optional[str]) -> Any:
++    """Forme comparable d'une valeur ; None pour une valeur absente ou vide."""
++    if valeur is None or not str(valeur).strip():
++        return None
++    brut = str(valeur).strip()
++    type_ = (value_type or FieldValueType.TEXT.value).upper()
++    if type_ in (FieldValueType.DATE.value, FieldValueType.DATETIME.value):
++        return _date(brut)
++    if type_ in (FieldValueType.NUMBER.value, FieldValueType.BOOLEAN.value):
++        parsee = parse_field_value(brut, type_)
++        return parsee if parsee != brut else _texte(brut)
++    return _texte(brut)
++
++
++def _egaux(attendu: Any, lu: Any) -> bool:
++    if isinstance(attendu, bool) or isinstance(lu, bool):
++        return attendu == lu
++    if isinstance(attendu, (int, float)) and isinstance(lu, (int, float)):
++        return abs(float(attendu) - float(lu)) <= _TOLERANCE
++    return bool(attendu == lu)
++
++
++def distance_edition(a: str, b: str) -> int:
++    """Distance de Levenshtein, en O(len(a) * len(b)) — des valeurs de champ."""
++    if len(a) < len(b):
++        a, b = b, a
++    precedente = list(range(len(b) + 1))
++    for i, ca in enumerate(a, start=1):
++        courante = [i]
++        for j, cb in enumerate(b, start=1):
++            courante.append(
++                min(precedente[j] + 1, courante[j - 1] + 1, precedente[j - 1] + (ca != cb))
++            )
++        precedente = courante
++    return precedente[-1]
++
++
++def categorie(attendu: str, lu: str) -> ComparisonDiffKind:
++    """Nature d'un ecart WRONG, publiable meme pour un champ sensible."""
++    if attendu.lower() == lu.lower():
++        return ComparisonDiffKind.CASE
++    if attendu.split() == lu.split() or "".join(attendu.split()) == "".join(lu.split()):
++        return ComparisonDiffKind.WHITESPACE
++    alnum_attendu = re.sub(r"[^0-9a-z]", "", _texte(attendu))
++    alnum_lu = re.sub(r"[^0-9a-z]", "", _texte(lu))
++    if alnum_attendu == alnum_lu:
++        # Memes lettres et chiffres, ponctuation ou separateurs differents.
++        return ComparisonDiffKind.FORMAT
++    chiffres_attendu = re.sub(r"\D", "", attendu)
++    if chiffres_attendu and len(chiffres_attendu) == len(re.sub(r"\D", "", lu)):
++        if re.sub(r"\d", "", alnum_attendu) == re.sub(r"\d", "", alnum_lu):
++            # Seuls des chiffres different : le moteur lit mal les chiffres.
++            return ComparisonDiffKind.DIGIT
++    return ComparisonDiffKind.TOTAL
++
++
++def comparer(
++    attendu: Optional[str], lu: Optional[str], value_type: Optional[str]
++) -> Optional[Ecart]:
++    """L'ecart entre la verite et la lecture, ou None si elles concordent."""
++    forme_attendue = normaliser(attendu, value_type)
++    forme_lue = normaliser(lu, value_type)
++    if forme_attendue is None and forme_lue is None:
++        return None
++    if forme_attendue is not None and forme_lue is None:
++        return Ecart(ComparisonVerdict.MISSING, None, attendu, None, None)
++    if forme_attendue is not None and _egaux(forme_attendue, forme_lue):
++        return None
++    texte_attendu = str(attendu or "").strip()
++    texte_lu = str(lu or "").strip()
++    return Ecart(
++        verdict=ComparisonVerdict.WRONG,
++        diff_kind=categorie(texte_attendu, texte_lu) if texte_attendu else ComparisonDiffKind.TOTAL,
++        attendu=attendu,
++        lu=lu,
++        edit_distance=distance_edition(_texte(texte_attendu), _texte(texte_lu)),
++    )
++
++
++def empreinte(valeur: Optional[str], cle: str) -> Optional[str]:
++    """HMAC-SHA256 de la valeur lue, normalisee : deux lectures identiques d'un
++    meme IBAN donnent la meme empreinte, sans que l'IBAN soit stocke."""
++    if valeur is None or not cle:
++        return None
++    return hmac.new(cle.encode(), _texte(str(valeur)).encode(), hashlib.sha256).hexdigest()
+diff --git a/src/nota_worker/benchmark/depot.py b/src/nota_worker/benchmark/depot.py
+new file mode 100644
+index 0000000..39ea952
+--- /dev/null
++++ b/src/nota_worker/benchmark/depot.py
+@@ -0,0 +1,260 @@
++"""Acces base du worker de benchmark : lectures du perimetre, ecritures du run.
++
++Toutes les requetes du worker sont ici, et nulle part ailleurs : le worker
++s'ecrit et se teste contre un faux depot en memoire, et ce module se relit
++seul. Les seules tables ecrites sont test_execution, comparison_result et
++evaluation_report : un benchmark ne touche jamais la donnee qu'il mesure.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from datetime import datetime, timedelta, timezone
++from typing import Any, Dict, List, Optional, Tuple
++
++from sqlalchemy import exists, select, update
++from sqlalchemy.dialects.postgresql import insert as pg_insert
++
++from nota_core.db.session import get_async_session
++from nota_core.enums.status import TestExecutionStatus
++from nota_core.models import (
++    ComparisonResult,
++    Dataset,
++    DocSchema,
++    Document,
++    DocumentField,
++    EvaluationReport,
++    FieldProposal,
++    FieldSpec,
++    SchemaPage,
++    TestExecution,
++    TestRecipe,
++)
++from nota_worker.benchmark.evaluation import Agregat, ChampVerite
++
++
++@dataclass(frozen=True)
++class ExecutionReservee:
++    id: int
++    recipe_id: int
++    recipe_status: str
++    document_ids: List[int]
++    schema_id: int
++
++
++class DepotBenchmark:
++    """Lectures et ecritures du worker de benchmark, en base directe."""
++
++    async def echouer_bloquees(self, delai: timedelta) -> int:
++        """Passe en FAILED les executions RUNNING sans signe de vie depuis `delai`.
++
++        Un worker arrete en plein run laisse son execution RUNNING pour toujours.
++        Les champs corrects n'ecrivant aucune ligne, on ne sait pas reprendre ou
++        il s'etait arrete : l'execution echoue, et une nouvelle la remplace.
++        """
++        limite = datetime.now(timezone.utc) - delai
++        async with get_async_session() as db:
++            resultat = await db.execute(
++                update(TestExecution)
++                .where(TestExecution.status == TestExecutionStatus.RUNNING.value)
++                .where(TestExecution.updated_at < limite)
++                .values(
++                    status=TestExecutionStatus.FAILED.value,
++                    finished_at=datetime.now(timezone.utc),
++                    error_message="interrompue : aucun progres enregistre, a relancer",
++                )
++            )
++            return int(getattr(resultat, "rowcount", 0) or 0)
++
++    async def reserver_execution(
++        self, ocr_provider: str, ocr_model_id: Optional[str]
++    ) -> Optional[ExecutionReservee]:
++        """Prend la plus ancienne execution PENDING et la passe en RUNNING.
++
++        FOR UPDATE SKIP LOCKED : deux workers ne prennent jamais la meme. Le
++        moteur est recopie sur l'execution au lancement : la configuration du
++        dataset peut changer apres.
++        """
++        async with get_async_session() as db:
++            execution = (
++                await db.execute(
++                    select(TestExecution)
++                    .where(TestExecution.status == TestExecutionStatus.PENDING.value)
++                    .order_by(TestExecution.created_at)
++                    .limit(1)
++                    .with_for_update(skip_locked=True)
++                )
++            ).scalar_one_or_none()
++            if execution is None:
++                return None
++            ligne = (
++                await db.execute(
++                    select(TestRecipe.status, TestRecipe.document_ids, Dataset.schema_id)
++                    .join(Dataset, Dataset.id == TestRecipe.dataset_id)
++                    .where(TestRecipe.id == execution.recipe_id)
++                )
++            ).one()
++            execution.status = TestExecutionStatus.RUNNING.value
++            execution.started_at = datetime.now(timezone.utc)
++            execution.ocr_provider = ocr_provider
++            execution.ocr_model_id = ocr_model_id
++            await db.flush()
++            return ExecutionReservee(
++                id=execution.id,
++                recipe_id=execution.recipe_id,
++                recipe_status=str(ligne.status),
++                document_ids=list(ligne.document_ids or []),
++                schema_id=int(ligne.schema_id),
++            )
++
++    async def schema(self, schema_id: int) -> Dict[str, Any]:
++        """Le schema sous la forme de GET /schemas/{id}, pour ModeleDocument."""
++        async with get_async_session() as db:
++            nom = (
++                await db.execute(select(DocSchema.name).where(DocSchema.id == schema_id))
++            ).scalar_one()
++            pages = (
++                await db.execute(
++                    select(SchemaPage.page_number, SchemaPage.description)
++                    .where(SchemaPage.schema_id == schema_id)
++                    .order_by(SchemaPage.page_number)
++                )
++            ).all()
++            specs = (
++                (
++                    await db.execute(
++                        select(FieldSpec)
++                        .where(FieldSpec.schema_id == schema_id)
++                        .order_by(FieldSpec.page, FieldSpec.display_order, FieldSpec.id)
++                    )
++                )
++                .scalars()
++                .all()
++            )
++        return {
++            "name": nom,
++            "pages": [{"page_number": n, "description": d} for n, d in pages],
++            "field_specs": [
++                {
++                    "id": fs.id,
++                    "page": fs.page,
++                    "section_id": fs.section_id,
++                    "field_key": fs.field_key,
++                    "group_id": fs.group_id,
++                    "display_label": fs.display_label,
++                    "description": fs.description,
++                    "value_type": fs.value_type,
++                    "polygon": fs.polygon,
++                }
++                for fs in specs
++            ],
++        }
++
++    async def documents(self, document_ids: List[int]) -> List[Tuple[int, int]]:
++        """(document_id, file_id) des documents de la recette, dans son ordre."""
++        async with get_async_session() as db:
++            lignes = (
++                await db.execute(
++                    select(Document.id, Document.file_id).where(Document.id.in_(document_ids))
++                )
++            ).all()
++        par_id = {int(d): int(f) for d, f in lignes}
++        return [(d, par_id[d]) for d in document_ids if d in par_id]
++
++    async def verite(self, document_id: int) -> List[ChampVerite]:
++        """Les document_field du document, dans l'ordre du schema (lignes de
++        tableau comprises : pret_1 avant pret_2, ce que le merger suppose)."""
++        verifie = exists().where(FieldProposal.document_field_id == DocumentField.id)
++        async with get_async_session() as db:
++            lignes = (
++                await db.execute(
++                    select(DocumentField, FieldSpec, verifie.label("verifie"))
++                    .join(FieldSpec, FieldSpec.id == DocumentField.field_spec_id)
++                    .where(DocumentField.document_id == document_id)
++                    .order_by(FieldSpec.page, FieldSpec.display_order, FieldSpec.id)
++                )
++            ).all()
++        return [
++            ChampVerite(
++                document_field_id=df.id,
++                field_spec_id=fs.id,
++                section_id=fs.section_id,
++                field_key=fs.field_key,
++                group_id=df.group_id,
++                value_type=fs.value_type,
++                sensitive=bool(fs.sensitive),
++                attendu=df.resolved_value,
++                verifie=bool(est_verifie),
++            )
++            for df, fs, est_verifie in lignes
++        ]
++
++    async def enregistrer_document(
++        self, execution_id: int, ecarts: List[Dict[str, Any]], compteurs: Dict[str, int]
++    ) -> None:
++        """Ecrit les ecarts d'un document et fait avancer les totaux.
++
++        Un document a la fois, dans sa propre transaction : la progression est
++        visible pendant le run, et updated_at sert de signe de vie.
++        """
++        async with get_async_session() as db:
++            if ecarts:
++                await db.execute(
++                    pg_insert(ComparisonResult)
++                    .values(ecarts)
++                    .on_conflict_do_nothing(constraint="uq_comparison_result_execution_field")
++                )
++            await db.execute(
++                update(TestExecution)
++                .where(TestExecution.id == execution_id)
++                .values(
++                    {
++                        getattr(TestExecution, nom): getattr(TestExecution, nom) + valeur
++                        for nom, valeur in compteurs.items()
++                    }
++                )
++            )
++
++    async def terminer(
++        self,
++        execution_id: int,
++        statut: TestExecutionStatus,
++        *,
++        histogramme: Optional[Dict[str, Any]] = None,
++        agregats: Optional[Dict[int, Agregat]] = None,
++        message: Optional[str] = None,
++    ) -> None:
++        """Clot l'execution, et ecrit ses agregats par champ s'il y en a."""
++        async with get_async_session() as db:
++            if agregats:
++                instruction = pg_insert(EvaluationReport).values(
++                    [
++                        {
++                            "execution_id": execution_id,
++                            "field_spec_id": field_spec_id,
++                            "field_key": agregat.field_key,
++                            "compared": agregat.compared,
++                            "diff_count": agregat.diff_count,
++                        }
++                        for field_spec_id, agregat in agregats.items()
++                    ]
++                )
++                await db.execute(
++                    instruction.on_conflict_do_update(
++                        constraint="uq_evaluation_report_execution_field_spec",
++                        set_={
++                            "compared": instruction.excluded.compared,
++                            "diff_count": instruction.excluded.diff_count,
++                        },
++                    )
++                )
++            await db.execute(
++                update(TestExecution)
++                .where(TestExecution.id == execution_id)
++                .values(
++                    status=statut.value,
++                    finished_at=datetime.now(timezone.utc),
++                    confidence_histogram=histogramme,
++                    error_message=message,
++                )
++            )
+diff --git a/src/nota_worker/benchmark/evaluation.py b/src/nota_worker/benchmark/evaluation.py
+new file mode 100644
+index 0000000..d1fb007
+--- /dev/null
++++ b/src/nota_worker/benchmark/evaluation.py
+@@ -0,0 +1,168 @@
++"""Evaluation d'un document : la lecture du moteur contre la verite terrain.
++
++Fonction pure : elle recoit la verite (les document_field du document) et la
++sortie du connecteur, et rend les ecarts a ecrire, les compteurs et les
++agregats par champ. Aucune base, aucun reseau : le worker fait les entrees
++et sorties, cette fonction fait le calcul, et se teste seule.
++
++Le rapprochement lecture -> champ reutilise le merger de la pre-alimentation :
++c'est la meme question (quelle valeur OCR pour quel FIELD_SPEC et quelle
++ligne de tableau), et deux reponses differentes mesureraient un rapprochement
++qui n'est pas celui de la production.
++
++Denominateur honnete (T1)
++-------------------------
++Seuls les champs portant au moins une field_proposal sont compares : un champ
++jamais relu par un humain a resolved_value == ocr_value par construction, et le
++compter mesurerait le moteur contre lui-meme. Les autres sont comptes dans
++fields_compared (le perimetre), pas dans fields_human_verified (le
++denominateur), et ne produisent jamais d'ecart.
++"""
++
++from __future__ import annotations
++
++from collections import defaultdict
++from dataclasses import dataclass, field
++from typing import Any, Dict, List, Optional, Set, Tuple
++
++from nota_core.schemas.interface_contract import SmartdocDocument
++from nota_worker.benchmark.comparateur import comparer, empreinte
++from nota_worker.prepopulation.merger import index_ocr_pairs, merge, semantic_key
++
++
++@dataclass(frozen=True)
++class ChampVerite:
++    """Un document_field du perimetre, avec ce qu'il faut pour le juger."""
++
++    document_field_id: int
++    field_spec_id: int
++    section_id: str
++    field_key: str
++    group_id: Optional[str]
++    value_type: str
++    sensitive: bool
++    #: resolved_value : la valeur retenue apres relecture humaine.
++    attendu: Optional[str]
++    #: Au moins une field_proposal : le champ a ete regarde par un humain.
++    verifie: bool
++
++    @property
++    def cle(self) -> str:
++        return semantic_key(self.section_id, self.field_key)
++
++    @property
++    def libelle(self) -> str:
++        """Libelle fige du rapport : la cle, et la ligne pour un repetable."""
++        return f"{self.cle}[{self.group_id}]" if self.group_id else self.cle
++
++
++@dataclass
++class Agregat:
++    field_key: str
++    compared: int = 0
++    diff_count: int = 0
++
++
++@dataclass
++class ResultatDocument:
++    """Ce qu'un document ajoute a l'execution."""
++
++    ecarts: List[Dict[str, Any]] = field(default_factory=list)
++    fields_compared: int = 0
++    fields_human_verified: int = 0
++    unexpected_count: int = 0
++    #: field_spec_id -> agregat du champ pour ce document.
++    agregats: Dict[int, Agregat] = field(default_factory=dict)
++    #: value_type -> tranche de confiance -> [corrects, ecarts].
++    histogramme: Dict[str, Dict[str, List[int]]] = field(default_factory=dict)
++
++
++def _tranche(confiance: float) -> str:
++    return f"{round(float(confiance), 2):.2f}"
++
++
++def _hors_schema(ocr: Optional[SmartdocDocument], verite: List[ChampVerite]) -> int:
++    """Valeurs lues sous une cle qu'aucun champ du perimetre n'attend."""
++    attendues: Set[Tuple[str, Optional[str]]] = set()
++    for champ in verite:
++        attendues.add((champ.cle, champ.group_id))
++        # Une valeur sans instance peut remplir une ligne repetable (repli du merger).
++        attendues.add((champ.cle, None))
++    return sum(
++        1
++        for cle, kv in index_ocr_pairs(ocr).items()
++        if kv.value is not None and cle not in attendues
++    )
++
++
++def evaluer_document(
++    verite: List[ChampVerite],
++    ocr: Optional[SmartdocDocument],
++    execution_id: int,
++    cle_hmac: str,
++) -> ResultatDocument:
++    """Compare la lecture du moteur a la verite d'un document."""
++    resultat = ResultatDocument(unexpected_count=_hors_schema(ocr, verite))
++    specs = [
++        {
++            "id": champ.field_spec_id,
++            "section_id": champ.section_id,
++            "field_key": champ.field_key,
++            "group_id": champ.group_id,
++            "polygon": None,
++        }
++        for champ in verite
++    ]
++    lectures = merge(specs, ocr)
++    histogramme: Dict[str, Dict[str, List[int]]] = defaultdict(dict)
++    # Un moteur sans confiance par champ (Mistral) laisse la valeur par defaut
++    # du contrat, 1.0 : la compter ferait croire a un moteur toujours certain,
++    # et fausserait le seuil d'auto-validation que l'histogramme doit fixer.
++    confiance_fournie = ocr is None or ocr.metadata.get("confidence_fournie", True)
++
++    for champ, lecture in zip(verite, lectures):
++        resultat.fields_compared += 1
++        if not champ.verifie:
++            continue
++        resultat.fields_human_verified += 1
++        agregat = resultat.agregats.setdefault(champ.field_spec_id, Agregat(champ.libelle))
++        agregat.compared += 1
++
++        lu = lecture.get("ocr_value")
++        confiance = lecture.get("ocr_confidence") if confiance_fournie else None
++        ecart = comparer(champ.attendu, lu, champ.value_type)
++        if confiance is not None:
++            compte = histogramme[champ.value_type].setdefault(_tranche(confiance), [0, 0])
++            compte[1 if ecart else 0] += 1
++        if ecart is None:
++            continue
++
++        agregat.diff_count += 1
++        resultat.ecarts.append(
++            {
++                "execution_id": execution_id,
++                "document_field_id": champ.document_field_id,
++                "verdict": ecart.verdict.value,
++                "diff_kind": ecart.diff_kind.value if ecart.diff_kind else None,
++                "ocr_confidence": confiance,
++                # Sensible : rien en clair, l'empreinte et l'ampleur seulement.
++                "expected_value": None if champ.sensitive else ecart.attendu,
++                "observed_value": None if champ.sensitive else ecart.lu,
++                "observed_hmac": empreinte(ecart.lu, cle_hmac) if champ.sensitive else None,
++                "edit_distance": ecart.edit_distance,
++            }
++        )
++    resultat.histogramme = dict(histogramme)
++    return resultat
++
++
++def fusionner_histogrammes(
++    cumul: Dict[str, Dict[str, List[int]]], ajout: Dict[str, Dict[str, List[int]]]
++) -> None:
++    """Ajoute l'histogramme d'un document a celui de l'execution, en place."""
++    for value_type, tranches in ajout.items():
++        cible = cumul.setdefault(value_type, {})
++        for tranche, (corrects, ecarts) in tranches.items():
++            courant = cible.setdefault(tranche, [0, 0])
++            courant[0] += corrects
++            courant[1] += ecarts
+diff --git a/src/nota_worker/benchmark/worker.py b/src/nota_worker/benchmark/worker.py
+new file mode 100644
+index 0000000..7e1e803
+--- /dev/null
++++ b/src/nota_worker/benchmark/worker.py
+@@ -0,0 +1,219 @@
++"""Worker de benchmark OCR : execute les recettes de test en batch.
++
++Une execution de test (TEST_EXECUTION, PENDING) designe une recette figee : un
++lot de documents dont la verite terrain a ete etablie par des humains. Le
++worker la prend, soumet chaque document au moteur OCR configure, compare sa
++lecture a la verite, et n'ecrit que les ecarts.
++
++    PENDING --(reservee, SKIP LOCKED)--> RUNNING --> COMPLETED
++                                                 \\-> FAILED (message)
++
++Ce qui le distingue de la pre-alimentation
++------------------------------------------
++- Il ne touche aucune donnee de production : ni ocr_result ni document_field.
++  La comparaison se fait en memoire ; un benchmark ne modifie pas ce qu'il
++  mesure.
++- Il n'appelle pas l'API : il lit et ecrit en base directe (DepotBenchmark).
++
++Echecs
++------
++- Recette non verrouillee, cle HMAC absente : FAILED avant tout appel OCR.
++  Deux passages ne sont comparables que sur une recette figee, et un champ
++  sensible ne peut etre juge sans sa cle d'empreinte.
++- Moteur injoignable (OcrConnectorError) : FAILED. Une mesure faite sur une
++  partie des documents parce que le reseau a lache n'en est pas une.
++- Document que le moteur juge non conforme : pas d'arret. Il est mesure comme
++  un document que le moteur n'a pas su lire (ses champs verifies comptent
++  MISSING), et son id est note dans error_message.
++- Document sans images de page (jamais rendu) : ecarte, sans compter dans
++  la mesure, et son id est note dans error_message. Un defaut d'ingestion
++  n'est pas une erreur du moteur.
++- Worker arrete en plein run : l'execution, sans signe de vie depuis
++  STALE_AFTER, passe en FAILED au cycle suivant d'un worker.
++"""
++
++from __future__ import annotations
++
++from datetime import timedelta
++from pathlib import Path
++from typing import Any, Callable, Dict, List, Optional
++
++from nota_api.core.config import settings
++from nota_core.enums.status import TestExecutionStatus, TestRecipeStatus
++from nota_worker.base_worker import BaseWorker
++from nota_worker.benchmark.depot import DepotBenchmark, ExecutionReservee
++from nota_worker.benchmark.evaluation import (
++    Agregat,
++    evaluer_document,
++    fusionner_histogrammes,
++)
++from nota_worker.connectors import connector_from_settings
++from nota_worker.connectors.base import BaseOcrConnector, DocumentNonConforme
++from nota_worker.connectors.modele import ModeleDocument
++from nota_worker.prepopulation.poller import default_pages_dir
++
++#: Execution RUNNING sans progres depuis ce delai : son worker est mort. Le
++#: signe de vie est ecrit a chaque document, et un CERFA coute une trentaine
++#: d'appels : la marge couvre un document lent sans tuer une execution vivante.
++STALE_AFTER = timedelta(hours=2)
++
++
++class EchecExecution(Exception):
++    """Echec qui met l'execution en FAILED, avec un message lisible."""
++
++
++class TestExecutionWorker(BaseWorker):
++    """Execute les recettes de test OCR en attente."""
++
++    __test__ = False  # prefixe Test* : pytest tenterait de la collecter
++    poll_interval_seconds = 10.0
++
++    def __init__(
++        self,
++        depot: Optional[Any] = None,
++        connector: Optional[BaseOcrConnector] = None,
++        *,
++        pvc_root: Optional[Path] = None,
++        pages_dir: Callable[[int], Path] = default_pages_dir,
++        cle_hmac: Optional[str] = None,
++    ) -> None:
++        super().__init__()
++        self.depot = depot or DepotBenchmark()
++        self.connector = connector or connector_from_settings(settings)
++        self.pvc_root = pvc_root or Path(settings.pvc_mount_path)
++        self.pages_dir = pages_dir
++        self.cle_hmac = settings.comparison_hmac_key if cle_hmac is None else cle_hmac
++
++    # -- Boucle -------------------------------------------------------------
++
++    async def poll(self) -> None:
++        bloquees = await self.depot.echouer_bloquees(STALE_AFTER)
++        if bloquees:
++            self.logger.warning("%s execution(s) interrompue(s) passee(s) en FAILED", bloquees)
++
++        execution = await self.depot.reserver_execution(self.connector.name, self._modele_ocr())
++        if execution is None:
++            self.logger.debug("aucune execution de test en attente")
++            return
++
++        self.logger.info(
++            "execution de test demarree [execution_id=%s recette=%s documents=%s]",
++            execution.id,
++            execution.recipe_id,
++            len(execution.document_ids),
++        )
++        try:
++            await self._executer(execution)
++        except EchecExecution as exc:
++            self.logger.error("execution %s en FAILED : %s", execution.id, exc)
++            await self.depot.terminer(execution.id, TestExecutionStatus.FAILED, message=str(exc))
++        except Exception as exc:  # pylint: disable=broad-exception-caught
++            self.logger.exception("execution %s : echec inattendu", execution.id)
++            await self.depot.terminer(
++                execution.id,
++                TestExecutionStatus.FAILED,
++                message=f"echec inattendu, voir les logs du worker ({type(exc).__name__})",
++            )
++
++    def _modele_ocr(self) -> Optional[str]:
++        """Identifiant du moteur, copie sur l'execution : modele OCR et, pour
++        Mistral, modele d'annotation — les deux font la lecture."""
++        modeles = [
++            getattr(self.connector, attribut, None) for attribut in ("model", "annotation_model")
++        ]
++        noms = [str(m) for m in modeles if m]
++        return " + ".join(noms) or None
++
++    # -- Execution ----------------------------------------------------------
++
++    async def _executer(self, execution: ExecutionReservee) -> None:
++        if execution.recipe_status != TestRecipeStatus.LOCKED.value:
++            raise EchecExecution(
++                f"recette {execution.recipe_id} non verrouillee ({execution.recipe_status}) : "
++                "deux passages ne sont comparables que sur une recette figee"
++            )
++        if not self.cle_hmac:
++            raise EchecExecution(
++                "COMPARISON_HMAC_KEY absente : les champs sensibles ne peuvent etre juges"
++            )
++
++        modele = ModeleDocument.depuis_schema(await self.depot.schema(execution.schema_id))
++        documents = await self.depot.documents(execution.document_ids)
++        if not documents:
++            raise EchecExecution(f"recette {execution.recipe_id} sans document existant")
++
++        histogramme: Dict[str, Dict[str, List[int]]] = {}
++        agregats: Dict[int, Agregat] = {}
++        non_conformes: List[int] = []
++        sans_images: List[int] = []
++
++        for document_id, file_id in documents:
++            images = self._images(file_id)
++            if not images:
++                # Pages jamais rendues : c'est un defaut d'ingestion, pas une
++                # lecture ratee. Le compter MISSING imputerait au moteur une
++                # erreur qui n'est pas la sienne.
++                sans_images.append(document_id)
++                continue
++            appels_avant = int(getattr(self.connector, "appels", 0))
++            try:
++                ocr = await self.connector.extract(images, modele)
++            except DocumentNonConforme:
++                # Le moteur n'a pas su lire ce document comme le formulaire :
++                # c'est une lecture ratee, mesuree comme telle.
++                ocr = None
++                non_conformes.append(document_id)
++            except Exception as exc:
++                raise EchecExecution(
++                    f"moteur OCR en echec sur le document {document_id} : {exc}"
++                ) from exc
++            appels = int(getattr(self.connector, "appels", 0)) - appels_avant
++
++            resultat = evaluer_document(
++                await self.depot.verite(document_id), ocr, execution.id, self.cle_hmac
++            )
++            await self.depot.enregistrer_document(
++                execution.id,
++                resultat.ecarts,
++                {
++                    "documents_compared": 1,
++                    "fields_compared": resultat.fields_compared,
++                    "fields_human_verified": resultat.fields_human_verified,
++                    "diff_count": len(resultat.ecarts),
++                    "unexpected_count": resultat.unexpected_count,
++                    "ocr_calls_made": appels,
++                    "pages_processed": len(images),
++                },
++            )
++            fusionner_histogrammes(histogramme, resultat.histogramme)
++            for field_spec_id, agregat in resultat.agregats.items():
++                cumul = agregats.setdefault(field_spec_id, Agregat(agregat.field_key))
++                cumul.compared += agregat.compared
++                cumul.diff_count += agregat.diff_count
++            self.logger.info(
++                "document compare [execution_id=%s document_id=%s verifies=%s ecarts=%s]",
++                execution.id,
++                document_id,
++                resultat.fields_human_verified,
++                len(resultat.ecarts),
++            )
++
++        constats = []
++        if non_conformes:
++            constats.append(f"documents juges non conformes par le moteur : {non_conformes}")
++        if sans_images:
++            constats.append(f"documents ecartes, images de page absentes : {sans_images}")
++        message = " ; ".join(constats) or None
++        await self.depot.terminer(
++            execution.id,
++            TestExecutionStatus.COMPLETED,
++            histogramme=histogramme,
++            agregats=agregats,
++            message=message,
++        )
++        self.logger.info("execution de test terminee [execution_id=%s]", execution.id)
++
++    def _images(self, file_id: int) -> List[Path]:
++        """Images de page deja rendues par l'ingestion, dans l'ordre des noms."""
++        dossier = self.pvc_root / self.pages_dir(file_id)
++        return sorted(dossier.glob("*.png")) if dossier.is_dir() else []
+diff --git a/src/nota_worker/connectors/mistral.py b/src/nota_worker/connectors/mistral.py
+index 539e975..ef01a6b 100644
+--- a/src/nota_worker/connectors/mistral.py
++++ b/src/nota_worker/connectors/mistral.py
+@@ -110,8 +110,14 @@ _CONSIGNE = (
+     "libelle : les champs qui en dependent restent null. De meme, un champ "
+     "que la reponse cochee prive d'objet — un numero de dossier alors que la "
+     "case « aucun dossier precedent » est cochee — rend null.\n"
+-    "Si une rubrique porte plusieurs lignes, ne rends que la premiere. Ne "
+-    "concatene jamais plusieurs lignes dans un meme champ.\n"
++    "Ne concatene jamais plusieurs lignes dans un meme champ.\n"
++    "Tableaux a lignes numerotees (prets, dettes, personnes...) : une "
++    "propriete dont le nom porte une instance, comme pret_5, designe la ligne "
++    "imprimee n° 5 du tableau. Range chaque valeur dans la ligne ou elle est "
++    "ecrite, jamais dans une autre : si la ligne 4 est vide et la ligne 5 "
++    "remplie, la ligne 4 reste null et la 5 recoit ses valeurs. Une ligne "
++    "vide laisse toutes ses proprietes a null. Sans numero imprime, l'ordre "
++    "des lignes de haut en bas fait foi.\n"
+     "Les en-tetes, pieds de page, references de formulaire, numeros de notice "
+     "et mentions d'impression ne sont pas des donnees saisies : ignore-les. "
+     "Une rubrique laissee vide par le deposant rend null pour tous ses champs, "
+@@ -149,6 +155,9 @@ class MistralOcrConnector(BaseOcrConnector):
+         self.endpoint = endpoint.rstrip("/")
+         self.model = model
+         self.annotation_model = annotation_model
++        #: Appels HTTP passes au moteur, reprises comprises. Le benchmark en
++        #: tire ocr_calls_made : c'est ce qu'un passage coute.
++        self.appels = 0
+         # Un client injecte appartient a l'appelant, qui gere sa fermeture.
+         self._external_client = client is not None
+         self._client = client or httpx.AsyncClient(
+@@ -199,7 +208,7 @@ class MistralOcrConnector(BaseOcrConnector):
+                 # Page reconnue mais sans champs : rien a annoter.
+                 continue
+             annotation = await self._extract_fields(markdown, page_number, fields)
+-            page = self._build_page(page_number, fields, annotation, dims)
++            page = self._build_page(page_number, fields, annotation, dims, modele)
+             detected += sum(1 for _, _, kv in _iter_pairs(page) if kv.value is not None)
+             pages.append(page)
+ 
+@@ -228,6 +237,9 @@ class MistralOcrConnector(BaseOcrConnector):
+                 "provider": "mistral",
+                 "model": self.model,
+                 "annotation_model": self.annotation_model,
++                # Mistral ne rend aucune confiance par champ : celle des KVPair
++                # est la valeur par defaut du contrat (1.0), pas une mesure.
++                "confidence_fournie": False,
+                 "anomalies_pages": anomalies,
+                 # Page du formulaire reconnue -> rang de son image dans le PDF : de
+                 # quoi remettre les images dans l'ordre du formulaire.
+@@ -300,6 +312,7 @@ class MistralOcrConnector(BaseOcrConnector):
+         url = f"{self.endpoint}{path}"
+         last_error = ""
+         for attempt in range(1, _MAX_ATTEMPTS + 1):
++            self.appels += 1
+             try:
+                 response = await self._client.post(url, json=payload)
+             except httpx.HTTPError as exc:
+@@ -356,15 +369,24 @@ class MistralOcrConnector(BaseOcrConnector):
+         fields: Mapping[str, FieldDef],
+         annotation: Mapping[str, Any],
+         dims: Mapping[str, Any],
++        modele: ModeleDocument,
+     ) -> Page:
+         """Itere sur le schema, jamais sur l'annotation : une cle inventee par
+         le modele est ignoree, une cle attendue mais absente donne un KVPair
+-        sans valeur — le meme contrat que le mock et le seed."""
++        sans valeur — le meme contrat que le mock et le seed.
++
++        La cle d'appel d'une ligne de tableau ("section.pret_2.champ") est
++        redecoupee en id="section.champ" et group_id="pret_2", la forme du
++        contrat que le merger rapproche de la bonne ligne.
++        """
+         sections: Dict[str, List[KVPair]] = {}
+         for key, spec in fields.items():
+             value = _to_kv_value(annotation.get(key), spec)
+-            section_id = key.split(".", 1)[0]
+-            sections.setdefault(section_id, []).append(KVPair(id=key, value=value))
++            cle, group_id = modele.cible(key)
++            section_id = cle.split(".", 1)[0]
++            sections.setdefault(section_id, []).append(
++                KVPair(id=cle, group_id=group_id, value=value)
++            )
+ 
+         return Page(
+             page_number=page_number,
+@@ -535,19 +557,26 @@ def _annotation_format(page_number: int, fields: Mapping[str, FieldDef]) -> Dict
+     }
+ 
+ 
+-def _flatten(annotation: Mapping[str, Any], expected: set[str]) -> Dict[str, Any]:
++def _flatten(
++    annotation: Mapping[str, Any], expected: set[str], prefixe: str = ""
++) -> Dict[str, Any]:
+     """Ramene l'annotation a un plat cle pointee -> valeur.
+ 
+-    Le schema envoye est plat, mais un modele peut regrouper par section
+-    ("deposant": {"deposant.nom": ...}) : on descend dans tout dictionnaire
+-    dont la cle n'est pas elle-meme un champ attendu.
++    Le schema envoye est plat, mais un modele peut regrouper : par section
++    ("deposant": {"deposant.nom": ...}), ou par instance d'un tableau
++    ("credits_consommation": {"pret_2": {"reference": ...}}). On descend dans
++    tout dictionnaire dont la cle n'est pas elle-meme un champ attendu, et une
++    cle est retenue telle quelle ou prefixee du chemin qui y mene.
+     """
+     flat: Dict[str, Any] = {}
+     for key, value in annotation.items():
++        chemin = f"{prefixe}.{key}" if prefixe else key
+         if key in expected:
+             flat[key] = value
++        elif chemin in expected:
++            flat[chemin] = value
+         elif isinstance(value, Mapping):
+-            flat.update(_flatten(value, expected))
++            flat.update(_flatten(value, expected, chemin))
+     return flat
+ 
+ 
+diff --git a/src/nota_worker/connectors/modele.py b/src/nota_worker/connectors/modele.py
+index 4de2957..cbd6e72 100644
+--- a/src/nota_worker/connectors/modele.py
++++ b/src/nota_worker/connectors/modele.py
+@@ -13,15 +13,24 @@ Le modele porte trois choses :
+   d'annotation, indexes par leur cle semantique "section.champ" — celle que
+   le merger rapproche ensuite des FIELD_SPEC.
+ 
+-Les champs repetables (FIELD_SPEC de meme cle sur plusieurs group_id) n'y
+-figurent qu'une fois : la repetition ne change rien a ce qu'on demande au
+-moteur, seulement au depliage de sa reponse (ticket T7).
++Champs repetables (ticket T7)
++-----------------------------
++Un tableau a plusieurs lignes identiques (prets n° 1 a 6) a une FIELD_SPEC par
++ligne, distinguee par group_id. Le moteur recoit une propriete par ligne, dont
++le nom porte l'instance : "credits_consommation.pret_2.reference". Le schema
++reste plat — le mode strict de Mistral exige `required` complet a chaque
++niveau, et un tableau d'objets ne fixerait ni le nombre ni le rang des lignes.
++
++Ce nom n'est qu'une cle d'appel : la reponse est redecoupee en
++id="credits_consommation.reference" et group_id="pret_2", la forme du contrat
++(KVPair.group_id), que le merger rapproche de la bonne ligne.
+ """
+ 
+ from __future__ import annotations
+ 
++import re
+ from dataclasses import dataclass, field
+-from typing import Any, Dict, Mapping
++from typing import Any, Dict, Mapping, Optional, Tuple
+ 
+ from nota_core.enums.status import FieldValueType
+ from nota_worker.prepopulation.merger import semantic_key
+@@ -37,8 +46,18 @@ class ModeleDocument:
+     nom: str
+     #: Numero de page -> description (titres de rubrique imprimes).
+     pages: Mapping[int, str] = field(default_factory=dict)
+-    #: Numero de page -> cle semantique -> propriete du json_schema.
++    #: Numero de page -> cle d'appel -> propriete du json_schema. La cle
++    #: d'appel est la cle semantique, avec l'instance pour un repetable.
+     champs: Mapping[int, Mapping[str, FieldDef]] = field(default_factory=dict)
++    #: Cle d'appel d'un champ repetable -> (cle semantique, group_id). Une cle
++    #: absente d'ici est un champ simple : elle est sa propre cle semantique.
++    instances: Mapping[str, Tuple[str, str]] = field(default_factory=dict)
++
++    def cible(self, cle_appel: str) -> Tuple[str, Optional[str]]:
++        """(cle semantique, group_id) que remplit une propriete de la reponse."""
++        if cle_appel in self.instances:
++            return self.instances[cle_appel]
++        return cle_appel, None
+ 
+     @property
+     def nombre_pages(self) -> int:
+@@ -54,22 +73,47 @@ class ModeleDocument:
+             if p.get("description")
+         }
+         champs: Dict[int, Dict[str, FieldDef]] = {}
++        instances: Dict[str, Tuple[str, str]] = {}
+         for spec in schema.get("field_specs") or []:
+             cle = semantic_key(spec.get("section_id"), spec["field_key"])
++            group_id = spec.get("group_id")
+             page = champs.setdefault(int(spec["page"]), {})
+-            # Premiere instance d'un champ repetable : les suivantes portent
+-            # la meme cle et ne changent rien a la demande.
+-            page.setdefault(cle, propriete(spec))
+-        return cls(nom=str(schema.get("name") or "formulaire"), pages=pages, champs=champs)
++            if not group_id:
++                page.setdefault(cle, propriete(spec))
++                continue
++            cle_appel = cle_d_appel(cle, group_id)
++            page.setdefault(cle_appel, propriete(spec, group_id))
++            instances[cle_appel] = (cle, group_id)
++        return cls(
++            nom=str(schema.get("name") or "formulaire"),
++            pages=pages,
++            champs=champs,
++            instances=instances,
++        )
++
++
++def cle_d_appel(cle: str, group_id: str) -> str:
++    """Nom de propriete d'une instance : l'instance s'insere apres la section.
++
++    "credits_consommation.reference" + "pret_2" donne
++    "credits_consommation.pret_2.reference".
++    """
++    section, _, reste = cle.partition(".")
++    return f"{section}.{group_id}.{reste}" if reste else f"{group_id}.{section}"
+ 
+ 
+-def propriete(spec: Mapping[str, Any]) -> FieldDef:
++def propriete(spec: Mapping[str, Any], group_id: Optional[str] = None) -> FieldDef:
+     """Propriete du json_schema d'annotation pour un FIELD_SPEC.
+ 
+     La description vient de field_spec.description, faite pour le moteur ; a
+-    defaut, de display_label, fait pour l'ecran.
++    defaut, de display_label, fait pour l'ecran. Pour une ligne de tableau,
++    elle dit laquelle : c'est le numero imprime de la ligne qui la designe.
+     """
+     description = spec.get("description") or spec.get("display_label") or spec["field_key"]
++    if group_id:
++        numero = re.search(r"(\d+)$", group_id)
++        ligne = f"ligne n° {numero.group(1)} du tableau" if numero else f"instance {group_id}"
++        description = f"{description} ({ligne})"
+     value_type = str(spec.get("value_type") or FieldValueType.TEXT.value).upper()
+     if value_type == FieldValueType.BOOLEAN.value:
+         return {"description": description, "type": "boolean"}
+diff --git a/src/nota_worker/main.py b/src/nota_worker/main.py
+index ec0792f..6dd3441 100644
+--- a/src/nota_worker/main.py
++++ b/src/nota_worker/main.py
+@@ -23,6 +23,7 @@ from nota_worker.base_worker import BaseWorker
+ from nota_worker.consensus_worker import ConsensusWorker
+ from nota_worker.document_progress_worker import DocumentProgressWorker
+ from nota_worker.page_image_worker import PageImageWorker
++from nota_worker.benchmark.worker import TestExecutionWorker
+ from nota_worker.prepopulation.poller import PrepopulationWorker
+ 
+ 
+@@ -56,6 +57,7 @@ async def main() -> None:
+         PrepopulationWorker(),
+         ConsensusWorker(),
+         DocumentProgressWorker(),
++        TestExecutionWorker(),
+     ]
+     _install_signal_handlers(workers)
+     await asyncio.gather(*(worker.run_forever() for worker in workers))
+diff --git a/src/nota_worker/prepopulation/merger.py b/src/nota_worker/prepopulation/merger.py
+index ba2749c..7fe7b87 100644
+--- a/src/nota_worker/prepopulation/merger.py
++++ b/src/nota_worker/prepopulation/merger.py
+@@ -30,7 +30,7 @@ FIELD_PROPOSAL des qu'un operateur soumettra une correction.
+ 
+ from __future__ import annotations
+ 
+-from typing import Any, Dict, List, Mapping, Optional, Sequence
++from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+ 
+ from nota_core.enums.status import DocumentFieldStatus
+ from nota_core.schemas.interface_contract import KVPair, SmartdocDocument
+@@ -54,18 +54,27 @@ def semantic_key(section_id: Optional[str], field_key: str) -> str:
+     return f"{section_id}.{field_key}"
+ 
+ 
+-def index_ocr_pairs(ocr: Optional[SmartdocDocument]) -> Dict[str, KVPair]:
+-    """Indexe les KVPair par leur identifiant pointe.
++#: Cle d'un KVPair : son identifiant pointe et l'instance qu'il remplit.
++CleOcr = Tuple[str, Optional[str]]
+ 
+-    En cas d'identifiant repete entre deux pages, le premier rencontre gagne :
+-    un champ vu deux fois est plus probablement une entete repetee qu'une
+-    seconde occurrence significative, et le contrat ne permet pas de trancher.
++
++def index_ocr_pairs(ocr: Optional[SmartdocDocument]) -> Dict[CleOcr, KVPair]:
++    """Indexe les KVPair par (identifiant pointe, group_id).
++
++    Le group_id est celui du contrat : une ligne d'un tableau repetable (pret
++    n° 2) arrive avec id="credits_consommation.reference" et group_id="pret_2".
++    Sans lui, les six prets d'un tableau partageraient une seule cle, et la
++    valeur du premier finirait dans les six.
++
++    En cas de cle repetee entre deux pages, le premier rencontre gagne : un
++    champ vu deux fois est plus probablement une entete repetee qu'une seconde
++    occurrence significative, et le contrat ne permet pas de trancher.
+     """
+     if ocr is None:
+         return {}
+-    index: Dict[str, KVPair] = {}
++    index: Dict[CleOcr, KVPair] = {}
+     for _page_number, _section, kv in ocr.iter_kv_pairs():
+-        index.setdefault(kv.id, kv)
++        index.setdefault((kv.id, kv.group_id), kv)
+     return index
+ 
+ 
+@@ -117,10 +126,22 @@ def merge(
+         La liste des champs, dans l'ordre du schema.
+     """
+     index = index_ocr_pairs(ocr)
++    #: Cles dont la valeur sans instance a deja servi a une ligne repetable.
++    replis_servis: Set[str] = set()
+     payloads: List[Dict[str, Any]] = []
+     for spec in field_specs:
+         key = semantic_key(spec.get("section_id"), spec["field_key"])
+-        payloads.append(_payload_from_spec(spec, index.get(key)))
++        group_id = spec.get("group_id")
++        kv = index.get((key, group_id))
++        if kv is None and group_id is not None and key not in replis_servis:
++            # Valeur rendue sans instance (connecteur qui ne connait pas les
++            # repetables) : elle ne remplit que la premiere ligne du tableau.
++            # La recopier dans toutes ferait croire a l'operateur que six prets
++            # ont ete lus, alors qu'un seul l'a ete.
++            kv = index.get((key, None))
++            if kv is not None:
++                replis_servis.add(key)
++        payloads.append(_payload_from_spec(spec, kv))
+     return payloads
+ 
+ 
+diff --git a/tests/unit/test_benchmark.py b/tests/unit/test_benchmark.py
+new file mode 100644
+index 0000000..d7bdc2f
+--- /dev/null
++++ b/tests/unit/test_benchmark.py
+@@ -0,0 +1,407 @@
++"""Tests du worker de benchmark OCR (tests automatises en batch).
++
++Sans base ni moteur : le comparateur et l'evaluation sont purs, le worker
++tourne contre un faux depot et un faux connecteur, et les requetes du vrai
++depot sont compilees pour PostgreSQL sans etre executees.
++"""
++
++from __future__ import annotations
++
++import asyncio
++from contextlib import asynccontextmanager
++from datetime import timedelta
++from pathlib import Path
++from typing import Any, AsyncIterator, Dict, List, Optional
++
++import pytest
++from sqlalchemy.dialects import postgresql
++
++from nota_core.enums.status import (
++    ComparisonDiffKind,
++    ComparisonVerdict,
++    TestExecutionStatus,
++)
++from nota_core.schemas.interface_contract import (
++    KVNumberValue,
++    KVPair,
++    KVTextValue,
++    Page,
++    Section,
++    SmartdocDocument,
++)
++from nota_worker.benchmark import depot as depot_module
++from nota_worker.benchmark.comparateur import (
++    categorie,
++    comparer,
++    distance_edition,
++    empreinte,
++    normaliser,
++)
++from nota_worker.benchmark.depot import DepotBenchmark, ExecutionReservee
++from nota_worker.benchmark.evaluation import Agregat, ChampVerite, evaluer_document
++from nota_worker.benchmark.worker import TestExecutionWorker
++from nota_worker.connectors.base import DocumentNonConforme, OcrConnectorError
++
++CLE = "cle-de-test"
++
++
++# -- Comparateur ----------------------------------------------------------------
++
++
++class TestComparateur:
++    def test_texte_normalise(self) -> None:
++        assert comparer("Mme  THÉRY", "mme thery", "TEXT") is None
++
++    def test_dates_et_nombres_par_valeur(self) -> None:
++        assert comparer("17/09/1969", "1969-09-17", "DATE") is None
++        assert comparer("17/09/69", "1969-09-17", "DATE") is None
++        assert comparer("1 738,26", "1738.26", "NUMBER") is None
++        assert comparer("true", "oui", "BOOLEAN") is None
++
++    def test_missing_et_wrong(self) -> None:
++        manque = comparer("DUPONT", None, "TEXT")
++        assert manque is not None and manque.verdict == ComparisonVerdict.MISSING
++        faux = comparer("DUPONT", "DURAND", "TEXT")
++        assert faux is not None and faux.verdict == ComparisonVerdict.WRONG
++        assert faux.edit_distance == 3
++
++    def test_valeur_inventee_est_une_erreur(self) -> None:
++        """Verite vide, moteur qui lit quelque chose : WRONG, pas silence."""
++        ecart = comparer(None, "1947-01-01", "DATE")
++        assert ecart is not None and ecart.verdict == ComparisonVerdict.WRONG
++        assert comparer(None, "", "TEXT") is None
++
++    def test_categories(self) -> None:
++        assert categorie("FR76 3000", "FR76-3000") == ComparisonDiffKind.FORMAT
++        assert categorie("524738039", "524738030") == ComparisonDiffKind.DIGIT
++        assert categorie("DUPONT", "MARTIN") == ComparisonDiffKind.TOTAL
++
++    def test_distance_et_empreinte(self) -> None:
++        assert distance_edition("chat", "chats") == 1
++        assert empreinte("FR76 3000", CLE) == empreinte("fr76  3000", CLE)
++        assert empreinte("FR76 3000", CLE) != empreinte("FR76 3000", "autre-cle")
++        assert empreinte(None, CLE) is None
++        assert normaliser("  ", "TEXT") is None
++
++
++# -- Evaluation d'un document ---------------------------------------------------------
++
++
++def _champ(
++    n: int,
++    attendu: Optional[str],
++    *,
++    verifie: bool = True,
++    sensible: bool = False,
++    section: str = "deposant",
++    cle: str = "nom",
++    group_id: Optional[str] = None,
++    value_type: str = "TEXT",
++) -> ChampVerite:
++    return ChampVerite(
++        document_field_id=1000 + n,
++        field_spec_id=n,
++        section_id=section,
++        field_key=cle,
++        group_id=group_id,
++        value_type=value_type,
++        sensitive=sensible,
++        attendu=attendu,
++        verifie=verifie,
++    )
++
++
++def _ocr(*paires: KVPair) -> SmartdocDocument:
++    return SmartdocDocument(
++        smartdoc_version="0.3",
++        document_id="bench",
++        page_count=1,
++        pages=[
++            Page(
++                page_number=1,
++                width=1.0,
++                height=1.0,
++                sections=[Section(id="s", label="S", kv_pairs=list(paires))],
++            )
++        ],
++        metadata={"provider": "test"},
++    )
++
++
++def _kv(id_: str, texte: str, group_id: Optional[str] = None) -> KVPair:
++    return KVPair(id=id_, group_id=group_id, value=KVTextValue(text=texte))
++
++
++class TestEvaluation:
++    def test_seuls_les_champs_verifies_sont_juges(self) -> None:
++        verite = [_champ(1, "DUPONT"), _champ(2, "Jean", verifie=False, cle="prenoms")]
++        ocr = _ocr(_kv("deposant.nom", "DURAND"), _kv("deposant.prenoms", "Paul"))
++        resultat = evaluer_document(verite, ocr, 9, CLE)
++        assert resultat.fields_compared == 2
++        assert resultat.fields_human_verified == 1
++        assert [e["document_field_id"] for e in resultat.ecarts] == [1001]
++        assert resultat.agregats == {1: Agregat("deposant.nom", compared=1, diff_count=1)}
++
++    def test_champ_sensible_rien_en_clair(self) -> None:
++        verite = [_champ(1, "FR7630001", sensible=True, section="gestion_budget", cle="iban")]
++        ecart = evaluer_document(
++            verite, _ocr(_kv("gestion_budget.iban", "FR7630007")), 9, CLE
++        ).ecarts[0]
++        assert ecart["expected_value"] is None and ecart["observed_value"] is None
++        assert ecart["observed_hmac"] == empreinte("FR7630007", CLE)
++        assert ecart["diff_kind"] == "DIGIT"
++        assert ecart["edit_distance"] == 1
++
++    def test_lignes_de_tableau_jugees_chacune(self) -> None:
++        """T7 : chaque pret compare a sa propre ligne de verite."""
++        verite = [
++            _champ(n, ref, section="credits_consommation", cle="reference", group_id=f"pret_{n}")
++            for n, ref in ((1, "ADVANZIA"), (2, "DIAC"), (3, None))
++        ]
++        ocr = _ocr(
++            _kv("credits_consommation.reference", "ADVANZIA", "pret_1"),
++            _kv("credits_consommation.reference", "DIAX", "pret_2"),
++        )
++        resultat = evaluer_document(verite, ocr, 9, CLE)
++        assert [(e["document_field_id"], e["verdict"]) for e in resultat.ecarts] == [
++            (1002, "WRONG")
++        ]
++        assert resultat.agregats[2].field_key == "credits_consommation.reference[pret_2]"
++
++    def test_histogramme_et_hors_schema(self) -> None:
++        verite = [_champ(1, "DUPONT"), _champ(2, "12", cle="age", value_type="NUMBER")]
++        ocr = _ocr(
++            KVPair(id="deposant.nom", value=KVTextValue(text="DUPONT", confidence=0.95)),
++            KVPair(id="deposant.age", value=KVNumberValue(value=13, confidence=0.951)),
++            _kv("autre.champ", "X"),
++        )
++        resultat = evaluer_document(verite, ocr, 9, CLE)
++        assert resultat.histogramme == {"TEXT": {"0.95": [1, 0]}, "NUMBER": {"0.95": [0, 1]}}
++        assert resultat.unexpected_count == 1
++
++    def test_moteur_sans_confiance_n_alimente_pas_l_histogramme(self) -> None:
++        """Mistral : la confiance des KVPair est le 1.0 par defaut du contrat."""
++        ocr = _ocr(_kv("deposant.nom", "DURAND"))
++        ocr.metadata["confidence_fournie"] = False
++        resultat = evaluer_document([_champ(1, "DUPONT")], ocr, 9, CLE)
++        assert resultat.histogramme == {}
++        assert resultat.ecarts[0]["ocr_confidence"] is None
++
++    def test_moteur_muet_tout_verifie_est_missing(self) -> None:
++        resultat = evaluer_document([_champ(1, "DUPONT"), _champ(2, None, cle="x")], None, 9, CLE)
++        assert [e["verdict"] for e in resultat.ecarts] == ["MISSING"]
++
++
++# -- Worker -----------------------------------------------------------------------------
++
++
++class _FauxDepot:
++    def __init__(self, execution: Optional[ExecutionReservee], verite: List[ChampVerite]) -> None:
++        self.execution = execution
++        self._verite = verite
++        self.enregistrements: List[Dict[str, Any]] = []
++        self.fin: Dict[str, Any] = {}
++        self.reservations: List[Any] = []
++
++    async def echouer_bloquees(self, delai: timedelta) -> int:
++        return 0
++
++    async def reserver_execution(self, provider: str, modele: Optional[str]) -> Any:
++        self.reservations.append((provider, modele))
++        execution, self.execution = self.execution, None
++        return execution
++
++    async def schema(self, schema_id: int) -> Dict[str, Any]:
++        return {
++            "name": "Test",
++            "pages": [],
++            "field_specs": [
++                {
++                    "id": 1,
++                    "page": 1,
++                    "section_id": "deposant",
++                    "field_key": "nom",
++                    "value_type": "TEXT",
++                }
++            ],
++        }
++
++    async def documents(self, ids: List[int]) -> List[Any]:
++        return [(i, 100 + i) for i in ids]
++
++    async def verite(self, document_id: int) -> List[ChampVerite]:
++        return self._verite
++
++    async def enregistrer_document(self, execution_id: int, ecarts: Any, compteurs: Any) -> None:
++        self.enregistrements.append({"ecarts": ecarts, "compteurs": compteurs})
++
++    async def terminer(self, execution_id: int, statut: Any, **kwargs: Any) -> None:
++        self.fin = {"statut": statut, **kwargs}
++
++
++class _FauxConnecteur:
++    name = "faux"
++    model = "ocr-1"
++    annotation_model = "annot-1"
++
++    def __init__(self, reponses: List[Any]) -> None:
++        self.reponses = reponses
++        self.appels = 0
++
++    async def extract(self, images: Any, modele: Any = None) -> Any:
++        self.appels += 3
++        reponse = self.reponses.pop(0)
++        if isinstance(reponse, Exception):
++            raise reponse
++        return reponse
++
++
++def _execution(statut: str = "LOCKED", docs: Optional[List[int]] = None) -> ExecutionReservee:
++    return ExecutionReservee(
++        id=7, recipe_id=3, recipe_status=statut, document_ids=docs or [1, 2], schema_id=5
++    )
++
++
++def _worker(
++    depot: _FauxDepot, connecteur: _FauxConnecteur, cle: str = CLE, sans_images: Any = ()
++) -> TestExecutionWorker:
++    worker = TestExecutionWorker(depot, connecteur, pvc_root=Path("/inexistant"), cle_hmac=cle)
++    worker._images = lambda file_id: [] if file_id - 100 in sans_images else [Path("p.png")]
++    return worker
++
++
++class TestWorker:
++    def test_execution_complete(self) -> None:
++        depot = _FauxDepot(_execution(), [_champ(1, "DUPONT")])
++        connecteur = _FauxConnecteur(
++            [_ocr(_kv("deposant.nom", "DUPONT")), _ocr(_kv("deposant.nom", "DURAND"))]
++        )
++        asyncio.run(_worker(depot, connecteur).poll())
++
++        assert depot.reservations == [("faux", "ocr-1 + annot-1")]
++        assert [len(e["ecarts"]) for e in depot.enregistrements] == [0, 1]
++        assert depot.enregistrements[1]["compteurs"]["ocr_calls_made"] == 3
++        assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
++        assert depot.fin["agregats"][1].compared == 2
++        assert depot.fin["agregats"][1].diff_count == 1
++        assert depot.fin["message"] is None
++
++    def test_rien_en_attente(self) -> None:
++        depot = _FauxDepot(None, [])
++        asyncio.run(_worker(depot, _FauxConnecteur([])).poll())
++        assert depot.fin == {}
++
++    def test_recette_non_verrouillee(self) -> None:
++        depot = _FauxDepot(_execution("DRAFT"), [])
++        connecteur = _FauxConnecteur([])
++        asyncio.run(_worker(depot, connecteur).poll())
++        assert depot.fin["statut"] == TestExecutionStatus.FAILED
++        assert "non verrouillee" in depot.fin["message"]
++        assert connecteur.appels == 0
++
++    def test_sans_cle_hmac(self) -> None:
++        depot = _FauxDepot(_execution(), [])
++        asyncio.run(_worker(depot, _FauxConnecteur([]), cle="").poll())
++        assert depot.fin["statut"] == TestExecutionStatus.FAILED
++        assert "COMPARISON_HMAC_KEY" in depot.fin["message"]
++
++    def test_document_non_conforme_ne_stoppe_pas(self) -> None:
++        depot = _FauxDepot(_execution(), [_champ(1, "DUPONT")])
++        connecteur = _FauxConnecteur(
++            [DocumentNonConforme("aucune page", []), _ocr(_kv("deposant.nom", "DUPONT"))]
++        )
++        asyncio.run(_worker(depot, connecteur).poll())
++        assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
++        assert "[1]" in depot.fin["message"]
++        assert depot.enregistrements[0]["ecarts"][0]["verdict"] == "MISSING"
++
++    def test_moteur_injoignable_fait_echouer(self) -> None:
++        depot = _FauxDepot(_execution(), [_champ(1, "DUPONT")])
++        asyncio.run(_worker(depot, _FauxConnecteur([OcrConnectorError("injoignable")])).poll())
++        assert depot.fin["statut"] == TestExecutionStatus.FAILED
++        assert "document 1" in depot.fin["message"]
++
++
++# -- Requetes du depot, compilees pour PostgreSQL --------------------------------------
++
++
++class _SessionEnregistreuse:
++    def __init__(self) -> None:
++        self.instructions: List[Any] = []
++
++    async def execute(self, instruction: Any) -> Any:
++        self.instructions.append(instruction)
++        return type("R", (), {"rowcount": 0})()
++
++
++class TestDepotSql:
++    @pytest.fixture
++    def session(self, monkeypatch: pytest.MonkeyPatch) -> _SessionEnregistreuse:
++        session = _SessionEnregistreuse()
++
++        @asynccontextmanager
++        async def faux(**_: Any) -> AsyncIterator[_SessionEnregistreuse]:
++            yield session
++
++        monkeypatch.setattr(depot_module, "get_async_session", faux)
++        return session
++
++    @staticmethod
++    def _sql(instruction: Any) -> str:
++        return str(instruction.compile(dialect=postgresql.dialect()))
++
++    def test_enregistrer_document(self, session: _SessionEnregistreuse) -> None:
++        ecart = {
++            "execution_id": 7,
++            "document_field_id": 1,
++            "verdict": "WRONG",
++            "diff_kind": "TOTAL",
++            "ocr_confidence": None,
++            "expected_value": "a",
++            "observed_value": "b",
++            "observed_hmac": None,
++            "edit_distance": 1,
++        }
++        asyncio.run(
++            DepotBenchmark().enregistrer_document(
++                7, [ecart], {"documents_compared": 1, "diff_count": 1}
++            )
++        )
++        insertion, maj = (self._sql(i) for i in session.instructions)
++        assert (
++            "ON CONFLICT ON CONSTRAINT uq_comparison_result_execution_field DO NOTHING" in insertion
++        )
++        assert "documents_compared=(test_execution.documents_compared +" in maj
++
++    def test_terminer_ecrit_les_agregats(self, session: _SessionEnregistreuse) -> None:
++        asyncio.run(
++            DepotBenchmark().terminer(
++                7,
++                TestExecutionStatus.COMPLETED,
++                histogramme={"TEXT": {}},
++                agregats={1: Agregat("deposant.nom", 2, 1)},
++            )
++        )
++        rapports, fin = (self._sql(i) for i in session.instructions)
++        assert (
++            "ON CONFLICT ON CONSTRAINT uq_evaluation_report_execution_field_spec DO UPDATE"
++            in rapports
++        )
++        assert "UPDATE test_execution SET status=" in fin
++
++    def test_echouer_bloquees(self, session: _SessionEnregistreuse) -> None:
++        asyncio.run(DepotBenchmark().echouer_bloquees(timedelta(minutes=30)))
++        sql = self._sql(session.instructions[0])
++        assert "WHERE test_execution.status = " in sql and "test_execution.updated_at <" in sql
++
++
++class TestDocumentSansImages:
++    def test_ecarte_et_signale_sans_compter_contre_le_moteur(self) -> None:
++        depot = _FauxDepot(_execution(docs=[1, 2]), [_champ(1, "DUPONT")])
++        connecteur = _FauxConnecteur([_ocr(_kv("deposant.nom", "DUPONT"))])
++        asyncio.run(_worker(depot, connecteur, sans_images=(1,)).poll())
++
++        assert len(depot.enregistrements) == 1
++        assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
++        assert "images de page absentes : [1]" in depot.fin["message"]
++        assert depot.fin["agregats"][1].compared == 1
+diff --git a/tests/unit/test_connector_mistral.py b/tests/unit/test_connector_mistral.py
+index 887f4bb..bfe1811 100644
+--- a/tests/unit/test_connector_mistral.py
++++ b/tests/unit/test_connector_mistral.py
+@@ -677,8 +677,8 @@ def test_un_autre_formulaire_que_le_cerfa(tmp_path: Path) -> None:
+     assert "salarie.nom" in schema["properties"]
+ 
+ 
+-def test_modele_depuis_schema_deplie_une_seule_fois_les_repetables() -> None:
+-    """Six instances d'un pret portent la meme cle : une seule propriete."""
++def test_modele_depuis_schema_une_propriete_par_ligne_de_tableau() -> None:
++    """T7 : six prets, six proprietes, chacune redecoupee vers sa ligne."""
+     specs = [
+         {
+             "page": 10,
+@@ -692,6 +692,13 @@ def test_modele_depuis_schema_deplie_une_seule_fois_les_repetables() -> None:
+         for n in range(1, 7)
+     ]
+     modele = ModeleDocument.depuis_schema({"name": "x", "field_specs": specs})
+-    assert list(modele.champs[10]) == ["credits_consommation.reference"]
+-    assert modele.champs[10]["credits_consommation.reference"]["description"] == "Reference du pret"
++    assert list(modele.champs[10]) == [
++        f"credits_consommation.pret_{n}.reference" for n in range(1, 7)
++    ]
++    propriete = modele.champs[10]["credits_consommation.pret_2.reference"]
++    assert propriete["description"] == "Reference du pret (ligne n° 2 du tableau)"
++    assert modele.cible("credits_consommation.pret_2.reference") == (
++        "credits_consommation.reference",
++        "pret_2",
++    )
+     assert modele.nombre_pages == 10
+diff --git a/tests/unit/test_pdf_render.py b/tests/unit/test_pdf_render.py
+index 90129f8..eba5a61 100644
+--- a/tests/unit/test_pdf_render.py
++++ b/tests/unit/test_pdf_render.py
+@@ -2,7 +2,7 @@
+ 
+ from pathlib import Path
+ 
+-import fitz
++import pymupdf
+ import pytest
+ 
+ from nota_core.utils.pdf_render import (
+@@ -14,7 +14,7 @@ from nota_core.utils.pdf_render import (
+ 
+ 
+ def _make_pdf(path: Path, page_count: int) -> None:
+-    doc = fitz.open()
++    doc = pymupdf.open()
+     for i in range(page_count):
+         page = doc.new_page()
+         page.insert_text((72, 72), f"Page {i + 1}")
+@@ -79,16 +79,16 @@ def test_render_pages_to_png_cleans_up_partial_output_on_mid_render_failure(
+     _make_pdf(pdf_path, page_count=3)
+     output_dir = tmp_path / "out"
+ 
+-    original_save = fitz.Pixmap.save
++    original_save = pymupdf.Pixmap.save
+     calls = {"n": 0}
+ 
+-    def flaky_save(self: fitz.Pixmap, path: str, *args: object, **kwargs: object) -> None:
++    def flaky_save(self: pymupdf.Pixmap, path: str, *args: object, **kwargs: object) -> None:
+         calls["n"] += 1
+         if calls["n"] == 2:
+             raise RuntimeError("page illisible")
+         original_save(self, path, *args, **kwargs)
+ 
+-    monkeypatch.setattr(fitz.Pixmap, "save", flaky_save)
++    monkeypatch.setattr(pymupdf.Pixmap, "save", flaky_save)
+ 
+     with pytest.raises(PdfRenderError):
+         render_pages_to_png(pdf_path, output_dir)
+diff --git a/tests/unit/test_prepopulation.py b/tests/unit/test_prepopulation.py
+index c450c28..eeaac8e 100644
+--- a/tests/unit/test_prepopulation.py
++++ b/tests/unit/test_prepopulation.py
+@@ -818,18 +818,13 @@ class TestReorderPdf:
+         # L'original n'est pas touche.
+         assert _pdf_textes(source) == ["scan-1", "scan-2", "scan-3"]
+ 
+-    def test_ne_depend_pas_de_l_alias_fitz(
+-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+-    ) -> None:
+-        """Cote nota, pdf_render importe PyMuPDF sous le nom pymupdf, pas fitz :
+-        reorder_pdf y levait « name 'fitz' is not defined »."""
++    def test_pdf_render_n_utilise_plus_l_alias_fitz(self) -> None:
++        """PyMuPDF s'importe sous le nom pymupdf, comme cote nota : l'alias
++        historique fitz y faisait lever « name 'fitz' is not defined »."""
+         from nota_core.utils import pdf_render
+ 
+-        monkeypatch.delattr(pdf_render, "fitz")
+-        source = tmp_path / "scan.pdf"
+-        _ecrire_pdf(source, ["scan-1", "scan-2"])
+-        pdf_render.reorder_pdf(source, tmp_path / "ordonne.pdf", [2, 1])
+-        assert _pdf_textes(tmp_path / "ordonne.pdf") == ["scan-2", "scan-1"]
++        assert not hasattr(pdf_render, "fitz")
++        assert hasattr(pdf_render, "pymupdf")
+ 
+     def test_ordre_incompatible_ne_laisse_aucun_fichier(self, tmp_path: Path) -> None:
+         from nota_core.utils.pdf_render import PdfRenderError, reorder_pdf
+diff --git a/tests/unit/test_t7_champs_repetables.py b/tests/unit/test_t7_champs_repetables.py
+new file mode 100644
+index 0000000..cde2b08
+--- /dev/null
++++ b/tests/unit/test_t7_champs_repetables.py
+@@ -0,0 +1,251 @@
++"""T7 : les lignes d'un tableau repetable (prets n° 1 a 6) sont lues et rangees
++chacune dans sa ligne, au lieu de recevoir toutes la valeur de la premiere.
++
++    CA-1  n lignes lues donnent n DOCUMENT_FIELD distincts, chacun sa valeur
++    CA-2  un second passage ne cree aucun doublon
++    CA-3  la contrainte d'unicite (document_id, field_spec_id, group_id) contre
++          une vraie base : NON verifiee ici, faute de PostgreSQL. Elle est
++          declaree sur le modele (uq_document_field_doc_spec_group) et
++          appliquee en applicatif par create_bulk, que CA-2 couvre.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import json
++from pathlib import Path
++from typing import Any, Dict, List
++
++import httpx
++import pytest
++
++from nota_api.services import document_fields as service
++from nota_core.schemas.interface_contract import (
++    KVPair,
++    KVTextValue,
++    Page,
++    Section,
++    SmartdocDocument,
++)
++from nota_worker.connectors.mistral import _CONSIGNE, MistralOcrConnector
++from nota_worker.connectors.modele import ModeleDocument
++from nota_worker.prepopulation.merger import merge
++
++ENDPOINT = "https://mistral.test"
++
++
++def _specs_prets(nombre: int = 6) -> List[Dict[str, Any]]:
++    """Une FIELD_SPEC par ligne, comme le seed : field_key partiel, group_id."""
++    return [
++        {
++            "id": 100 + n,
++            "page": 10,
++            "section_id": "credits_consommation",
++            "field_key": "reference",
++            "display_label": f"Reference du pret - Pret n° {n}",
++            "description": "Reference du pret",
++            "value_type": "TEXT",
++            "group_id": f"pret_{n}",
++            "polygon": None,
++        }
++        for n in range(1, nombre + 1)
++    ]
++
++
++def _ocr(*paires: KVPair) -> SmartdocDocument:
++    return SmartdocDocument(
++        smartdoc_version="0.3",
++        document_id="t7",
++        page_count=1,
++        pages=[
++            Page(
++                page_number=10,
++                width=1.0,
++                height=1.0,
++                sections=[
++                    Section(id="credits_consommation", label="Credits", kv_pairs=list(paires))
++                ],
++            )
++        ],
++        metadata={"provider": "test"},
++    )
++
++
++def _kv(valeur: str, group_id: Any = None) -> KVPair:
++    return KVPair(
++        id="credits_consommation.reference",
++        group_id=group_id,
++        value=KVTextValue(text=valeur),
++    )
++
++
++# -- Merger (CA-1) -----------------------------------------------------------------
++
++
++class TestMerger:
++    def test_chaque_ligne_recoit_sa_propre_valeur(self) -> None:
++        """Prets 1, 2, 3 et 5 remplis, 4 vide : comme sur le CERFA reel."""
++        ocr = _ocr(
++            _kv("ADVANZIA", "pret_1"),
++            _kv("DIAC", "pret_2"),
++            _kv("CARREFOUR", "pret_3"),
++            _kv("CIC", "pret_5"),
++        )
++        payloads = merge(_specs_prets(), ocr)
++        valeurs = {p["group_id"]: p["ocr_value"] for p in payloads}
++        assert valeurs == {
++            "pret_1": "ADVANZIA",
++            "pret_2": "DIAC",
++            "pret_3": "CARREFOUR",
++            "pret_4": None,
++            "pret_5": "CIC",
++            "pret_6": None,
++        }
++        assert len({(p["field_spec_id"], p["group_id"]) for p in payloads}) == 6
++
++    def test_valeur_sans_instance_ne_remplit_que_la_premiere_ligne(self) -> None:
++        """Un connecteur qui ignore les repetables (le mock) : avant T7, sa
++        valeur etait recopiee dans les six lignes."""
++        payloads = merge(_specs_prets(), _ocr(_kv("ADVANZIA")))
++        remplis = [p["group_id"] for p in payloads if p["ocr_value"] is not None]
++        assert remplis == ["pret_1"]
++
++    def test_champ_simple_inchange(self) -> None:
++        spec = {
++            "id": 1,
++            "page": 1,
++            "section_id": "deposant",
++            "field_key": "deposant.nom",
++            "group_id": None,
++            "polygon": None,
++        }
++        kv = KVPair(id="deposant.nom", value=KVTextValue(text="DUPONT"))
++        ocr = SmartdocDocument(
++            smartdoc_version="0.3",
++            document_id="t7",
++            page_count=1,
++            pages=[
++                Page(
++                    page_number=1,
++                    width=1.0,
++                    height=1.0,
++                    sections=[Section(id="deposant", label="Deposant", kv_pairs=[kv])],
++                )
++            ],
++            metadata={"provider": "test"},
++        )
++        assert merge([spec], ocr)[0]["ocr_value"] == "DUPONT"
++
++
++# -- Connecteur ---------------------------------------------------------------------
++
++
++def _routeur(annotation: Dict[str, Any], journal: List[httpx.Request]) -> Any:
++    def handler(request: httpx.Request) -> httpx.Response:
++        journal.append(request)
++        if request.url.path.endswith("/v1/ocr"):
++            return httpx.Response(200, json={"pages": [{"markdown": "| Pret | ... |"}]})
++        corps = json.loads(request.content)
++        if corps["response_format"]["json_schema"]["name"] == "identification_page":
++            contenu = {"page": 10}
++        else:
++            contenu = annotation
++        return httpx.Response(
++            200, json={"choices": [{"message": {"content": json.dumps(contenu)}}]}
++        )
++
++    return handler
++
++
++def _connecteur(handler: Any) -> MistralOcrConnector:
++    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
++    return MistralOcrConnector(api_key="cle", endpoint=ENDPOINT, client=client)
++
++
++def _modele() -> ModeleDocument:
++    return ModeleDocument.depuis_schema(
++        {
++            "name": "CERFA",
++            "pages": [{"page_number": 10, "description": "Credits a la consommation"}],
++            "field_specs": _specs_prets(3),
++        }
++    )
++
++
++class TestConnecteur:
++    def test_une_propriete_par_ligne_et_redecoupage(self, tmp_path: Path) -> None:
++        image = tmp_path / "0001.png"
++        image.write_bytes(b"x")
++        journal: List[httpx.Request] = []
++        annotation = {
++            "credits_consommation.pret_1.reference": "ADVANZIA",
++            "credits_consommation.pret_2.reference": None,
++            "credits_consommation.pret_3.reference": "CARREFOUR",
++        }
++        doc = asyncio.run(_connecteur(_routeur(annotation, journal)).extract([image], _modele()))
++        assert doc is not None
++
++        envoye = json.loads(journal[-1].content)["response_format"]["json_schema"]["schema"]
++        assert set(envoye["properties"]) == {
++            f"credits_consommation.pret_{n}.reference" for n in (1, 2, 3)
++        }
++        paires = [kv for _, _, kv in doc.iter_kv_pairs()]
++        assert {(kv.id, kv.group_id, kv.extracted_value) for kv in paires} == {
++            ("credits_consommation.reference", "pret_1", "ADVANZIA"),
++            ("credits_consommation.reference", "pret_2", None),
++            ("credits_consommation.reference", "pret_3", "CARREFOUR"),
++        }
++
++    def test_reponse_imbriquee_par_instance(self, tmp_path: Path) -> None:
++        """Le modele regroupe parfois par section puis par ligne."""
++        image = tmp_path / "0001.png"
++        image.write_bytes(b"x")
++        annotation = {"credits_consommation": {"pret_2": {"reference": "DIAC"}}}
++        doc = asyncio.run(_connecteur(_routeur(annotation, [])).extract([image], _modele()))
++        assert doc is not None
++        lues = {kv.group_id: kv.extracted_value for _, _, kv in doc.iter_kv_pairs()}
++        assert lues["pret_2"] == "DIAC"
++
++    def test_la_consigne_range_par_numero_imprime(self) -> None:
++        assert "designe la ligne imprimee n° 5" in _CONSIGNE
++        assert "la ligne 4 reste null et la 5 recoit ses valeurs" in _CONSIGNE
++        # La regle d'avant T7 contredisait la lecture des tableaux.
++        assert "ne rends que la premiere" not in _CONSIGNE
++
++
++# -- create_bulk (CA-2) ----------------------------------------------------------------
++
++
++class TestIdempotence:
++    def test_second_passage_sans_doublon(self, monkeypatch: pytest.MonkeyPatch) -> None:
++        payloads = merge(_specs_prets(3), _ocr(_kv("A", "pret_1"), _kv("B", "pret_2")))
++        ids = {p["field_spec_id"] for p in payloads}
++        deja: set = set()
++
++        async def schema_id(db: Any, document: Any) -> int:
++            return 1
++
++        async def valides(db: Any, schema: int) -> set:
++            return ids
++
++        async def existants(db: Any, document_id: int) -> set:
++            return set(deja)
++
++        monkeypatch.setattr(service, "resolve_schema_id", schema_id)
++        monkeypatch.setattr(service, "_valid_field_spec_ids", valides)
++        monkeypatch.setattr(service, "_existing_keys", existants)
++
++        class _Db:
++            def add(self, row: Any) -> None:
++                deja.add((row.field_spec_id, row.group_id))
++
++            async def flush(self) -> None:
++                return None
++
++        document = type("D", (), {"id": 5})()
++        premier = asyncio.run(service.create_bulk(_Db(), document, payloads))
++        second = asyncio.run(service.create_bulk(_Db(), document, payloads))
++        assert len(premier.created) == 3 and premier.skipped == []
++        assert second.created == [] and len(second.skipped) == 3
++        # Trois lignes distinctes, distinguees par group_id.
++        assert {k[1] for k in second.skipped} == {"pret_1", "pret_2", "pret_3"}
