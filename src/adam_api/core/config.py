@@ -61,6 +61,13 @@ class Settings(CoreSettings):
     ad_min_chars: int = 3
     #: Une recherche au plus toutes les N secondes par utilisateur.
     ad_rate_seconds: float = 2.0
+    #: Comptes a ne jamais proposer, bien que ranges sous AD_BASE_DN : debuts
+    #: de matricule (« OT2 ») et unites d'organisation (« OT2 »), separes par
+    #: des virgules.
+    ad_exclude_prefixes: str = ""
+    #: Fins de matricule a exclure (« OT2 » : I21080MOT2).
+    ad_exclude_suffixes: str = ""
+    ad_exclude_ous: str = ""
 
     @property
     def cors_origins(self) -> List[str]:
