@@ -141,12 +141,13 @@ class TestRecettes:
             _resultat(scalar=1),  # createur
         )
         r = _client(SUPERVISEUR, db).post(
-            "/test-recipes", json={"dataset_id": 4, "name": "cerfa", "config": {"seuil_f1": 0.9}}
+            "/test-recipes",
+            json={"dataset_id": 4, "name": "cerfa", "config": {"score_minimal": 0.9}},
         )
         assert r.status_code == 201, r.text
         corps = r.json()
         assert corps["status"] == "LOCKED" and corps["document_ids"] == [14, 15]
-        assert corps["config"]["seuil_f1"] == 0.9
+        assert corps["config"]["score_minimal"] == 0.9
 
     def test_sans_verite_terrain_422(self) -> None:
         db = _db({"Dataset": SimpleNamespace(id=4)}, _resultat(scalars=[]))
@@ -184,6 +185,7 @@ class TestExecutions:
 
     def test_metriques(self) -> None:
         db = _db(
+            # seuil_f1 : l'ancien nom, encore lu pour les recettes deja figees.
             {"TestExecution": _execution(), "TestRecipe": _recette(config={"seuil_f1": 0.5})},
             _resultat(
                 scalars=[
@@ -196,8 +198,11 @@ class TestExecutions:
         r = _client(SUPERVISEUR, db).get("/test-executions/1/metriques")
         assert r.status_code == 200, r.text
         m = r.json()
-        assert m["global"]["vp"] == 9
-        assert m["global"]["rappel"] == round(9 / 12, 4)
+        assert m["global"]["justes"] == 9
+        assert m["global"]["fausses"] == 1
+        assert m["global"]["taux_valeurs_trouvees"] == round(9 / 12, 4)
+        # Les deux champs sont en erreur : aucun n'est filtre.
+        assert len(m["par_champ"]) == 2 and m["champs_sans_erreur"] == 0
         assert m["categories_erreurs"] == {"DIGIT": 1, "MISSING": 2}
         assert m["verdict"]["reussi"] is True
         assert m["execution"]["schema_hash"] == "abc"
@@ -214,7 +219,7 @@ class TestExecutions:
         r = _client(SUPERVISEUR, db).get("/test-executions/comparaison", params={"a": 1, "b": 1})
         assert r.status_code == 200, r.text
         assert r.json()["comparable"] is True
-        assert r.json()["global"]["rappel"]["delta"] == -0.2
+        assert r.json()["global"]["taux_valeurs_trouvees"]["evolution"] == -0.2
 
     def test_ecarts(self) -> None:
         cr = SimpleNamespace(

@@ -5,27 +5,35 @@ Fonctions pures : elles prennent les comptes que le worker a figes
 sont jamais stockes : une formule ou un seuil qui change ne demande pas de
 relancer le moteur.
 
-Definitions (champs verifies par un humain seulement)
-------------------------------------------------------
-    vp  verite remplie, lecture egale
-    fp  lecture remplie et fausse : valeur inventee, ou substitution
-    fn  verite remplie mal lue : valeur manquee, ou substitution
-    vn  verite vide, lecture vide
+Ce que rend l'API (champs verifies par un humain seulement)
+------------------------------------------------------------
+Chaque valeur tombe dans une seule case :
 
-    precision = vp / (vp + fp)   quand le moteur ecrit, a-t-il raison ?
-    rappel    = vp / (vp + fn)   des valeurs du document, combien sont lues ?
-    F1        = 2PR / (P + R) = 2vp / (2vp + fp + fn)
-                                 le score global, en micro (comptes sommes)
+    justes     case remplie, bien lue
+    fausses    case remplie, lue avec une autre valeur (la plus dangereuse :
+               elle passe inapercue)
+    manquees   case remplie, rien lu
+    inventees  case vide, le moteur a ecrit quelque chose
+    vides      case vide, rien lu : hors score
 
-Une substitution (verite remplie, lecture differente) compte en fp ET en fn :
-c'est l'erreur la plus dangereuse, celle qui passe inapercue.
+    taux_lectures_justes   justes / tout ce que le moteur a ecrit
+                           (precision : quand il ecrit, a-t-il raison ?)
+    taux_valeurs_trouvees  justes / toutes les cases remplies
+                           (rappel : combien de valeurs sont lues ?)
+    score                  la moyenne des deux (F1, comptes sommes)
+    taux_erreur            1 - justes / valeurs jugees
+
+En base, evaluation_report garde la matrice classique : vp = justes,
+fp = fausses + inventees, fn = fausses + manquees, vn = vides,
+substitutions = fausses.
 
 Garde-fous
 ----------
-- Les vn n'entrent dans aucun ratio : un CERFA est surtout vide, et un moteur
-  muet aurait sinon une « exactitude » excellente.
-- Chaque taux porte son intervalle de confiance (Wilson, 95 %), et un bloc de
-  moins de EFFECTIF_MINIMAL valeurs est marque insuffisant.
+- Les vides n'entrent dans aucun ratio : un CERFA est surtout vide, et un
+  moteur muet aurait sinon une « exactitude » excellente.
+- Les taux globaux et par groupe portent leur fourchette (Wilson, 95 %), et un
+  bloc de moins de EFFECTIF_MINIMAL valeurs est marque « pas assez de
+  donnees ».
 - Le score global n'est pas pondere : la decomposition par type et par
   criticite est toujours rendue a cote.
 - Deux executions ne se comparent que sur la meme recette, avec la meme
@@ -70,38 +78,49 @@ def wilson(succes: int, total: int, z: float = 1.96) -> Optional[Tuple[float, fl
     return (round(max(0.0, centre - marge), 4), round(min(1.0, centre + marge), 4))
 
 
-def bloc(lignes: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Indicateurs d'un ensemble de champs (global, une section, un type...)."""
+def _sommer(lignes: Iterable[Mapping[str, Any]]) -> Dict[str, int]:
     c = {nom: 0 for nom in _COMPTES}
     for ligne in lignes:
         for nom in _COMPTES:
             c[nom] += int(ligne.get(nom) or 0)
+    return c
+
+
+def bloc(lignes: Iterable[Mapping[str, Any]], fourchettes: bool = True) -> Dict[str, Any]:
+    """Indicateurs d'un ensemble de champs (global, une section, un type...).
+
+    ``fourchettes`` faux pour un champ seul : 618 intervalles de confiance sur
+    quelques valeurs chacun alourdiraient la reponse sans rien dire.
+    """
+    c = _sommer(lignes)
     vp, fp, fn = c["vp"], c["fp"], c["fn"]
-    inventees = fp - c["substitutions"]
-    #: Valeurs en jeu : remplies d'un cote ou de l'autre (les vn exclus).
+    fausses = c["substitutions"]
+    inventees = fp - fausses
+    #: Valeurs en jeu : remplies d'un cote ou de l'autre (les vides exclus).
     valeurs = vp + fn + inventees
-    precision = _ratio(vp, vp + fp)
-    rappel = _ratio(vp, vp + fn)
     # Forme equivalente a 2PR/(P+R), mais definie des qu'une valeur est en jeu :
-    # un champ jamais lu (0 vp, 5 fn) n'a pas de precision, et son F1 vaut 0,
+    # un champ jamais lu (0 vp, 5 fn) n'a pas de precision, et son score vaut 0,
     # pas « indefini » — sinon le pire champ disparaitrait du classement.
-    f1 = _ratio(2 * vp, 2 * vp + fp + fn)
-    return {
-        **c,
+    resultat = {
+        "valeurs_jugees": valeurs,
+        "justes": vp,
+        "fausses": fausses,
+        "manquees": fn - fausses,
         "inventees": inventees,
-        "valeurs": valeurs,
-        "vides_confirmes": c["vn"],
-        "precision": _arrondi(precision),
-        "rappel": _arrondi(rappel),
-        "f1": _arrondi(f1),
+        "vides": c["vn"],
+        "score": _arrondi(_ratio(2 * vp, 2 * vp + fp + fn)),
+        "taux_lectures_justes": _arrondi(_ratio(vp, vp + fp)),
+        "taux_valeurs_trouvees": _arrondi(_ratio(vp, vp + fn)),
         "taux_erreur": _arrondi(_ratio(valeurs - vp, valeurs)),
         "taux_erreur_caracteres": _arrondi(
             _ratio(c["somme_distance"], c["somme_longueur_attendue"])
         ),
-        "ic95_precision": wilson(vp, vp + fp),
-        "ic95_rappel": wilson(vp, vp + fn),
-        "effectif_suffisant": valeurs >= EFFECTIF_MINIMAL,
+        "assez_de_donnees": valeurs >= EFFECTIF_MINIMAL,
     }
+    if fourchettes:
+        resultat["fourchette_lectures_justes"] = wilson(vp, vp + fp)
+        resultat["fourchette_valeurs_trouvees"] = wilson(vp, vp + fn)
+    return resultat
 
 
 def _arrondi(valeur: Optional[float]) -> Optional[float]:
@@ -134,20 +153,28 @@ def _seuil_du_champ(field_key: str, seuils: Mapping[str, float]) -> Optional[flo
     return float(seuils[max(candidats, key=len)]) if candidats else None
 
 
+def _a_des_erreurs(champ: Mapping[str, Any]) -> bool:
+    return bool(champ["fausses"] or champ["manquees"] or champ["inventees"])
+
+
 def calculer(
     lignes: Sequence[Mapping[str, Any]],
     execution: Mapping[str, Any],
     config: Optional[Mapping[str, Any]] = None,
     categories: Optional[Mapping[str, int]] = None,
+    tous_les_champs: bool = False,
 ) -> Dict[str, Any]:
     """Toutes les metriques d'une execution.
 
     Args:
         lignes: les evaluation_report de l'execution, en mappings.
         execution: compteurs et identite de l'execution (test_execution).
-        config: la config de la recette (seuil_f1, seuils_par_champ,
+        config: la config de la recette (score_minimal, seuils_par_champ,
             champs_exclus).
         categories: nombre d'ecarts par diff_kind (comparison_result).
+        tous_les_champs: faux, ``par_champ`` ne garde que les champs en
+            erreur. Sur un CERFA de 618 champs, la liste complete faisait
+            94 % de la reponse, et un champ sans erreur n'y apprend rien.
     """
     config = config or {}
     exclus = list(config.get("champs_exclus") or [])
@@ -156,17 +183,19 @@ def calculer(
     global_ = bloc(retenues)
     par_champ = [
         {
-            "field_key": ligne.get("field_key"),
+            "champ": ligne.get("field_key"),
             "page": ligne.get("page"),
-            "section_id": ligne.get("section_id"),
-            "value_type": ligne.get("value_type"),
-            "sensitive": bool(ligne.get("sensitive")),
-            **bloc([ligne]),
+            "type": ligne.get("value_type"),
+            "sensible": bool(ligne.get("sensitive")),
+            **bloc([ligne], fourchettes=False),
         }
         for ligne in retenues
     ]
     # Les pires champs d'abord : c'est ce qu'on regarde.
-    par_champ.sort(key=lambda c: (c["f1"] is None, c["f1"] if c["f1"] is not None else 0))
+    par_champ.sort(key=lambda c: (c["score"] is None, c["score"] if c["score"] is not None else 0))
+    # Le verdict porte sur tous les champs, avant le filtre d'affichage.
+    verdict = _verdict(global_, par_champ, config)
+    en_erreur = [champ for champ in par_champ if _a_des_erreurs(champ)]
 
     documents = int(execution.get("documents_compared") or 0)
     perimetre = int(execution.get("fields_compared") or 0)
@@ -189,17 +218,18 @@ def calculer(
         "par_criticite": _par(retenues, _criticite),
         "par_section": _par(retenues, lambda ligne: ligne.get("section_id") or "?"),
         "par_page": _par(retenues, lambda ligne: ligne.get("page") or "?"),
-        "par_champ": par_champ,
+        "par_champ": par_champ if tous_les_champs else en_erreur,
+        "champs_sans_erreur": len(par_champ) - len(en_erreur),
         "categories_erreurs": dict(categories or {}),
         "echantillon": {
             "documents": documents,
-            "champs_perimetre": perimetre,
-            "champs_juges": verifies,
-            # Champs regardes par un humain, sur le perimetre : sous 1, une
-            # partie de la verite manque, et les taux ne valent que pour elle.
-            "couverture": _arrondi(_ratio(verifies, perimetre)),
+            "champs_au_total": perimetre,
+            "champs_verifies": verifies,
+            # Champs regardes par un humain, sur le total : sous 1, une partie
+            # de la verite manque, et les taux ne valent que pour elle.
+            "part_verifiee": _arrondi(_ratio(verifies, perimetre)),
             "champs_exclus_par_config": len(lignes) - len(retenues),
-            "faible": documents < DOCUMENTS_MINIMUM,
+            "trop_petit": documents < DOCUMENTS_MINIMUM,
         },
         "cout": {
             "appels_ocr": execution.get("ocr_calls_made"),
@@ -210,7 +240,7 @@ def calculer(
                 _ratio(int(execution.get("pages_processed") or 0), documents)
             ),
         },
-        "verdict": _verdict(global_, par_champ, config),
+        "verdict": verdict,
         "avertissements": _avertissements(
             global_, documents, verifies, perimetre, execution, retenues
         ),
@@ -221,22 +251,21 @@ def _verdict(
     global_: Mapping[str, Any], par_champ: Sequence[Mapping[str, Any]], config: Mapping[str, Any]
 ) -> Dict[str, Any]:
     """Reussi / echoue selon la config de la recette ; None sans seuil."""
-    seuil_f1 = config.get("seuil_f1")
+    # seuil_f1 : nom d'avant, encore dans la config des recettes deja figees.
+    score_minimal = config.get("score_minimal", config.get("seuil_f1"))
     seuils = config.get("seuils_par_champ") or {}
     champs_en_echec = []
     for champ in par_champ:
-        seuil = _seuil_du_champ(str(champ["field_key"]), seuils)
+        seuil = _seuil_du_champ(str(champ["champ"]), seuils)
         taux = champ["taux_erreur"]
         if seuil is not None and taux is not None and taux > seuil:
-            champs_en_echec.append(
-                {"field_key": champ["field_key"], "taux_erreur": taux, "seuil": seuil}
-            )
-    if seuil_f1 is None and not seuils:
-        return {"seuil_f1": None, "reussi": None, "champs_en_echec": []}
-    f1 = global_["f1"]
-    global_ok = seuil_f1 is None or (f1 is not None and f1 >= float(seuil_f1))
+            champs_en_echec.append({"champ": champ["champ"], "taux_erreur": taux, "seuil": seuil})
+    if score_minimal is None and not seuils:
+        return {"score_minimal": None, "reussi": None, "champs_en_echec": []}
+    score = global_["score"]
+    global_ok = score_minimal is None or (score is not None and score >= float(score_minimal))
     return {
-        "seuil_f1": seuil_f1,
+        "score_minimal": score_minimal,
         "reussi": bool(global_ok and not champs_en_echec),
         "champs_en_echec": champs_en_echec,
     }
@@ -258,21 +287,21 @@ def _avertissements(
         # Execution faite avant que le worker ne compte la matrice : ses champs
         # ont ete juges, mais vp/fp/fn/vn valent leur defaut, 0.
         messages.append(
-            "execution anterieure aux metriques : matrice non enregistree, "
-            "relancer la recette pour obtenir precision et rappel"
+            "execution anterieure aux metriques : comptes non enregistres, "
+            "relancer la recette pour obtenir le score"
         )
     if documents < DOCUMENTS_MINIMUM:
         messages.append(
-            f"echantillon faible : {documents} document(s), moins de {DOCUMENTS_MINIMUM}"
+            f"echantillon trop petit : {documents} document(s), moins de {DOCUMENTS_MINIMUM}"
         )
-    if not global_["effectif_suffisant"]:
+    if not global_["assez_de_donnees"]:
         messages.append(
-            f"effectif insuffisant : {global_['valeurs']} valeur(s) jugee(s), "
+            f"pas assez de donnees : {global_['valeurs_jugees']} valeur(s) jugee(s), "
             f"moins de {EFFECTIF_MINIMAL}"
         )
     if perimetre and verifies < perimetre:
         messages.append(
-            f"couverture partielle : {verifies} champ(s) verifie(s) sur {perimetre} ; "
+            f"verification partielle : {verifies} champ(s) verifie(s) sur {perimetre} ; "
             "les taux ne valent que pour les champs regardes par un humain"
         )
     if execution.get("error_message"):
@@ -281,11 +310,12 @@ def _avertissements(
 
 
 def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
-    """Compare deux resultats de calculer() : b par rapport a a.
+    """Compare deux resultats de calculer(tous_les_champs=True) : b par rapport a a.
 
     La comparaison est toujours rendue, mais signalee non comparable si la
     recette, la version du comparateur ou l'empreinte du schema different :
-    un ecart de score n'y mesurerait pas le moteur.
+    un ecart de score n'y mesurerait pas le moteur. ``par_champ`` ne garde que
+    les champs dont le score a bouge.
     """
     ea, eb = a["execution"], b["execution"]
     raisons = [
@@ -297,23 +327,31 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
         )
         if ea.get(cle) != eb.get(cle) or ea.get(cle) is None
     ]
-    indicateurs = ("precision", "rappel", "f1", "taux_erreur", "taux_erreur_caracteres")
+    indicateurs = (
+        "score",
+        "taux_lectures_justes",
+        "taux_valeurs_trouvees",
+        "taux_erreur",
+        "taux_erreur_caracteres",
+    )
 
     def delta(x: Optional[float], y: Optional[float]) -> Optional[float]:
         return round(y - x, 4) if x is not None and y is not None else None
 
-    champs_a = {c["field_key"]: c for c in a["par_champ"]}
-    champs_b = {c["field_key"]: c for c in b["par_champ"]}
+    champs_a = {c["champ"]: c for c in a["par_champ"]}
+    champs_b = {c["champ"]: c for c in b["par_champ"]}
+    communs = sorted(champs_a.keys() & champs_b.keys())
     par_champ = [
         {
-            "field_key": cle,
-            "f1_a": champs_a[cle]["f1"],
-            "f1_b": champs_b[cle]["f1"],
-            "delta_f1": delta(champs_a[cle]["f1"], champs_b[cle]["f1"]),
+            "champ": cle,
+            "score_a": champs_a[cle]["score"],
+            "score_b": champs_b[cle]["score"],
+            "evolution": delta(champs_a[cle]["score"], champs_b[cle]["score"]),
         }
-        for cle in sorted(champs_a.keys() & champs_b.keys())
+        for cle in communs
+        if champs_a[cle]["score"] != champs_b[cle]["score"]
     ]
-    par_champ.sort(key=lambda c: c["delta_f1"] if c["delta_f1"] is not None else 0)
+    par_champ.sort(key=lambda c: c["evolution"] if c["evolution"] is not None else 0)
     return {
         "a": ea,
         "b": eb,
@@ -323,9 +361,10 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
             nom: {
                 "a": a["global"][nom],
                 "b": b["global"][nom],
-                "delta": delta(a["global"][nom], b["global"][nom]),
+                "evolution": delta(a["global"][nom], b["global"][nom]),
             }
             for nom in indicateurs
         },
         "par_champ": par_champ,
+        "champs_inchanges": len(communs) - len(par_champ),
     }
