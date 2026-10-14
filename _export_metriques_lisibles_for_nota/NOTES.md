@@ -27,3 +27,14 @@ Puis redemarrer l'API.
 `par_champ` ne liste plus que les champs en erreur (`champs_sans_erreur` les
 compte) ; `?tous_les_champs=true` rend la liste complete. La comparaison ne
 liste que les champs dont le score a bouge (`champs_inchanges`).
+
+## Si `git apply` refuse
+
+Copier les 4 fichiers de `fichiers_complets/` (deja en nota_*) par dessus ceux
+de nota, puis a la main :
+- `src/nota_api/main.py` : sous l'import CORS,
+  `from fastapi.middleware.gzip import GZipMiddleware` ; apres le bloc
+  `app.add_middleware(CORSMiddleware, ...)`,
+  `app.add_middleware(GZipMiddleware, minimum_size=1000)`.
+- `src/nota_core/models/test_recipe.py` : commentaire seulement
+  (`seuil_f1` -> `score_minimal`), facultatif.
