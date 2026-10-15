@@ -71,7 +71,7 @@ class TestRecipe(OrganisationScoped, ProjectScoped, Base):
         comment="Cycle de vie : DRAFT, LOCKED, ARCHIVED",
     )
     #: Configuration du test, figee avec la recette : deux passages ne se
-    #: comparent que sous la meme. {"seuil_f1": 0.9, "seuils_par_champ":
+    #: comparent que sous la meme. {"score_minimal": 0.9, "seuils_par_champ":
     #: {"gestion_budget.iban": 0.0}, "champs_exclus": ["certification."]}.
     #: Le verdict reussi / echoue se calcule a la lecture, jamais stocke.
     config: Mapped[Dict[str, Any]] = mapped_column(

@@ -5,7 +5,7 @@ Le parcours d'un test, tel que l'IHM le deroule :
     POST /test-recipes                     figer un lot de documents de reference
     POST /test-executions                  lancer un passage (PENDING)
     GET  /test-executions/{id}             suivre l'avancement (RUNNING...)
-    GET  /test-executions/{id}/metriques   precision, rappel, F1, decompositions
+    GET  /test-executions/{id}/metriques   score, justes / fausses / manquees...
     GET  /test-executions/{id}/ecarts      les erreurs du moteur, champ par champ
     GET  /test-executions/comparaison      deux passages cote a cote
 
@@ -64,8 +64,8 @@ async def require_benchmark(caller: UserCaller = Depends(require_user)) -> UserC
 class ConfigTest(BaseModel):
     """Configuration du test, figee avec la recette."""
 
-    #: F1 global minimal pour que le passage soit « reussi ».
-    seuil_f1: Optional[float] = Field(default=None, ge=0, le=1)
+    #: Score global minimal (0 a 1) pour que le passage soit « reussi ».
+    score_minimal: Optional[float] = Field(default=None, ge=0, le=1)
     #: Taux d'erreur maximal par champ (cle exacte ou prefixe), pour les champs
     #: critiques : {"gestion_budget.iban": 0.0}.
     seuils_par_champ: Dict[str, float] = Field(default_factory=dict)
@@ -337,7 +337,9 @@ async def lister_executions(
     return [_execution_out(e) for e in (await db.execute(requete)).scalars().all()]
 
 
-async def _metriques(db: AsyncSession, execution_id: int) -> Dict[str, Any]:
+async def _metriques(
+    db: AsyncSession, execution_id: int, tous_les_champs: bool = False
+) -> Dict[str, Any]:
     execution = await db.get(TestExecution, execution_id)
     if execution is None:
         raise HTTPException(status_code=404, detail=f"Execution {execution_id} introuvable")
@@ -373,6 +375,7 @@ async def _metriques(db: AsyncSession, execution_id: int) -> Dict[str, Any]:
         {c.name: getattr(execution, c.name) for c in TestExecution.__table__.columns},
         recette.config if recette else {},
         categories,
+        tous_les_champs,
     )
 
 
@@ -385,7 +388,7 @@ async def comparer_executions(
 ) -> Dict[str, Any]:
     """Deux passages cote a cote ; « comparable » faux si la recette, la version
     du comparateur ou le schema different."""
-    return comparer(await _metriques(db, a), await _metriques(db, b))
+    return comparer(await _metriques(db, a, True), await _metriques(db, b, True))
 
 
 @router.get("/test-executions/{execution_id}", response_model=ExecutionOut)
@@ -403,12 +406,15 @@ async def lire_execution(
 @router.get("/test-executions/{execution_id}/metriques")
 async def metriques_execution(
     execution_id: int,
+    tous_les_champs: bool = Query(
+        False, description="Faux : par_champ ne liste que les champs en erreur"
+    ),
     _: UserCaller = Depends(require_benchmark),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Precision, rappel, F1, intervalles de confiance, decompositions par type,
-    criticite, section, page et champ, verdict de la config, avertissements."""
-    return await _metriques(db, execution_id)
+    """Score, taux, fourchettes, decompositions par type, criticite, section,
+    page et champ, verdict de la config, avertissements."""
+    return await _metriques(db, execution_id, tous_les_champs)
 
 
 @router.get("/test-executions/{execution_id}/ecarts", response_model=List[EcartOut])
