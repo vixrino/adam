@@ -1,2 +1,0 @@
-git checkout --theirs src/nota_api/routers/documents.py src/nota_api/routers/jobs.py src/nota_api/routers/schemas.py src/nota_core/models/job.py
-git add src/nota_api/routers/documents.py src/nota_api/routers/jobs.py src/nota_api/routers/schemas.py src/nota_core/models/job.py
