@@ -13,8 +13,11 @@ l'organisation ni du role, et ne doit pas pouvoir le dire.
 
 L'organisation se deduit de l'attribut `department` de la fiche, qui range la
 personne dans le reseau sous la forme « RE1 US2183 DGSI DIRES SOLAPS ». Chaque
-mot est compare aux slugs de la table `organisation` (en minuscules) ; quand
-plusieurs correspondent, le plus a droite, donc le plus precis, l'emporte.
+mot est compare aux slugs de la table `organisation`, sans tenir compte de la
+casse ; quand plusieurs correspondent, le plus a droite, donc le plus precis,
+l'emporte. Si aucun ne correspond, l'organisation de repli
+(AD_ORGANISATION_DEFAUT) s'applique : tant que la plateforme ne compte qu'une
+organisation, la Banque de France, c'est elle qui sert.
 
 Les memes regles que pour l'affectation depuis l'annuaire valent ici : pas de
 creation sans adresse mail, ni avec une adresse deja portee par un autre
@@ -65,25 +68,29 @@ def slugs_candidats(departement: Optional[str]) -> list[str]:
 
 
 async def organisation_du_departement(
-    db: AsyncSession, departement: Optional[str]
+    db: AsyncSession, departement: Optional[str], defaut: str = ""
 ) -> Optional[int]:
-    """Organisation non archivee dont le slug est le mot le plus precis du departement."""
+    """Organisation non archivee dont le slug est le mot le plus precis du
+    departement, ou a defaut celle du slug `defaut`."""
     candidats = slugs_candidats(departement)
-    if not candidats:
+    repli = defaut.strip().lower()
+    recherches = candidats + ([repli] if repli else [])
+    if not recherches:
         return None
-    trouvees = dict(
-        (
+    trouvees = {
+        str(slug).lower(): int(id_)
+        for slug, id_ in (
             await db.execute(
                 select(Organisation.slug, Organisation.id)
-                .where(Organisation.slug.in_(candidats))
+                .where(func.lower(Organisation.slug).in_(recherches))
                 .where(Organisation.deleted_at.is_(None))
             )
         ).all()
-    )
+    }
     for slug in reversed(candidats):
         if slug in trouvees:
-            return int(trouvees[slug])
-    return None
+            return trouvees[slug]
+    return trouvees.get(repli)
 
 
 async def verifier_adresse(db: AsyncSession, personne: PersonneAnnuaire) -> None:
@@ -108,7 +115,9 @@ def nouvel_utilisateur(personne: PersonneAnnuaire, organisation_id: int) -> User
     )
 
 
-async def creer_a_la_premiere_connexion(matricule: str, annuaire: Annuaire) -> bool:
+async def creer_a_la_premiere_connexion(
+    matricule: str, annuaire: Annuaire, organisation_defaut: str = ""
+) -> bool:
     """Cree la ligne `user` de l'agent depuis sa fiche AD.
 
     Returns:
@@ -125,7 +134,9 @@ async def creer_a_la_premiere_connexion(matricule: str, annuaire: Annuaire) -> b
         return False
     try:
         async with get_async_session() as db:
-            organisation_id = await organisation_du_departement(db, personne.departement)
+            organisation_id = await organisation_du_departement(
+                db, personne.departement, organisation_defaut
+            )
             if organisation_id is None:
                 raise OrganisationInconnue(
                     f"aucune organisation pour le departement {personne.departement!r}"

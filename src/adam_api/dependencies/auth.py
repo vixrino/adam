@@ -179,7 +179,9 @@ async def creer_depuis_annuaire(principal: str) -> None:
     resolve_caller repond le 403 habituel en relisant la base.
     """
     try:
-        cree = await creer_a_la_premiere_connexion(principal, annuaire_depuis_settings(settings))
+        cree = await creer_a_la_premiere_connexion(
+            principal, annuaire_depuis_settings(settings), settings.ad_organisation_defaut
+        )
     except SansAdresseMail as exc:
         logger.warning("premiere connexion refusee : %s", exc)
         raise HTTPException(

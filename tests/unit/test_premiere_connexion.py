@@ -115,6 +115,20 @@ class TestOrganisation:
         db = _session(_resultat(all_=[]))
         assert await service.organisation_du_departement(db, DANIEL.departement) is None
 
+    async def test_slug_compare_sans_casse(self) -> None:
+        db = _session(_resultat(all_=[("DIRES", 5)]))
+        assert await service.organisation_du_departement(db, DANIEL.departement) == 5
+
+    async def test_repli_sur_l_organisation_par_defaut(self) -> None:
+        """Seule la Banque de France existe, sous le slug BDF."""
+        db = _session(_resultat(all_=[("BDF", 1)]))
+        departement = "RE1-2183 DGSI DIRES SOLAPS"
+        assert await service.organisation_du_departement(db, departement, "BDF") == 1
+
+    async def test_le_departement_prime_sur_le_repli(self) -> None:
+        db = _session(_resultat(all_=[("BDF", 1), ("dires", 5)]))
+        assert await service.organisation_du_departement(db, DANIEL.departement, "bdf") == 5
+
     async def test_sans_departement_la_base_n_est_pas_interrogee(self) -> None:
         db = _session()
         assert await service.organisation_du_departement(db, None) is None
