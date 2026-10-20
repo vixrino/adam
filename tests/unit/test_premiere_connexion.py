@@ -234,8 +234,17 @@ def _lignes(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
     return installer
 
 
+#: Ligne `user` telle que resolve_caller la lit. `id` et les dates n'existent pas
+#: dans toutes les versions du SELECT : les porter evite qu'un ajout de colonne
+#: casse ces tests, qui portent sur la creation et non sur le contenu du caller.
 LIGNE = SimpleNamespace(
-    matricule=MATRICULE, organisation_id=5, platform_role=None, status=UserStatus.ACTIVE.value
+    id=99,
+    matricule=MATRICULE,
+    organisation_id=5,
+    platform_role=None,
+    status=UserStatus.ACTIVE.value,
+    deleted_at=None,
+    last_login_at=None,
 )
 
 
@@ -247,7 +256,7 @@ class TestResolveCaller:
         caller = await auth_module.resolve_caller(MATRICULE, createur)
 
         createur.assert_awaited_once_with(MATRICULE)
-        assert caller == UserCaller(matricule=MATRICULE, organisation_id=5)
+        assert (caller.matricule, caller.organisation_id) == (MATRICULE, 5)
 
     async def test_deja_en_base_rien_n_est_cree(self, lignes: Any) -> None:
         lignes(LIGNE)
