@@ -26,6 +26,7 @@ from adam_api.routers.ocr import router as ocr_router
 from adam_api.routers.organisations import router as orgs_router
 from adam_api.routers.projects import router as projects_router
 from adam_api.routers.schemas import router as schemas_router
+from adam_api.routers.users import me_router
 from adam_api.routers.users import router as users_router
 from adam_core.core.config import get_core_settings
 from adam_core.db.session import init_engine
@@ -74,6 +75,9 @@ if STATIC_DIR.exists():
 # Routes IHM : un utilisateur resolu, dont get_db derive le scope de session.
 app.include_router(admin_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
 app.include_router(orgs_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
+# /users/me avant /users/{user_id}, qui capterait « me » ; et sans get_caller :
+# la route resout elle-meme son caller, en creant l'agent a sa premiere connexion.
+app.include_router(me_router, prefix=PREFIX)
 app.include_router(users_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
 app.include_router(annuaire_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
 app.include_router(benchmark_router, prefix=PREFIX, dependencies=[Depends(get_caller)])
@@ -127,6 +131,7 @@ async def health() -> dict[str, str]:
 @app.get("/db-check")
 async def db_check() -> JSONResponse:
     from sqlalchemy import text
+
     from adam_core.db.session import get_async_session
 
     try:

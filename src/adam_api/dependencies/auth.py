@@ -29,7 +29,7 @@ les deux mettrait la moitie de l'autorisation dans un YAML et l'autre en base.
 import base64
 import json
 import secrets
-from typing import Any, Optional, Union
+from typing import Any, Awaitable, Callable, Optional, Union
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
@@ -37,6 +37,13 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from adam_api.core.config import settings
+from adam_api.services.annuaire import AnnuaireErreur, annuaire_depuis_settings
+from adam_api.services.premiere_connexion import (
+    AdresseMailPrise,
+    CreationRefusee,
+    SansAdresseMail,
+    creer_a_la_premiere_connexion,
+)
 from adam_core.db.session import get_async_session
 from adam_core.enums.status import UserStatus
 from adam_core.models import User
@@ -60,6 +67,9 @@ class ServiceCaller(BaseModel):
 
 
 Caller = Union[UserCaller, ServiceCaller]
+
+#: Cree la ligne `user` d'un matricule inconnu ; cf. creer_depuis_annuaire.
+Createur = Callable[[str], Awaitable[None]]
 
 #: Claims susceptibles de porter le matricule, par ordre de preference.
 #:
@@ -103,7 +113,19 @@ def principal_from_claims(claims: dict[str, Any]) -> str:
     raise HTTPException(status_code=401, detail="Token sans identifiant d'utilisateur")
 
 
-async def resolve_caller(principal: str) -> UserCaller:
+async def _ligne_utilisateur(principal: str) -> Any:
+    """Matricule, organisation, role de plateforme et statut de `user`, ou None."""
+    async with get_async_session() as session:
+        return (
+            await session.execute(
+                select(User.matricule, User.organisation_id, User.platform_role, User.status).where(
+                    func.upper(User.matricule) == principal.strip().upper()
+                )
+            )
+        ).one_or_none()
+
+
+async def resolve_caller(principal: str, createur: Optional[Createur] = None) -> UserCaller:
     """Construit le caller a partir du `principal` porte par le token.
 
     Le matricule est compare en majuscules : le mock FBI accepte `i659418` comme
@@ -117,19 +139,19 @@ async def resolve_caller(principal: str) -> UserCaller:
     La requete est bornee a une lecture de `user` par matricule, ce qui ne
     divulgue rien — l'appelant apprend sa propre organisation.
 
+    `createur` n'est passe que par GET /users/me (get_caller_premiere_connexion) :
+    un matricule inconnu y est cree depuis l'AD, puis relu. Partout ailleurs, il
+    reste refuse.
+
     Raises:
         HTTPException: 403 si le matricule est inconnu de `user` ou si le compte
             n'est pas actif. Jamais 401 : le token est valide, cf. docstring du
             module.
     """
-    async with get_async_session() as session:
-        row = (
-            await session.execute(
-                select(User.matricule, User.organisation_id, User.platform_role, User.status).where(
-                    func.upper(User.matricule) == principal.strip().upper()
-                )
-            )
-        ).one_or_none()
+    row = await _ligne_utilisateur(principal)
+    if row is None and createur is not None:
+        await createur(principal)
+        row = await _ligne_utilisateur(principal)
 
     if row is None:
         # Le matricule n'est pas logue en clair : il identifie une personne, et
@@ -146,6 +168,41 @@ async def resolve_caller(principal: str) -> UserCaller:
         organisation_id=int(row.organisation_id),
         platform_role=row.platform_role,
     )
+
+
+async def creer_depuis_annuaire(principal: str) -> None:
+    """Createur de GET /users/me : la ligne `user` vient de la fiche AD.
+
+    Ne leve que pour les refus que l'agent peut faire corriger (adresse mail
+    absente ou deja prise). Dans tous les autres cas — AD coupe ou injoignable,
+    compte inconnu ou desactive, organisation introuvable — rien n'est cree, et
+    resolve_caller repond le 403 habituel en relisant la base.
+    """
+    try:
+        cree = await creer_a_la_premiere_connexion(principal, annuaire_depuis_settings(settings))
+    except SansAdresseMail as exc:
+        logger.warning("premiere connexion refusee : %s", exc)
+        raise HTTPException(
+            status_code=403,
+            detail="Compte AD sans adresse mail : impossible de creer l'utilisateur",
+        ) from exc
+    except AdresseMailPrise as exc:
+        logger.warning("premiere connexion refusee : %s", exc)
+        raise HTTPException(
+            status_code=409,
+            detail="L'adresse mail de ce compte AD est deja portee par un autre utilisateur",
+        ) from exc
+    except CreationRefusee as exc:
+        # Le departement est journalise, pas le matricule : il situe une equipe,
+        # pas une personne.
+        logger.warning("premiere connexion refusee : %s", exc)
+        return
+    except AnnuaireErreur as exc:
+        # AnnuaireDesactive en herite : AD_ENABLED=false tombe ici aussi.
+        logger.error("premiere connexion : annuaire indisponible : %s", exc)
+        return
+    if not cree:
+        logger.warning("premiere connexion : matricule inconnu de l'AD ou compte desactive")
 
 
 def _payload_of(token: str) -> Optional[dict[str, Any]]:
@@ -216,10 +273,11 @@ def _bearer_header(request: Request) -> Optional[str]:
     return value.strip() if scheme.lower() == "bearer" and value.strip() else None
 
 
-async def get_caller(
+async def _identifier(
     request: Request,
-    jwt: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
-    api_key: Optional[str] = Depends(_api_key_header),
+    jwt: Optional[HTTPAuthorizationCredentials],
+    api_key: Optional[str],
+    createur: Optional[Createur],
 ) -> Caller:
     """Detecte l'origine - IHM ou service machine.
 
@@ -236,6 +294,9 @@ async def get_caller(
     fabriquait un UserCaller de toutes pieces, avec un organisation_id=1 qui ne
     correspondait a aucune ligne reelle : le perimetre observe en DEV n'etait
     celui de personne, et tester le cloisonnement etait impossible.
+
+    Le bypass ignore aussi `createur` : sans token verifie, rien ne doit etre
+    cree dans `user` a partir de l'AD.
     """
     if api_key is not None:
         if not settings.internal_auth_enabled:
@@ -256,7 +317,25 @@ async def get_caller(
     if jwt is None:
         raise HTTPException(status_code=401, detail="Authentification requise")
 
-    return await resolve_caller(principal_from_claims(claims_from_request(request)))
+    return await resolve_caller(principal_from_claims(claims_from_request(request)), createur)
+
+
+async def get_caller(
+    request: Request,
+    jwt: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+    api_key: Optional[str] = Depends(_api_key_header),
+) -> Caller:
+    """Caller de toutes les routes : un matricule inconnu de `user` est refuse."""
+    return await _identifier(request, jwt, api_key, createur=None)
+
+
+async def get_caller_premiere_connexion(
+    request: Request,
+    jwt: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+    api_key: Optional[str] = Depends(_api_key_header),
+) -> Caller:
+    """Caller de GET /users/me seulement : un matricule inconnu est cree depuis l'AD."""
+    return await _identifier(request, jwt, api_key, createur=creer_depuis_annuaire)
 
 
 async def require_user(caller: Caller = Depends(get_caller)) -> UserCaller:
@@ -268,4 +347,12 @@ async def require_user(caller: Caller = Depends(get_caller)) -> UserCaller:
 async def require_service(caller: Caller = Depends(get_caller)) -> ServiceCaller:
     if not isinstance(caller, ServiceCaller):
         raise HTTPException(status_code=403, detail="Route reservee aux services internes")
+    return caller
+
+
+async def require_user_premiere_connexion(
+    caller: Caller = Depends(get_caller_premiere_connexion),
+) -> UserCaller:
+    if not isinstance(caller, UserCaller):
+        raise HTTPException(status_code=403, detail="Route reservee aux utilisateurs IHM")
     return caller
