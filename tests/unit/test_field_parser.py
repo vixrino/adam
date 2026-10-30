@@ -2,10 +2,10 @@
 
 from adam_core.utils.field_parser import parse_field_value
 
-
 # ---------------------------------------------------------------------------
 # TEXT
 # ---------------------------------------------------------------------------
+
 
 def test_text_returns_raw() -> None:
     assert parse_field_value("hello", "TEXT") == "hello"
@@ -18,6 +18,7 @@ def test_text_none_returns_none() -> None:
 # ---------------------------------------------------------------------------
 # NUMBER
 # ---------------------------------------------------------------------------
+
 
 def test_number_integer() -> None:
     assert parse_field_value("450000", "NUMBER") == 450000
@@ -82,6 +83,7 @@ def test_number_negative_infinity_returns_raw() -> None:
 # BOOLEAN
 # ---------------------------------------------------------------------------
 
+
 def test_boolean_true_lowercase() -> None:
     assert parse_field_value("true", "BOOLEAN") is True
 
@@ -109,6 +111,7 @@ def test_boolean_unknown_string_is_false() -> None:
 # ---------------------------------------------------------------------------
 # DATE
 # ---------------------------------------------------------------------------
+
 
 def test_date_valid_iso() -> None:
     assert parse_field_value("2024-01-15", "DATE") == "2024-01-15"
@@ -150,6 +153,7 @@ def test_date_french_space_separator() -> None:
 # DATETIME
 # ---------------------------------------------------------------------------
 
+
 def test_datetime_valid_iso() -> None:
     result = parse_field_value("2024-01-15T10:30:00", "DATETIME")
     assert result == "2024-01-15T10:30:00"
@@ -190,6 +194,7 @@ def test_datetime_french_space_date_separator() -> None:
 # ---------------------------------------------------------------------------
 # Cas limites
 # ---------------------------------------------------------------------------
+
 
 def test_unknown_value_type_returns_raw() -> None:
     assert parse_field_value("foo", "UNKNOWN_TYPE") == "foo"

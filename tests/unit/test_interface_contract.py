@@ -18,6 +18,7 @@ from adam_core.schemas.interface_contract import (
 # # Fixtures / Helpers
 # ==========================================
 
+
 def _text_kv(id: str = "deposant.nom", text: str = "MOULIN") -> KVPair:
     return KVPair(
         id=id,
@@ -25,11 +26,13 @@ def _text_kv(id: str = "deposant.nom", text: str = "MOULIN") -> KVPair:
         value=KVTextValue(type="text", text=text, confidence=0.99),
     )
 
+
 def _bool_kv(id: str = "situation.marie", value: bool = True) -> KVPair:
     return KVPair(
         id=id,
         value=KVBooleanValue(type="boolean", value=value, confidence=1.0),
     )
+
 
 def _section(id: str = "deposant", kv_pairs: list | None = None) -> Section:
     return Section(
@@ -38,11 +41,10 @@ def _section(id: str = "deposant", kv_pairs: list | None = None) -> Section:
         kv_pairs=kv_pairs or [_text_kv()],
     )
 
+
 def _page(page_number: int = 1, sections: list | None = None) -> Page:
-    return Page(
-        page_number=page_number,
-        sections=sections or [_section()]
-    )
+    return Page(page_number=page_number, sections=sections or [_section()])
+
 
 def _document(pages: list | None = None) -> SmartdocDocument:
     return SmartdocDocument(
@@ -57,6 +59,7 @@ def _document(pages: list | None = None) -> SmartdocDocument:
 # ==========================================
 # # KVPair.display_label
 # ==========================================
+
 
 class TestKVPairDisplayLabel:
     def test_prefers_label(self) -> None:
@@ -76,6 +79,7 @@ class TestKVPairDisplayLabel:
 # # KVPair.section_id
 # ==========================================
 
+
 class TestKVPairSectionId:
     def test_returns_first_segment(self) -> None:
         kv = KVPair(id="deposant.nom")
@@ -90,6 +94,7 @@ class TestKVPairSectionId:
 # # KVPair.value_type
 # ==========================================
 
+
 class TestKVPairValueType:
     def test_returns_type_when_value_present(self) -> None:
         kv = _text_kv()
@@ -103,6 +108,7 @@ class TestKVPairValueType:
 # ==========================================
 # # KVPair.extracted_value
 # ==========================================
+
 
 class TestKVPairExtractedValue:
     def test_text_returns_text(self) -> None:
@@ -119,14 +125,21 @@ class TestKVPairExtractedValue:
     def test_date_returns_value(self) -> None:
         kv = KVPair(
             id="s.f",
-            value=KVDateValue(type="date", raw_text="01/01/1980", value="1980-01-01", confidence=0.95),
+            value=KVDateValue(
+                type="date", raw_text="01/01/1980", value="1980-01-01", confidence=0.95
+            ),
         )
         assert kv.extracted_value == "1980-01-01"
 
     def test_datetime_returns_value(self) -> None:
         kv = KVPair(
             id="s.f",
-            value=KVDatetimeValue(type="datetime", raw_text="01/01/1980 10:00", value="1980-01-01T10:00", confidence=0.95),
+            value=KVDatetimeValue(
+                type="datetime",
+                raw_text="01/01/1980 10:00",
+                value="1980-01-01T10:00",
+                confidence=0.95,
+            ),
         )
         assert kv.extracted_value == "1980-01-01T10:00"
 
@@ -146,6 +159,7 @@ class TestKVPairExtractedValue:
 # ==========================================
 # # SmartdocDocument.iter_kv_pairs
 # ==========================================
+
 
 class TestIterKvPairs:
     def test_yields_all_kv_pairs(self) -> None:
@@ -169,10 +183,12 @@ class TestIterKvPairs:
         assert kv.id == "deposant.nom"
 
     def test_multiple_pages_and_sections(self) -> None:
-        doc = _document(pages=[
-            _page(1, [_section("deposant", [_text_kv("deposant.nom")])]),
-            _page(2, [_section("situation", [_bool_kv("situation.marie")])]),
-        ])
+        doc = _document(
+            pages=[
+                _page(1, [_section("deposant", [_text_kv("deposant.nom")])]),
+                _page(2, [_section("situation", [_bool_kv("situation.marie")])]),
+            ]
+        )
         pairs = list(doc.iter_kv_pairs())
         assert len(pairs) == 2
 
@@ -180,6 +196,7 @@ class TestIterKvPairs:
 # ==========================================
 # # SmartdocDocument.extract_field_specs
 # ==========================================
+
 
 class TestExtractFieldSpecs:
     def test_returns_one_spec_per_unique_field(self) -> None:
@@ -200,23 +217,26 @@ class TestExtractFieldSpecs:
             KVPair(
                 id="endettement.montant",
                 group_id="dette_1",
-                value=KVNumberValue(type="number", raw_text="100", value=100.0, confidence=0.9)
+                value=KVNumberValue(type="number", raw_text="100", value=100.0, confidence=0.9),
             ),
             KVPair(
                 id="endettement.montant",
                 group_id="dette_2",
-                value=KVNumberValue(type="number", raw_text="200", value=200.0, confidence=0.9)
-            )
+                value=KVNumberValue(type="number", raw_text="200", value=200.0, confidence=0.9),
+            ),
         ]
         doc = _document(pages=[_page(sections=[_section("endettement", repeated)])])
         specs = doc.extract_field_specs()
         assert len(specs) == 1
 
     def test_display_order_is_sequential(self) -> None:
-        section = _section("deposant", [
-            _text_kv("deposant.nom"),
-            _text_kv("deposant.prenom"),
-        ])
+        section = _section(
+            "deposant",
+            [
+                _text_kv("deposant.nom"),
+                _text_kv("deposant.prenom"),
+            ],
+        )
         doc = _document(pages=[_page(sections=[section])])
         specs = doc.extract_field_specs()
         assert specs[0]["display_order"] == 0

@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from adam_api.routers.users import router
+from adam_api.routers.users import me_router, router
 
 _NOW = datetime(2026, 6, 26, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -15,6 +15,8 @@ _NOW = datetime(2026, 6, 26, 12, 0, 0, tzinfo=timezone.utc)
 @pytest.fixture
 def app() -> FastAPI:
     fastapi_app = FastAPI()
+    # me_router d'abord, comme dans main.py : « me » n'est pas lu comme un user_id.
+    fastapi_app.include_router(me_router)
     fastapi_app.include_router(router)
     return fastapi_app
 
@@ -34,6 +36,7 @@ def mock_db() -> AsyncMock:
 @pytest.fixture
 def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
     from adam_api.dependencies.db import get_db
+
     app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app, raise_server_exceptions=False)
 
@@ -45,6 +48,7 @@ def _make_user(
     matricule: str = "M001",
     status: str = "ACTIVE",
     organisation_id: int = 1,
+    platform_role: str = "NOTA_ADMIN",
     deleted_at: datetime | None = None,
     user_projects: list | None = None,
 ) -> MagicMock:
@@ -55,6 +59,7 @@ def _make_user(
     u.matricule = matricule
     u.status = status
     u.organisation_id = organisation_id
+    u.platform_role = platform_role
     u.created_at = _NOW
     u.updated_at = _NOW
     u.last_login_at = None
@@ -75,6 +80,7 @@ def _make_user_project(project_id: int = 10, role: str = "OPERATOR") -> MagicMoc
 # GET /users
 # ---------------------------------------------------------------------------
 
+
 class TestListUsers:
     def test_returns_200(self, client: TestClient) -> None:
         assert client.get("/users").status_code == 200
@@ -94,16 +100,30 @@ class TestListUsers:
     def test_response_contains_all_fields(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_user()]
         data = client.get("/users").json()
-        expected = {"id", "email", "full_name", "matricule", "status", "organisation_id", "created_at", "updated_at", "deleted_at"}
+        expected = {
+            "id",
+            "email",
+            "full_name",
+            "matricule",
+            "status",
+            "organisation_id",
+            "created_at",
+            "updated_at",
+            "deleted_at",
+        }
         assert expected <= data[0].keys()
 
     def test_filter_by_organisation_id(self, client: TestClient, mock_db: AsyncMock) -> None:
-        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_user(organisation_id=3)]
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_user(organisation_id=3)
+        ]
         data = client.get("/users?organisation_id=3").json()
         assert data[0]["organisation_id"] == 3
 
     def test_filter_by_status(self, client: TestClient, mock_db: AsyncMock) -> None:
-        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_user(status="INACTIVE")]
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_user(status="INACTIVE")
+        ]
         data = client.get("/users?status=INACTIVE").json()
         assert data[0]["status"] == "INACTIVE"
 
@@ -112,8 +132,56 @@ class TestListUsers:
 
 
 # ---------------------------------------------------------------------------
+# GET /users/me
+# ---------------------------------------------------------------------------
+
+
+class TestGetMe:
+    @pytest.fixture
+    def as_user(self, app: FastAPI, mock_db: AsyncMock):  # type: ignore[no-untyped-def]
+        from adam_api.dependencies.auth import UserCaller, get_caller_premiere_connexion
+        from adam_api.dependencies.db import get_db_premiere_connexion
+
+        app.dependency_overrides[get_caller_premiere_connexion] = lambda: UserCaller(
+            matricule="M001", organisation_id=1
+        )
+        app.dependency_overrides[get_db_premiere_connexion] = lambda: mock_db
+
+    def test_returns_the_callers_user(
+        self, client: TestClient, mock_db: AsyncMock, as_user: None
+    ) -> None:
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_user(
+            matricule="M001",
+            user_projects=[_make_user_project(project_id=10, role="OPERATOR")],
+        )
+        data = client.get("/users/me").json()
+        assert data["matricule"] == "M001"
+        assert data["platform_role"] == "NOTA_ADMIN"
+        assert data["projects"] == [
+            {"project_id": 10, "role": "OPERATOR", "created_at": _NOW.isoformat().replace("+00:00", "Z")}
+        ]
+
+    def test_me_is_not_read_as_a_user_id(self, client: TestClient, as_user: None) -> None:
+        assert client.get("/users/me").status_code != 422
+
+    def test_404_when_matricule_is_not_in_the_table(
+        self, client: TestClient, as_user: None
+    ) -> None:
+        assert client.get("/users/me").status_code == 404
+
+    def test_403_for_a_service_caller(self, app: FastAPI, client: TestClient) -> None:
+        from adam_api.dependencies.auth import ServiceCaller, get_caller_premiere_connexion
+
+        app.dependency_overrides[get_caller_premiere_connexion] = lambda: ServiceCaller(
+            service_name="worker"
+        )
+        assert client.get("/users/me").status_code == 403
+
+
+# ---------------------------------------------------------------------------
 # GET /users/{user_id}
 # ---------------------------------------------------------------------------
+
 
 class TestGetUser:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -126,13 +194,26 @@ class TestGetUser:
     def test_response_contains_all_fields(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_user(id=1)
         data = client.get("/users/1").json()
-        expected = {"id", "email", "full_name", "matricule", "status", "organisation_id",
-                    "created_at", "last_login_at", "updated_at", "deleted_at", "projects"}
+        expected = {
+            "id",
+            "email",
+            "full_name",
+            "matricule",
+            "status",
+            "organisation_id",
+            "created_at",
+            "last_login_at",
+            "updated_at",
+            "deleted_at",
+            "projects",
+        }
         assert expected <= data.keys()
 
     def test_response_contains_projects(self, client: TestClient, mock_db: AsyncMock) -> None:
         up = _make_user_project(project_id=5, role="SUPERVISOR")
-        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_user(user_projects=[up])
+        mock_db.execute.return_value.scalar_one_or_none.return_value = _make_user(
+            user_projects=[up]
+        )
         data = client.get("/users/1").json()
         assert len(data["projects"]) == 1
         assert data["projects"][0]["project_id"] == 5
@@ -148,26 +229,42 @@ class TestGetUser:
 # POST /users
 # ---------------------------------------------------------------------------
 
+
 class TestCreateUser:
     def test_returns_201(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
-        resp = client.post("/users", json={
-            "organisation_id": 1, "email": "new@x.com", "full_name": "Jean", "matricule": "J001"
-        })
+        resp = client.post(
+            "/users",
+            json={
+                "organisation_id": 1,
+                "email": "new@x.com",
+                "full_name": "Jean",
+                "matricule": "J001",
+            },
+        )
         assert resp.status_code == 201
 
-    def test_response_contains_expected_fields(self, client: TestClient, mock_db: AsyncMock) -> None:
+    def test_response_contains_expected_fields(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
-        data = client.post("/users", json={
-            "organisation_id": 1, "email": "new@x.com", "full_name": "Jean", "matricule": "J001"
-        }).json()
+        data = client.post(
+            "/users",
+            json={
+                "organisation_id": 1,
+                "email": "new@x.com",
+                "full_name": "Jean",
+                "matricule": "J001",
+            },
+        ).json()
         assert {"id", "email", "full_name", "matricule", "status"} <= data.keys()
 
     def test_409_on_duplicate_email(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_user()
-        resp = client.post("/users", json={
-            "organisation_id": 1, "email": "dup@x.com", "full_name": "J", "matricule": "X"
-        })
+        resp = client.post(
+            "/users",
+            json={"organisation_id": 1, "email": "dup@x.com", "full_name": "J", "matricule": "X"},
+        )
         assert resp.status_code == 409
 
     def test_422_when_missing_fields(self, client: TestClient) -> None:
@@ -177,6 +274,7 @@ class TestCreateUser:
 # ---------------------------------------------------------------------------
 # PATCH /users/{user_id}
 # ---------------------------------------------------------------------------
+
 
 class TestPatchUser:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -200,6 +298,7 @@ class TestPatchUser:
 # POST /users/{user_id}/archive
 # ---------------------------------------------------------------------------
 
+
 class TestArchiveUser:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = _make_user(id=1, deleted_at=None)
@@ -216,6 +315,7 @@ class TestArchiveUser:
 # ---------------------------------------------------------------------------
 # POST /users/{user_id}/restore
 # ---------------------------------------------------------------------------
+
 
 class TestRestoreUser:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:

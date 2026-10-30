@@ -38,7 +38,9 @@ class _Row:
         organisation_id: int = ORGANISATION_ID,
         platform_role: Optional[str] = None,
         status: str = UserStatus.ACTIVE.value,
+        id: int = 11,
     ) -> None:
+        self.id = id
         self.matricule = matricule
         self.organisation_id = organisation_id
         self.platform_role = platform_role
@@ -184,7 +186,7 @@ class TestClaimsFromRequest:
 
     @pytest.mark.parametrize(
         "header",
-        ["", "Bearer", "Bearer    ", "Basic abc", _jwt({"sub": "X"}) ],
+        ["", "Bearer", "Bearer    ", "Basic abc", _jwt({"sub": "X"})],
         ids=["vide", "sans-valeur", "espaces", "mauvais-schema", "sans-schema"],
     )
     def test_en_tete_inexploitable(self, header: str) -> None:
@@ -263,6 +265,33 @@ class TestBypassDev:
         assert caller.matricule == MATRICULE
 
     @pytest.mark.asyncio
+    async def test_x_dev_matricule_choisit_l_utilisateur(self, session_factory: Any) -> None:
+        """En DEV local le front peut viser un autre utilisateur que api_dev_matricule."""
+        session = session_factory(_Row(matricule="MAT00002"))
+
+        caller = await auth_module.get_caller(
+            _request({"X-Dev-Matricule": "MAT00002"}), None, None  # type: ignore[arg-type]
+        )
+
+        assert caller.matricule == "MAT00002"
+        assert "MAT00002" in str(session.executed[0].compile().params.values())
+
+    @pytest.mark.asyncio
+    async def test_x_dev_matricule_est_ignore_sans_bypass(
+        self, monkeypatch: pytest.MonkeyPatch, session_factory: Any
+    ) -> None:
+        """Hors bypass le header n'a aucun effet : seul le token verifie identifie."""
+        monkeypatch.setattr(auth_module.settings, "api_disable_jwt_validation", False)
+        session_factory(_Row())
+
+        with pytest.raises(HTTPException) as exc:
+            await auth_module.get_caller(
+                _request({"X-Dev-Matricule": "MAT00002"}), None, None  # type: ignore[arg-type]
+            )
+
+        assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio
     async def test_le_perimetre_vient_de_la_base(self, session_factory: Any) -> None:
         """Et non d'un UserCaller fabrique : c'etait le defaut de l'ancien bypass."""
         session_factory(_Row(organisation_id=42, platform_role=PlatformRole.NOTA_ADMIN.value))
@@ -284,6 +313,7 @@ class TestCasNominal:
         assert caller.matricule == MATRICULE
         assert caller.organisation_id == ORGANISATION_ID
         assert caller.platform_role == PlatformRole.NOTA_ADMIN.value
+        assert caller.user_id == 11  # the `user` row key, which job.agent_id refers to
 
     @pytest.mark.asyncio
     async def test_utilisateur_metier_sans_role_de_plateforme(self, session_factory: Any) -> None:
@@ -327,9 +357,7 @@ class TestRefus:
 
         assert exc.value.status_code == 403
 
-    @pytest.mark.parametrize(
-        "status", [UserStatus.INACTIVE.value, UserStatus.SUSPENDED.value]
-    )
+    @pytest.mark.parametrize("status", [UserStatus.INACTIVE.value, UserStatus.SUSPENDED.value])
     @pytest.mark.asyncio
     async def test_403_si_compte_non_actif(self, session_factory: Any, status: str) -> None:
         session_factory(_Row(status=status))

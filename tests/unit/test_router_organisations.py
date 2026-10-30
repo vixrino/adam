@@ -34,6 +34,7 @@ def mock_db() -> AsyncMock:
 @pytest.fixture
 def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
     from adam_api.dependencies.db import get_db
+
     app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app, raise_server_exceptions=False)
 
@@ -77,6 +78,7 @@ def _make_user(
 # GET /organisations
 # ---------------------------------------------------------------------------
 
+
 class TestListOrganisations:
     def test_returns_200(self, client: TestClient) -> None:
         assert client.get("/organisations").status_code == 200
@@ -112,6 +114,7 @@ class TestListOrganisations:
 # ---------------------------------------------------------------------------
 # GET /organisations/{organisation_id}/users
 # ---------------------------------------------------------------------------
+
 
 class TestListOrganisationUsers:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -150,6 +153,7 @@ class TestListOrganisationUsers:
 # POST /organisations
 # ---------------------------------------------------------------------------
 
+
 class TestCreateOrganisation:
     def test_returns_201(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
@@ -167,7 +171,10 @@ class TestCreateOrganisation:
         assert resp.status_code == 409
 
     def test_422_on_invalid_slug(self, client: TestClient) -> None:
-        assert client.post("/organisations", json={"name": "Org", "slug": "INVALID SLUG"}).status_code == 422
+        assert (
+            client.post("/organisations", json={"name": "Org", "slug": "INVALID SLUG"}).status_code
+            == 422
+        )
 
     def test_422_when_missing_name(self, client: TestClient) -> None:
         assert client.post("/organisations", json={"slug": "ok-slug"}).status_code == 422
@@ -176,6 +183,7 @@ class TestCreateOrganisation:
 # ---------------------------------------------------------------------------
 # PATCH /organisations/{organisation_id}
 # ---------------------------------------------------------------------------
+
 
 class TestPatchOrganisation:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -199,6 +207,7 @@ class TestPatchOrganisation:
 # POST /organisations/{organisation_id}/archive
 # ---------------------------------------------------------------------------
 
+
 class TestArchiveOrganisation:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = _make_org(id=1, deleted_at=None)
@@ -220,6 +229,7 @@ class TestArchiveOrganisation:
 # ---------------------------------------------------------------------------
 # POST /organisations/{organisation_id}/restore
 # ---------------------------------------------------------------------------
+
 
 class TestRestoreOrganisation:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:

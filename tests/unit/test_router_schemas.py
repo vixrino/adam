@@ -77,6 +77,8 @@ def _make_schema(
     row.created_at = _NOW
     row.updated_at = _NOW
     row.field_specs = field_specs or []
+    row.locked = False
+    row.specimen_file = None
     row.pages = []
     return row
 
@@ -102,7 +104,6 @@ def _make_field_spec(
     fs.section_id = section_id
     fs.section_label = section_label
     fs.display_label = display_label
-    fs.description = None
     fs.page = page
     fs.value_type = value_type
     fs.required = required
@@ -110,13 +111,40 @@ def _make_field_spec(
     fs.group_id = group_id
     fs.polygon = polygon
     fs.updated_at = _NOW
+    fs.sensitive = False
+    fs.description = None
     return fs
 
 
+def _get_by_model(mock_db: AsyncMock, schema: Any, spec: Any) -> None:
+    """db.get rend le schema pour DocSchema, le field_spec pour le reste.
+
+    Sans ca, db.get(DocSchema) rend le field_spec, dont l'attribut `locked`
+    est un MagicMock, donc vrai : _reject_if_locked leve 409.
+    """
+    mock_db.get.side_effect = lambda model, _id: (schema if model.__name__ == "DocSchema" else spec)
+
+
 def _unlocked_db(mock_db: AsyncMock) -> AsyncMock:
-    """Configure le mock pour simuler un schema non verrouille et sans DocumentFields."""
-    mock_db.execute.return_value.scalar_one_or_none.return_value = None
-    mock_db.execute.return_value.scalar_one.return_value = 0
+    """Simule un schema non verrouille sans consommer le bouchon des requetes suivantes."""
+    normal = mock_db.execute.return_value
+
+    not_locked = MagicMock()
+    not_locked.scalar_one_or_none.return_value = None
+    not_locked.scalar_one.return_value = 0
+    not_locked.scalar.return_value = None
+    not_locked.one_or_none.return_value = None
+    not_locked.first.return_value = None
+    not_locked.scalars.return_value.all.return_value = []
+    not_locked.scalars.return_value.first.return_value = None
+
+    calls = {"n": 0}
+
+    async def _exec(*args: object, **kwargs: object) -> MagicMock:
+        calls["n"] += 1
+        return not_locked if calls["n"] == 1 else normal
+
+    mock_db.execute.side_effect = _exec
     return mock_db
 
 
@@ -403,13 +431,24 @@ class TestPatchFieldSpec:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
         _unlocked_db(mock_db)
         fs = _make_field_spec(id=10, schema_id=1)
-        mock_db.get.return_value = fs
+        _get_by_model(mock_db, _make_schema(id=1), fs)
         assert (
             client.patch(
                 "/schemas/1/field-specs/10", json={"display_label": "Nouveau Label"}
             ).status_code
             == 200
         )
+
+    def test_updated_at_est_relu_apres_le_flush(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        """onupdate=func.now() est cote serveur : sans refresh, lire updated_at
+        declenche un chargement paresseux, interdit en async (MissingGreenlet)."""
+        _unlocked_db(mock_db)
+        fs = _make_field_spec(id=10, schema_id=1)
+        _get_by_model(mock_db, _make_schema(id=1), fs)
+        client.patch("/schemas/1/field-specs/10", json={"display_label": "X"})
+        mock_db.refresh.assert_awaited_once_with(fs, ["updated_at"])
 
     def test_404_when_spec_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
         _unlocked_db(mock_db)
@@ -423,7 +462,7 @@ class TestPatchFieldSpec:
     ) -> None:
         _unlocked_db(mock_db)
         fs = _make_field_spec(id=10, schema_id=999)
-        mock_db.get.return_value = fs
+        _get_by_model(mock_db, _make_schema(id=1), fs)
         assert (
             client.patch("/schemas/1/field-specs/10", json={"display_label": "X"}).status_code
             == 404
@@ -439,7 +478,7 @@ class TestPatchFieldSpec:
     def test_section_label_can_be_patched(self, client: TestClient, mock_db: AsyncMock) -> None:
         _unlocked_db(mock_db)
         fs = _make_field_spec(id=10, schema_id=1)
-        mock_db.get.return_value = fs
+        _get_by_model(mock_db, _make_schema(id=1), fs)
         assert (
             client.patch("/schemas/1/field-specs/10", json={"section_label": "Nouveau"}).status_code
             == 200
@@ -455,7 +494,7 @@ class TestDeleteFieldSpec:
     def test_returns_204(self, client: TestClient, mock_db: AsyncMock) -> None:
         _unlocked_db(mock_db)
         fs = _make_field_spec(id=10, schema_id=1)
-        mock_db.get.return_value = fs
+        _get_by_model(mock_db, _make_schema(id=1), fs)
         assert client.delete("/schemas/1/field-specs/10").status_code == 204
 
     def test_404_when_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -467,7 +506,7 @@ class TestDeleteFieldSpec:
     ) -> None:
         _unlocked_db(mock_db)
         fs = _make_field_spec(id=10, schema_id=999)
-        mock_db.get.return_value = fs
+        _get_by_model(mock_db, _make_schema(id=1), fs)
         assert client.delete("/schemas/1/field-specs/10").status_code == 404
 
     def test_423_when_schema_locked(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -481,7 +520,7 @@ class TestDeleteFieldSpec:
         self, client: TestClient, mock_db: AsyncMock
     ) -> None:
         fs = _make_field_spec(id=10, schema_id=1)
-        mock_db.get.return_value = fs
+        _get_by_model(mock_db, _make_schema(id=1), fs)
         # premier execute : lock check (pas verrouille)
         # deuxieme execute : compte les DocumentFields → 3 references
         not_locked = MagicMock()

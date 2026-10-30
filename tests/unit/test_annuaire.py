@@ -72,14 +72,13 @@ class TestFiltres:
                 "sn": "Ferreira",
                 "mail": ["daniel@exemple.fr"],
                 "department": "SOLAPS",
-                "displayName": [],
+                "displayName": "FERREIRA Daniel (EXT)",
             }
         )
         assert personne is not None
-        assert personne.nom_affiche == "Daniel Ferreira"
+        assert personne.nom_affiche == "Daniel FERREIRA"
         assert personne.email == "daniel@exemple.fr"
         assert personne_depuis_attributs({"sn": "sans matricule"}) is None
-
 
 class TestExclusions:
     def test_prefixe_exclu_dans_le_filtre(self) -> None:
@@ -105,6 +104,7 @@ class TestExclusions:
         assert dans_ou_exclue("CN=x,OU=OT2BIS,OU=T2,DC=A", ["OT2"]) is False
         assert dans_ou_exclue("CN=x,OU=T2,DC=A", ["OT2"]) is False
         assert dans_ou_exclue(dn, []) is False
+
 
 
 class TestLimiteur:
@@ -214,6 +214,7 @@ class TestAnnuaireLdapMock:
         personne = await annuaire.trouver("I21080M")
         assert personne is not None and personne.email == "daniel@exemple.fr"
 
+
     @pytest.mark.asyncio
     async def test_comptes_ot2_exclus(self, annuaire: AnnuaireLdap) -> None:
         """Le compte OT2 est sous la base : sans exclusion, il remonte."""
@@ -230,6 +231,7 @@ class TestAnnuaireLdapMock:
         annuaire.suffixes_exclus = ["OT2"]
         assert "I21080MOT2" not in [p.matricule for p in await annuaire.rechercher("Dan")]
         assert await annuaire.trouver("I21080MOT2") is None
+
 
     @pytest.mark.asyncio
     async def test_matricule_inconnu_rend_none(self, annuaire: AnnuaireLdap) -> None:

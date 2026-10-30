@@ -3,7 +3,7 @@ Tests unitaires adam_api/routers/datasets.py
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pymupdf
@@ -12,7 +12,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from adam_api.routers.datasets import router
-from adam_core.models import Dataset, DocSchema, Organisation, Project
+from adam_core.enums.roles import PlatformRole
+from adam_core.models import Dataset, DocSchema, Document, Job, Organisation, Project
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -262,6 +263,24 @@ class TestPatchDataset:
         response = client.patch("/datasets/1", json={"required_operators": 99})
         assert response.status_code == 422
 
+    def test_409_when_changing_schema_of_a_non_draft_dataset(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        mock_db.get.return_value = _make_dataset(status="ACTIVE", schema_id=1)
+        response = client.patch("/datasets/1", json={"schema_id": 2})
+        assert response.status_code == 409
+
+    def test_schema_change_accepted_on_draft_even_if_target_is_locked(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        draft = _make_dataset(status="DRAFT", schema_id=1)
+        locked_schema = MagicMock(locked=True)
+        mock_db.get = AsyncMock(side_effect=[draft, locked_schema])
+        mock_db.execute.return_value.scalar_one.return_value = 0
+        response = client.patch("/datasets/1", json={"schema_id": 2})
+        assert response.status_code == 200
+        assert draft.schema_id == 2
+
 
 # ---------------------------------------------------------------------------
 # POST /datasets/{dataset_id}/documents
@@ -295,6 +314,7 @@ def _capture_document_id(instance: object) -> None:
 
 
 class TestIngestDocuments:
+
     def test_404_when_dataset_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = None
         response = client.post(
@@ -489,6 +509,8 @@ class TestCycleDeVie:
         schema = MagicMock()
         schema.id = 1
         schema.name = "Schema CERFA"
+        schema.locked = False
+        dataset.schema_row = schema
         mock_db.get.side_effect = [dataset, schema]
         mock_db.execute.return_value.scalar_one.return_value = field_count
         return dataset
@@ -499,6 +521,11 @@ class TestCycleDeVie:
         assert response.status_code == 200
         assert dataset.status == "ACTIVE"
 
+    def test_activation_verrouille_le_schema(self, client: TestClient, mock_db: AsyncMock) -> None:
+        dataset = self._activable(mock_db)
+        client.patch("/datasets/1/status?status=ACTIVE")
+        assert dataset.schema_row.locked is True
+
     def test_activation_refusee_si_le_schema_n_a_aucun_champ(
         self, client: TestClient, mock_db: AsyncMock
     ) -> None:
@@ -506,6 +533,7 @@ class TestCycleDeVie:
         response = client.patch("/datasets/1/status?status=ACTIVE")
         assert response.status_code == 422
         assert dataset.status == "DRAFT"
+        assert dataset.schema_row.locked is False
 
     def test_actif_ne_revient_pas_a_brouillon(self, client: TestClient, mock_db: AsyncMock) -> None:
         dataset = _make_dataset(status="ACTIVE")
@@ -567,3 +595,188 @@ class TestCycleDeVie:
         response = client.patch("/datasets/1", json={"name": "Nouveau nom"})
         assert response.status_code == 200
         assert dataset.name == "Nouveau nom"
+
+
+# ---------------------------------------------------------------------------
+# DELETE /datasets/{dataset_id}/documents/{document_id}
+# ---------------------------------------------------------------------------
+
+
+def _make_document(id: int = 7, dataset_id: int = 1, status: str = "RECEIVED") -> MagicMock:
+    doc = MagicMock(spec=Document)
+    doc.id = id
+    doc.dataset_id = dataset_id
+    doc.status = status
+    return doc
+
+
+class TestRemoveDocument:
+    @pytest.fixture(autouse=True)
+    def _as_platform_admin(self, app: FastAPI) -> None:
+        self._act_as(app)
+
+    @staticmethod
+    def _act_as(app: FastAPI, caller: Any = None) -> None:
+        from adam_api.dependencies.auth import UserCaller, get_caller
+
+        who = caller or UserCaller(
+            matricule="MATADM", organisation_id=1, platform_role=PlatformRole.NOTA_ADMIN.value
+        )
+        app.dependency_overrides[get_caller] = lambda: who
+
+    @staticmethod
+    def _db_with(mock_db: AsyncMock, doc: Any, project_role: Optional[str] = None) -> None:
+        dataset = _make_dataset(id=1, project_id=5)
+
+        async def _get(model: Any, _id: int) -> Any:
+            return {Dataset: dataset, Document: doc}.get(model)
+
+        mock_db.get.side_effect = _get
+        mock_db.scalar.return_value = project_role
+        mock_db.execute.return_value.scalar_one.return_value = 0  # no submitted job
+
+    def test_deletes_the_document_and_answers_204(self, client: TestClient, mock_db: AsyncMock) -> None:
+        doc = _make_document()
+        self._db_with(mock_db, doc)
+
+        response = client.delete("/datasets/1/documents/7")
+
+        assert response.status_code == 204
+        assert response.content == b""
+        mock_db.delete.assert_awaited_once_with(doc)
+
+    def test_404_when_the_dataset_does_not_exist(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.side_effect = None
+        mock_db.get.return_value = None
+
+        assert client.delete("/datasets/1/documents/7").status_code == 404
+        mock_db.delete.assert_not_called()
+
+    def test_404_when_the_document_does_not_exist(self, client: TestClient, mock_db: AsyncMock) -> None:
+        self._db_with(mock_db, None)
+
+        assert client.delete("/datasets/1/documents/7").status_code == 404
+        mock_db.delete.assert_not_called()
+
+    def test_404_when_the_document_belongs_to_another_dataset(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        self._db_with(mock_db, _make_document(dataset_id=2))
+
+        assert client.delete("/datasets/1/documents/7").status_code == 404
+        mock_db.delete.assert_not_called()
+
+    @pytest.mark.parametrize("status", ["RECEIVED", "INGESTED", "IN_PROGRESS", "PENDING_CONSENSUS", "VALIDATED", "ERROR"])
+    def test_allowed_before_export(self, client: TestClient, mock_db: AsyncMock, status: str) -> None:
+        self._db_with(mock_db, _make_document(status=status))
+
+        assert client.delete("/datasets/1/documents/7").status_code == 204
+
+    def test_409_when_a_job_was_already_submitted(self, client: TestClient, mock_db: AsyncMock) -> None:
+        """Un job soumis est du travail rendu : on ne retire plus le document."""
+        self._db_with(mock_db, _make_document(status="IN_PROGRESS"))
+        mock_db.execute.return_value.scalar_one.return_value = 2
+
+        response = client.delete("/datasets/1/documents/7")
+
+        assert response.status_code == 409
+        assert "2 job(s) soumis" in response.json()["detail"]
+        mock_db.delete.assert_not_called()
+
+    def test_unsubmitted_jobs_do_not_block_the_removal(self, client: TestClient, mock_db: AsyncMock) -> None:
+        self._db_with(mock_db, _make_document(status="IN_PROGRESS"))
+        mock_db.execute.return_value.scalar_one.return_value = 0
+
+        assert client.delete("/datasets/1/documents/7").status_code == 204
+
+    def test_409_for_an_exported_document(self, client: TestClient, mock_db: AsyncMock) -> None:
+        self._db_with(mock_db, _make_document(status="EXPORTED"))
+
+        response = client.delete("/datasets/1/documents/7")
+
+        assert response.status_code == 409
+        mock_db.delete.assert_not_called()
+
+
+class TestRemoveDocumentAuthorization:
+    """Seuls les administrateurs retirent un document."""
+
+    @staticmethod
+    def _call(app: FastAPI, client: TestClient, mock_db: AsyncMock, caller: Any, project_role: Any = None) -> Any:
+        from adam_api.dependencies.auth import get_caller
+
+        app.dependency_overrides[get_caller] = lambda: caller
+        dataset, doc = _make_dataset(id=1, project_id=5), _make_document()
+
+        async def _get(model: Any, _id: int) -> Any:
+            return {Dataset: dataset, Document: doc}.get(model)
+
+        mock_db.get.side_effect = _get
+        mock_db.scalar.return_value = project_role
+        mock_db.execute.return_value.scalar_one.return_value = 0  # no submitted job
+        return client.delete("/datasets/1/documents/7")
+
+    @pytest.mark.parametrize("platform_role", ["NOTA_ADMIN", "NOTA_SUPERVISOR"])
+    def test_transverse_platform_roles_are_allowed(
+        self, app: FastAPI, client: TestClient, mock_db: AsyncMock, platform_role: str
+    ) -> None:
+        from adam_api.dependencies.auth import UserCaller
+
+        caller = UserCaller(matricule="M1", organisation_id=1, platform_role=platform_role)
+
+        assert self._call(app, client, mock_db, caller).status_code == 204
+
+    def test_business_admin_of_the_project_is_allowed(
+        self, app: FastAPI, client: TestClient, mock_db: AsyncMock
+    ) -> None:
+        from adam_api.dependencies.auth import UserCaller
+
+        caller = UserCaller(matricule="M1", organisation_id=1)
+
+        response = self._call(app, client, mock_db, caller, project_role="BUSINESS_ADMIN")
+
+        assert response.status_code == 204
+
+    @pytest.mark.parametrize(
+        "project_role", ["OPERATOR", None], ids=["operator-of-the-project", "no-role-on-this-project"]
+    )
+    def test_operator_or_member_of_nothing_here_is_refused(
+        self, app: FastAPI, client: TestClient, mock_db: AsyncMock, project_role: Any
+    ) -> None:
+        """Pas de role sur CE projet : meme un BUSINESS_ADMIN d'un autre projet est refuse."""
+        from adam_api.dependencies.auth import UserCaller
+
+        caller = UserCaller(matricule="M1", organisation_id=1)
+
+        response = self._call(app, client, mock_db, caller, project_role=project_role)
+
+        assert response.status_code == 403
+        mock_db.delete.assert_not_called()
+
+    def test_nota_client_is_refused(self, app: FastAPI, client: TestClient, mock_db: AsyncMock) -> None:
+        from adam_api.dependencies.auth import UserCaller
+
+        caller = UserCaller(matricule="M1", organisation_id=1, platform_role="NOTA_CLIENT")
+
+        assert self._call(app, client, mock_db, caller).status_code == 403
+
+    def test_service_callers_are_refused(self, app: FastAPI, client: TestClient, mock_db: AsyncMock) -> None:
+        from adam_api.dependencies.auth import ServiceCaller
+
+        response = self._call(app, client, mock_db, ServiceCaller(service_name="internal-service"))
+
+        assert response.status_code == 403
+        mock_db.delete.assert_not_called()
+
+
+def test_document_children_are_removed_by_the_database() -> None:
+    """remove_document ne supprime que la ligne document : le reste repose sur ON DELETE CASCADE.
+
+    Une base creee avec une regle RESTRICT (modele plus ancien) ferait echouer le retrait
+    d'un document qui a des jobs : la regle du modele est donc verrouillee ici.
+    """
+    from adam_core.models import DocumentField, OcrResult
+
+    for model in (Job, DocumentField, OcrResult):
+        (fk,) = model.__table__.c.document_id.foreign_keys
+        assert fk.ondelete == "CASCADE", model.__name__

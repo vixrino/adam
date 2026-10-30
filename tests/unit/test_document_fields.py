@@ -43,8 +43,8 @@ class _FakeDb:
         valid_spec_ids: Optional[Set[int]] = None,
         existing: Optional[Set[Tuple[int, Optional[str]]]] = None,
     ) -> None:
-        self.document = document if document is not None else SimpleNamespace(
-            id=DOCUMENT_ID, dataset_id=4
+        self.document = (
+            document if document is not None else SimpleNamespace(id=DOCUMENT_ID, dataset_id=4)
         )
         self.schema_id = schema_id
         self.valid_spec_ids = VALID_SPEC_IDS if valid_spec_ids is None else valid_spec_ids
@@ -200,7 +200,9 @@ def _bulk(*specs: int) -> Dict[str, Any]:
 class TestCreateBulk:
     def test_201_et_tout_est_cree(self, app: FastAPI) -> None:
         db = _FakeDb()
-        response = _client(app, db).post(f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 12))
+        response = _client(app, db).post(
+            f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 12)
+        )
         assert response.status_code == 201
         body = response.json()
         assert len(body["created"]) == 2
@@ -214,7 +216,9 @@ class TestCreateBulk:
         un journal d'acces.
         """
         db = _FakeDb(existing={(11, None), (12, None)})
-        response = _client(app, db).post(f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 12))
+        response = _client(app, db).post(
+            f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 12)
+        )
         assert response.status_code == 200
         body = response.json()
         assert body["created"] == []
@@ -224,22 +228,28 @@ class TestCreateBulk:
     def test_201_des_qu_un_seul_champ_est_cree(self, app: FastAPI) -> None:
         """Le lot partiel reste un 201 : quelque chose a bien ete cree."""
         db = _FakeDb(existing={(11, None)})
-        response = _client(app, db).post(f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 12))
+        response = _client(app, db).post(
+            f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 12)
+        )
         assert response.status_code == 201
 
     def test_conflit_partiel_ne_fait_pas_echouer_le_lot(self, app: FastAPI) -> None:
         db = _FakeDb(existing={(11, None)})
-        body = _client(app, db).post(
-            f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 12, 13)
-        ).json()
+        body = (
+            _client(app, db)
+            .post(f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 12, 13))
+            .json()
+        )
         assert len(body["created"]) == 2
         assert body["skipped"] == [{"field_spec_id": 11, "group_id": None}]
 
     def test_doublon_interne_au_lot(self, app: FastAPI) -> None:
         db = _FakeDb()
-        body = _client(app, db).post(
-            f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 11)
-        ).json()
+        body = (
+            _client(app, db)
+            .post(f"/documents/{DOCUMENT_ID}/fields/bulk", json=_bulk(11, 11))
+            .json()
+        )
         assert len(body["created"]) == 1
         assert len(body["skipped"]) == 1
 
@@ -255,7 +265,9 @@ class TestCreateBulk:
     def test_lot_vide(self, app: FastAPI) -> None:
         """200 comme le rejeu : un lot vide ne cree rien non plus."""
         db = _FakeDb()
-        response = _client(app, db).post(f"/documents/{DOCUMENT_ID}/fields/bulk", json={"fields": []})
+        response = _client(app, db).post(
+            f"/documents/{DOCUMENT_ID}/fields/bulk", json={"fields": []}
+        )
         assert response.status_code == 200
         assert response.json()["created"] == []
 

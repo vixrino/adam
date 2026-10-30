@@ -36,6 +36,7 @@ def mock_db() -> AsyncMock:
 @pytest.fixture
 def client(app: FastAPI, mock_db: AsyncMock) -> TestClient:
     from adam_api.dependencies.db import get_db
+
     app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app, raise_server_exceptions=False)
 
@@ -68,6 +69,7 @@ def _make_doc(id: int = 1, status: str = "RECEIVED") -> MagicMock:
 # GET /ocr-results
 # ---------------------------------------------------------------------------
 
+
 class TestListOcrResults:
     def test_returns_200(self, client: TestClient) -> None:
         assert client.get("/ocr-results").status_code == 200
@@ -77,25 +79,32 @@ class TestListOcrResults:
 
     def test_returns_list(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.execute.return_value.scalars.return_value.all.return_value = [
-            _make_ocr(id=1), _make_ocr(id=2),
+            _make_ocr(id=1),
+            _make_ocr(id=2),
         ]
         data = client.get("/ocr-results").json()
         assert len(data) == 2
         assert data[0]["id"] == 1
 
-    def test_response_contains_storage_mode_and_processed_at(self, client: TestClient, mock_db: AsyncMock) -> None:
+    def test_response_contains_storage_mode_and_processed_at(
+        self, client: TestClient, mock_db: AsyncMock
+    ) -> None:
         mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_ocr()]
         data = client.get("/ocr-results").json()
         assert "storage_mode" in data[0]
         assert "processed_at" in data[0]
 
     def test_filter_by_document_id(self, client: TestClient, mock_db: AsyncMock) -> None:
-        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_ocr(document_id=5)]
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_ocr(document_id=5)
+        ]
         data = client.get("/ocr-results?document_id=5").json()
         assert data[0]["document_id"] == 5
 
     def test_filter_by_dataset_id(self, client: TestClient, mock_db: AsyncMock) -> None:
-        mock_db.execute.return_value.scalars.return_value.all.return_value = [_make_ocr(dataset_id=3)]
+        mock_db.execute.return_value.scalars.return_value.all.return_value = [
+            _make_ocr(dataset_id=3)
+        ]
         data = client.get("/ocr-results?dataset_id=3").json()
         assert data[0]["dataset_id"] == 3
 
@@ -103,6 +112,7 @@ class TestListOcrResults:
 # ---------------------------------------------------------------------------
 # GET /ocr-results/{ocr_result_id}
 # ---------------------------------------------------------------------------
+
 
 class TestGetOcrResult:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -115,7 +125,14 @@ class TestGetOcrResult:
     def test_response_contains_all_fields(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = _make_ocr(id=1, storage_mode="JSONB", raw_json={"key": "val"})
         data = client.get("/ocr-results/1").json()
-        assert {"id", "document_id", "dataset_id", "storage_mode", "processed_at", "raw_json"} <= data.keys()
+        assert {
+            "id",
+            "document_id",
+            "dataset_id",
+            "storage_mode",
+            "processed_at",
+            "raw_json",
+        } <= data.keys()
 
     def test_raw_json_returned_for_jsonb_mode(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.return_value = _make_ocr(storage_mode="JSONB", raw_json={"pages": []})
@@ -132,18 +149,19 @@ class TestGetOcrResult:
 # POST /ocr-results
 # ---------------------------------------------------------------------------
 
+
 class TestPostOcrResult:
     def test_404_when_document_not_found(self, client: TestClient) -> None:
-        resp = client.post("/ocr-results", json={
-            "document_id": 99, "dataset_id": 1, "raw_json": {}
-        })
+        resp = client.post(
+            "/ocr-results", json={"document_id": 99, "dataset_id": 1, "raw_json": {}}
+        )
         assert resp.status_code == 404
 
     def test_404_when_dataset_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
         mock_db.get.side_effect = [_make_doc(), None]
-        resp = client.post("/ocr-results", json={
-            "document_id": 1, "dataset_id": 99, "raw_json": {}
-        })
+        resp = client.post(
+            "/ocr-results", json={"document_id": 1, "dataset_id": 99, "raw_json": {}}
+        )
         assert resp.status_code == 404
 
     def test_returns_201_with_correct_schema(self, client: TestClient, mock_db: AsyncMock) -> None:
@@ -160,9 +178,9 @@ class TestPostOcrResult:
 
         with patch("adam_api.routers.ocr.SmartdocDocument") as mock_form:
             mock_form.model_validate.return_value.iter_kv_pairs.return_value = []
-            resp = client.post("/ocr-results", json={
-                "document_id": 1, "dataset_id": 1, "raw_json": {"pages": []}
-            })
+            resp = client.post(
+                "/ocr-results", json={"document_id": 1, "dataset_id": 1, "raw_json": {"pages": []}}
+            )
 
         assert resp.status_code == 201
         data = resp.json()
@@ -190,9 +208,9 @@ class TestPostOcrResult:
 
         with patch("adam_api.routers.ocr.SmartdocDocument") as mock_form:
             mock_form.model_validate.return_value.iter_kv_pairs.return_value = []
-            resp = client.post("/ocr-results", json={
-                "document_id": 1, "dataset_id": 1, "raw_json": {}
-            })
+            resp = client.post(
+                "/ocr-results", json={"document_id": 1, "dataset_id": 1, "raw_json": {}}
+            )
 
         data = resp.json()
         assert data["document_fields_created"] == 0

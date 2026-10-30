@@ -52,7 +52,7 @@ def _patch_session(monkeypatch: pytest.MonkeyPatch, db: _FakeDb) -> None:
 
 
 @pytest.mark.asyncio
-async def test_process_one_success_marks_in_progress_and_sets_page_count(
+async def test_process_one_success_marks_ingested_and_sets_page_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     document = _document()
@@ -74,8 +74,6 @@ async def test_process_one_success_marks_in_progress_and_sets_page_count(
 async def test_process_one_render_failure_marks_document_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # CA-5 : un PDF illisible (poison pill) passe en ERROR pour sortir de la
-    # file, au lieu de rester en RECEIVED et d'etre repolle indefiniment.
     document = _document()
     file_row = _file(page_count=1)
     db = _FakeDb(document, file_row)
@@ -99,7 +97,7 @@ async def test_process_one_skips_document_already_taken(
 ) -> None:
     """with_for_update(skip_locked=True) renvoie None si un autre worker a deja
     la ligne, ou si le statut n'est plus RECEIVED (CA-6)."""
-    document = _document(status=DocumentStatus.INGESTED.value)
+    document = _document(status=DocumentStatus.IN_PROGRESS.value)
     file_row = _file()
     db = _FakeDb(document, file_row)
     _patch_session(monkeypatch, db)

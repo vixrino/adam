@@ -280,21 +280,25 @@ class TestPatchProject:
 
 class TestUpdateUserRole:
     def test_returns_200(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_project(id=1)
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_up()
         assert (
             client.patch("/projects/1/users/5", json={"role": "BUSINESS_ADMIN"}).status_code == 200
         )
 
-    def test_404_when_user_not_in_project(self, client: TestClient) -> None:
+    def test_404_when_user_not_in_project(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_project(id=1)
         assert client.patch("/projects/1/users/99", json={"role": "OPERATOR"}).status_code == 404
 
     def test_422_on_invalid_role(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_project(id=1)
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_up()
         assert client.patch("/projects/1/users/5", json={"role": "INVALID"}).status_code == 422
 
     def test_response_contains_role_and_updated_at(
         self, client: TestClient, mock_db: AsyncMock
     ) -> None:
+        mock_db.get.return_value = _make_project(id=1)
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_up(role="OPERATOR")
         data = client.patch("/projects/1/users/5", json={"role": "BUSINESS_ADMIN"}).json()
         assert "role" in data
@@ -310,8 +314,123 @@ class TestUpdateUserRole:
 
 class TestRemoveUserFromProject:
     def test_returns_204(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_project(id=1)
         mock_db.execute.return_value.scalar_one_or_none.return_value = _make_up()
         assert client.delete("/projects/1/users/5").status_code == 204
 
-    def test_404_when_not_found(self, client: TestClient) -> None:
+    def test_404_when_not_found(self, client: TestClient, mock_db: AsyncMock) -> None:
+        mock_db.get.return_value = _make_project(id=1)
         assert client.delete("/projects/1/users/99").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Droits : qui peut modifier un projet et gerer ses membres
+# ---------------------------------------------------------------------------
+
+
+def _res(first=None, one=None, scalar_one=None) -> MagicMock:  # type: ignore[no-untyped-def]
+    """Resultat de db.execute : .first() (droit), .scalar_one_or_none() (membre), .scalar_one()."""
+    result = MagicMock()
+    result.first.return_value = first
+    result.scalar_one_or_none.return_value = one
+    result.scalar_one.return_value = scalar_one
+    return result
+
+
+@pytest.fixture
+def as_caller(app: FastAPI, mock_db: AsyncMock):  # type: ignore[no-untyped-def]
+    from adam_api.dependencies.auth import get_caller
+    from adam_api.dependencies.db import get_db
+
+    def build(**kwargs) -> TestClient:  # type: ignore[no-untyped-def]
+        app.dependency_overrides[get_db] = lambda: mock_db
+        app.dependency_overrides[get_caller] = lambda: UserCaller(
+            matricule="MATX", organisation_id=1, **kwargs
+        )
+        mock_db.get.return_value = _make_project(id=1)
+        return TestClient(app, raise_server_exceptions=False)
+
+    return build
+
+
+_MUTATIONS = [
+    ("patch", "/projects/1", {"name": "X"}),
+    ("post", "/projects/1/users", {"user_id": 5}),
+    ("patch", "/projects/1/users/5", {"role": "OPERATOR"}),
+    ("delete", "/projects/1/users/5", None),
+]
+
+
+class TestProjectManagementRights:
+    @pytest.mark.parametrize("method,url,body", _MUTATIONS)
+    def test_operator_is_refused(self, as_caller, mock_db, method, url, body) -> None:  # type: ignore[no-untyped-def]
+        client = as_caller()
+        mock_db.execute.side_effect = [_res(first=None)]
+        response = getattr(client, method)(url, **({"json": body} if body else {}))
+        assert response.status_code == 403
+
+    @pytest.mark.parametrize("method,url,body", _MUTATIONS)
+    @pytest.mark.parametrize("platform_role", ["NOTA_ADMIN", "NOTA_SUPERVISOR"])
+    def test_transverse_roles_are_allowed(  # type: ignore[no-untyped-def]
+        self, as_caller, mock_db, method, url, body, platform_role
+    ) -> None:
+        client = as_caller(platform_role=platform_role, user_id=99)
+        mock_db.execute.side_effect = [_res(one=_make_up()), _res(one=_make_up())]
+        response = getattr(client, method)(url, **({"json": body} if body else {}))
+        assert response.status_code in (200, 201, 204)
+
+    def test_business_admin_of_the_project_is_allowed(self, as_caller, mock_db) -> None:  # type: ignore[no-untyped-def]
+        client = as_caller(user_id=99)
+        mock_db.execute.side_effect = [_res(first=(99,))]
+        assert client.patch("/projects/1", json={"name": "X"}).status_code == 200
+
+    def test_service_caller_is_refused(self, app: FastAPI, mock_db: AsyncMock) -> None:
+        from adam_api.dependencies.auth import ServiceCaller, get_caller
+        from adam_api.dependencies.db import get_db
+
+        app.dependency_overrides[get_db] = lambda: mock_db
+        app.dependency_overrides[get_caller] = lambda: ServiceCaller(service_name="worker")
+        client = TestClient(app, raise_server_exceptions=False)
+        assert client.patch("/projects/1", json={"name": "X"}).status_code == 403
+
+
+class TestNoSelfRemoval:
+    def test_admin_cannot_remove_themselves(self, as_caller, mock_db) -> None:  # type: ignore[no-untyped-def]
+        client = as_caller(platform_role="NOTA_ADMIN", user_id=5)
+        assert client.delete("/projects/1/users/5").status_code == 409
+
+    def test_admin_cannot_demote_themselves(self, as_caller, mock_db) -> None:  # type: ignore[no-untyped-def]
+        client = as_caller(platform_role="NOTA_ADMIN", user_id=5)
+        mock_db.execute.side_effect = [_res(one=_make_up(role="BUSINESS_ADMIN"))]
+        assert client.patch("/projects/1/users/5", json={"role": "OPERATOR"}).status_code == 409
+
+
+class TestLastBusinessAdmin:
+    def test_cannot_remove_the_last_one(self, as_caller, mock_db) -> None:  # type: ignore[no-untyped-def]
+        client = as_caller(platform_role="NOTA_ADMIN", user_id=99)
+        mock_db.execute.side_effect = [
+            _res(one=_make_up(role="BUSINESS_ADMIN")),
+            _res(scalar_one=0),
+        ]
+        assert client.delete("/projects/1/users/5").status_code == 409
+
+    def test_can_remove_one_of_several(self, as_caller, mock_db) -> None:  # type: ignore[no-untyped-def]
+        client = as_caller(platform_role="NOTA_ADMIN", user_id=99)
+        mock_db.execute.side_effect = [
+            _res(one=_make_up(role="BUSINESS_ADMIN")),
+            _res(scalar_one=1),
+        ]
+        assert client.delete("/projects/1/users/5").status_code == 204
+
+    def test_cannot_demote_the_last_one(self, as_caller, mock_db) -> None:  # type: ignore[no-untyped-def]
+        client = as_caller(platform_role="NOTA_ADMIN", user_id=99)
+        mock_db.execute.side_effect = [
+            _res(one=_make_up(role="BUSINESS_ADMIN")),
+            _res(scalar_one=0),
+        ]
+        assert client.patch("/projects/1/users/5", json={"role": "OPERATOR"}).status_code == 409
+
+    def test_an_operator_can_be_removed_without_the_check(self, as_caller, mock_db) -> None:  # type: ignore[no-untyped-def]
+        client = as_caller(platform_role="NOTA_ADMIN", user_id=99)
+        mock_db.execute.side_effect = [_res(one=_make_up(role="OPERATOR"))]
+        assert client.delete("/projects/1/users/5").status_code == 204

@@ -533,6 +533,13 @@ def test_cle_et_endpoint_obligatoires() -> None:
         MistralOcrConnector(api_key="cle", endpoint="")
 
 
+@pytest.mark.parametrize("endpoint", ["api.mistral.ai", "hote-interne:8443", "//hote"])
+def test_endpoint_sans_protocole_est_refuse_au_demarrage(endpoint: str) -> None:
+    """Sans protocole, httpx echoue a chaque page apres 3 tentatives et met le document en ERROR."""
+    with pytest.raises(ValueError, match="http://"):
+        MistralOcrConnector(api_key="cle", endpoint=endpoint)
+
+
 def test_factory_choisit_le_connecteur_selon_la_configuration() -> None:
     """CA-4 : le passage du mock a Mistral est un changement de configuration."""
     mock_settings = SimpleNamespace(ocr_mock_enabled=True, ocr_mock_confidence=0.9)
