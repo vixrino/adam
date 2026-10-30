@@ -10,7 +10,7 @@ humains. Par defaut, ce sont les documents du dataset dont au moins un champ
 porte une proposition humaine (field_proposal) : les autres n'apporteraient
 aucun champ au denominateur.
 
-Le paquet *_core (nota_core ou adam_core) est trouve sous src/ : le script
+Le paquet *_core est trouve sous src/ : le script
 tourne tel quel dans les deux depots, depuis la racine du depot (.env).
 
 Usage :

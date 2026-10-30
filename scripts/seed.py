@@ -1,7 +1,7 @@
 """
  scripts/seed.py
  ----------
- Seed unifie de la base ADAM.
+ Seed unifie de la base nota.
  Modes :
      - Par defaut : CERFA surendettement, schema seul. Champs et groupes
        repetables derives de adam_core.schemas.cerfa_v2, plus le lot qui va
@@ -36,6 +36,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from adam_core.core.config import CoreSettings
 from adam_core.utils.hashing import sha256_bytes
+from adam_core.db.base import SCHEMA_NAME
 from adam_core.db.session import create_tables, get_engine, init_engine
 from adam_core.enums.ocr import OcrProvider, StorageMode
 from adam_core.enums.roles import PlatformRole, ProjectRole
@@ -98,7 +99,7 @@ async def reset_db(session: AsyncSession) -> None:
         "organisation",
     ]
     for table in tables:
-        await session.execute(text(f'TRUNCATE TABLE "{table}" CASCADE'))
+        await session.execute(text(f'TRUNCATE TABLE "{SCHEMA_NAME}"."{table}" CASCADE'))
     await session.commit()
     print(" Tables videes")
 
@@ -261,7 +262,7 @@ HARDCODED_FIELD_SPECS = [
         1,
     ),
     ("demandeur", "Demandeur", "demandeur.civilite_m", "Monsieur", FieldValueType.BOOLEAN.value, 1),
-    ("demandeur", "Demandeur", "demandeur.civilite_mme", "Madame", FieldValueType.BOOLEAN.value, 1),
+    ("demandeur", "Demandeur", "demandeur.civilite_mme", "Mnotae", FieldValueType.BOOLEAN.value, 1),
     ("bien", "Bien", "bien.adresse", "Adresse du bien", FieldValueType.TEXT.value, 1),
     ("bien", "Bien", "bien.valeur", "Valeur du bien (EUR)", FieldValueType.NUMBER.value, 1),
     ("bien", "Bien", "bien.superficie", "Superficie (m2)", FieldValueType.NUMBER.value, 1),
@@ -485,7 +486,7 @@ CERFA_SCHEMA_VERSION = 2
 CERFA_DOSSIER: Dict[str, str] = {
     # Page 1
     "deposant.civilite_monsieur": "true",
-    "deposant.civilite_madame": "false",
+    "deposant.civilite_mnotae": "false",
     "deposant.nom_naissance": "MOREAU",
     "deposant.nom_usage": "MOREAU",
     "deposant.prenoms": "Julien Pierre",
@@ -494,7 +495,7 @@ CERFA_DOSSIER: Dict[str, str] = {
     "deposant.dept_naissance": "77",
     "deposant.pays_naissance": "France",
     "co_deposant.civilite_monsieur": "false",
-    "co_deposant.civilite_madame": "true",
+    "co_deposant.civilite_mnotae": "true",
     "co_deposant.nom_naissance": "LAMBERT",
     "co_deposant.nom_usage": "MOREAU",
     "co_deposant.prenoms": "Sophie Anne",
@@ -901,7 +902,7 @@ async def _seed_cerfa_real_pdf(session: AsyncSession, dataset: Dataset, pdf_path
     print(f"\n Document {document.id} depose, {page_count} page(s), aucun champ.")
     print(" Lancer les workers pour le rendu des pages puis l'OCR :")
     print("     python -m adam_worker.main")
-    print(f" Puis verifier ce que l'OCR a reellement rendu, palier par palier :")
+    print(" Puis verifier ce que l'OCR a reellement rendu, palier par palier :")
     print(f"     python scripts/diag_prepopulation.py {document.id}")
 
 
@@ -1029,7 +1030,7 @@ async def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Seed ADAM database")
+    parser = argparse.ArgumentParser(description="Seed nota database")
     parser.add_argument("--reset", action="store_true", help="Vide les tables avant de seeder")
     parser.add_argument(
         "--json", default=None, help="Chemin vers un fichier JSON format formulaire v0.3"

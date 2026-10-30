@@ -36,11 +36,11 @@ import httpx  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 try:  # les deux miroirs du projet ne portent pas le meme nom de paquet
-    from nota_api.core.config import settings
-    from nota_core.core.config import get_core_settings
-    from nota_core.db.session import get_async_session, init_engine
-    from nota_core.models import Document, DocumentField, FieldSpec
-    from nota_worker.connectors import connector_from_settings
+    from adam_api.core.config import settings
+    from adam_core.core.config import get_core_settings
+    from adam_core.db.session import get_async_session, init_engine
+    from adam_core.models import Document, DocumentField, FieldSpec
+    from adam_worker.connectors import connector_from_settings
 except ImportError:  # pragma: no cover
     from adam_api.core.config import settings
     from adam_core.core.config import get_core_settings

@@ -363,9 +363,7 @@ async def _case_ocr_indisponible(fixture: Fixture, api: ApiClient) -> int:
     print(SEPARATOR)
     print(" OCR indisponible")
     print(SEPARATOR)
-    status, fields = await run_case(
-        fixture, api, "indisponible", MockOcrConnector(available=False)
-    )
+    status, fields = await run_case(fixture, api, "indisponible", MockOcrConnector(available=False))
     failures += check(
         "document en IN_PROGRESS malgre tout",
         status == DocumentStatus.IN_PROGRESS.value,
