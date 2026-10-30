@@ -8,7 +8,7 @@ d'ici.
 Confidentialite : la valeur selon la sensibilite du champ
 ----------------------------------------------------------
 Les documents portent des IBAN et des NIR, concentres sur une minorite de
-champs. La regle, appliquee par le worker et portee par field_spec.sensitive :
+champs. La regle, appliquee par le worker et portee par field_spec.is_sensitive :
 
     champ non sensible   expected_value et observed_value en clair — c'est ce
                          qui rend le debogage reel possible (« qu'a lu le
@@ -31,7 +31,7 @@ evaluation_report, qui ne reference pas le document.
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -52,8 +52,6 @@ from adam_core.db.scoping import (
     member_test_execution_ids,
     org_test_execution_ids,
 )
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
@@ -98,10 +96,10 @@ class ComparisonResult(OrganisationScoped, ProjectScoped, Base):
     #: hesitant.
     ocr_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
-    #: Renseignees uniquement si field_spec.sensitive est faux.
+    #: Renseignees uniquement si field_spec.is_sensitive est faux.
     expected_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     observed_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    #: Renseignees uniquement si field_spec.sensitive est vrai.
+    #: Renseignees uniquement si field_spec.is_sensitive est vrai.
     observed_hmac: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     edit_distance: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 

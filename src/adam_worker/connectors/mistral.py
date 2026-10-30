@@ -152,6 +152,11 @@ class MistralOcrConnector(BaseOcrConnector):
             raise ValueError("cle d'API Mistral absente : renseigner MISTRAL_API_KEY")
         if not endpoint:
             raise ValueError("endpoint Mistral absent : renseigner MISTRAL_OCR_ENDPOINT")
+        if not endpoint.lower().startswith(("http://", "https://")):
+            raise ValueError(
+                "MISTRAL_OCR_ENDPOINT doit commencer par http:// ou https:// "
+                "(ex : https://hote:port, sans /v1 : le connecteur l'ajoute)"
+            )
         self.endpoint = endpoint.rstrip("/")
         self.model = model
         self.annotation_model = annotation_model

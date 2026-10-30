@@ -11,9 +11,8 @@ mise au point, sans reveiller les autres.
 
     python -m adam_worker.prepopulation_main
 
-Attention : ce worker ecrit les champs par HTTP, il lui faut donc une API
-joignable. Pour verifier son comportement sans lancer de serveur, preferer
-scripts/test_prepopulation_worker.py, qui parle a l'application en memoire.
+Ce worker lit et ecrit en base, comme les autres : aucune API n'a besoin d'etre
+joignable.
 
 echo est force a False : avec APP_ENV=dev, l'echo SQLAlchemy imprime chaque
 requete et noie les lignes du cycle.
@@ -24,7 +23,7 @@ from __future__ import annotations
 import asyncio
 
 from adam_core.core.config import get_core_settings
-from adam_core.db.session import init_engine
+from adam_core.db.session import ensure_database, init_engine
 from adam_core.utils.logging import setup_logging
 from adam_worker.prepopulation.poller import PrepopulationWorker
 
@@ -33,6 +32,7 @@ async def _main() -> None:
     core = get_core_settings()
     setup_logging(core)
     init_engine(core.async_database_url, echo=False)
+    await ensure_database()
 
     await PrepopulationWorker().run_forever()
 

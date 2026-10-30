@@ -34,17 +34,11 @@ def page_image_relative_path(file_id: int, page_number: int) -> Path:
 
 
 def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
-    """Convertit chaque page de `pdf_path` en PNG dans `output_dir`.
-
-    Retourne les chemins ecrits, dans l'ordre des pages (1-indexe, noms
-    zero-padded pour un tri lexicographique correct). Leve PdfRenderError
-    si le PDF est corrompu ou si une page ne peut pas etre rendue ; toute
-    image deja ecrite pour ce PDF est alors supprimee (pas d'etat partiel).
-    """
+    """Convertit chaque page de `pdf_path` en PNG dans `output_dir`."""
     output_dir.mkdir(parents=True, exist_ok=True)
     written: List[Path] = []
     try:
-        with pymupdf.open(str(pdf_path)) as doc:
+        with pymupdf.open(str(pdf_path)) as doc:  # type: ignore[no-untyped-call]
             if doc.page_count == 0:
                 raise PdfRenderError(f"PDF sans page ({pdf_path})")
             for page_number in range(1, doc.page_count + 1):
@@ -70,12 +64,7 @@ def render_pages_to_png(pdf_path: Path, output_dir: Path) -> List[Path]:
 
 
 def reorder_pdf(source: Path, destination: Path, ordre: Sequence[int]) -> None:
-    """Ecrit dans `destination` les pages de `source` dans l'ordre `ordre`.
 
-    `ordre[i]` est le numero (1-indexe) de la page source qui devient la page
-    i + 1. L'ecriture passe par un fichier temporaire renomme a la fin : un
-    echec ne laisse jamais de PDF tronque a l'emplacement final.
-    """
     temporaire = destination.with_name(destination.name + ".tmp")
     try:
         with pymupdf.open(str(source)) as doc:

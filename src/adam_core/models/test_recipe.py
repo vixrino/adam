@@ -1,29 +1,10 @@
-"""Table TEST_RECIPE : recette d'evaluation du moteur OCR.
-
-Une recette designe un perimetre fige de documents d'un dataset, contre lequel
-les executions successives comparent la sortie du moteur. La verite terrain
-n'est PAS copiee ici : elle vit dans document_field, restreinte aux champs
-portant au moins une field_proposal — la seule preuve qu'un humain a regarde le
-champ, l'IHM envoyant une proposition aussi bien pour confirmer que pour
-corriger. Copier 120 000 valeurs (dont des IBAN et des NIR) hors de leur
-contexte rendrait le droit a l'effacement inapplicable ; referencer laisse la
-suppression d'un document faire son travail.
-
-Le perimetre est porte par ``document_ids`` plutot que par une table de
-liaison : 200 entiers dans un ARRAY, fige au verrouillage, et une table de
-moins a scoper, migrer et tester. Si un document du perimetre est supprime, le
-worker le constate au lancement et le signale — le tableau reste la reference
-de ce qui ETAIT attendu.
-
-Deux passages ne sont comparables que si la recette n'a pas bouge entre eux :
-d'ou le statut LOCKED, prerequis de toute execution.
-"""
+"""Table TEST_RECIPE : recette d'evaluation du moteur OCR."""
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from adam_core.db.base import Base
@@ -35,8 +16,6 @@ from adam_core.db.scoping import (
 )
 from adam_core.enums.status import TestRecipeStatus
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
 
@@ -44,14 +23,9 @@ if TYPE_CHECKING:
 class TestRecipe(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "test_recipe"
 
-    # pytest collecte les classes prefixees Test* importees dans un module de
-    # test ; ce marqueur l'en dissuade sans renommer la table du cahier des
-    # charges.
     __test__ = False
 
-    __table_args__ = (
-        UniqueConstraint("dataset_id", "name", name="uq_test_recipe_dataset_name"),
-    )
+    __table_args__ = (UniqueConstraint("dataset_id", "name", name="uq_test_recipe_dataset_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     dataset_id: Mapped[int] = mapped_column(
@@ -69,13 +43,6 @@ class TestRecipe(OrganisationScoped, ProjectScoped, Base):
         nullable=False,
         default=TestRecipeStatus.DRAFT.value,
         comment="Cycle de vie : DRAFT, LOCKED, ARCHIVED",
-    )
-    #: Configuration du test, figee avec la recette : deux passages ne se
-    #: comparent que sous la meme. {"score_minimal": 0.9, "seuils_par_champ":
-    #: {"gestion_budget.iban": 0.0}, "champs_exclus": ["certification."]}.
-    #: Le verdict reussi / echoue se calcule a la lecture, jamais stocke.
-    config: Mapped[Dict[str, Any]] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default="{}"
     )
     locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by_user_id: Mapped[int] = mapped_column(

@@ -26,7 +26,9 @@ async def try_resolve(document_id: int, dataset_id: int) -> dict[str, Any]:
         async with get_async_session() as db:
             return await _resolve(document_id, dataset_id, db)
     except Exception:
-        logger.exception("try_resolve echoue [document_id=%s dataset_id=%s]", document_id, dataset_id)
+        logger.exception(
+            "try_resolve echoue [document_id=%s dataset_id=%s]", document_id, dataset_id
+        )
         return {"error": "try_resolve echoue", "document_id": document_id}
 
 
@@ -100,7 +102,10 @@ async def _resolve(document_id: int, dataset_id: int, db: AsyncSession) -> dict[
     by_field: dict[int, list[FieldProposal]] = {}
     for p in proposals:
         by_field.setdefault(p.document_field_id, []).append(p)
-    all_resolved = all(_apply_vote(df, by_field.get(df.id, [])) for df in fields)
+    # Chaque champ doit etre vote : pas de `all(generateur)`, qui s'arrete au premier champ en
+    # litige et laisserait tous les suivants PENDING, sans consensus_reached.
+    votes = [_apply_vote(df, by_field.get(df.id, [])) for df in fields]
+    all_resolved = all(votes)
     disputed_count = sum(1 for df in fields if df.status == DocumentFieldStatus.DISPUTED.value)
     if all_resolved:
         document.status = DocumentStatus.VALIDATED.value

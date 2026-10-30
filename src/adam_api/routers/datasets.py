@@ -3,20 +3,30 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import APIRouter, Depends
-from fastapi import File as UploadField
-from fastapi import UploadFile
-from pydantic import BaseModel, Field
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File as UploadField, HTTPException, Response, UploadFile
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.functions import count
 
 from adam_api.core.config import settings
+from adam_api.dependencies.auth import Caller, UserCaller, get_caller
 from adam_api.dependencies.db import get_db
 from adam_api.services.ingestion import ingest_pdf, looks_like_pdf
 from adam_core.enums.ocr import OcrProvider
-from adam_core.enums.status import DatasetStatus, DocumentStatus
-from adam_core.models import Dataset, DocSchema, Document, FieldSpec, Organisation, Project
+from adam_core.enums.roles import CROSS_ORGANISATION_ROLE_VALUES, ProjectRole
+from adam_core.enums.status import DatasetStatus, DocumentStatus, JobState
+from adam_core.models import (
+    Dataset,
+    DocSchema,
+    Document,
+    FieldSpec,
+    Job,
+    Organisation,
+    Project,
+    User,
+    UserProject,
+)
 from adam_core.schemas.responses import (
     DatasetOut,
     DatasetStatsOut,
@@ -53,6 +63,7 @@ class DatasetPatch(BaseModel):
     ocr_job_enabled: Optional[bool] = None
     expected_page_count: Optional[int] = Field(default=None, ge=1)
     configs: Optional[Dict[str, Any]] = None
+    schema_id: Optional[int] = None
 
 
 #: Cycle de vie d'un dataset : ce qu'on peut atteindre depuis chaque etat.
@@ -77,13 +88,15 @@ _ALLOWED_TRANSITIONS: Dict[str, Set[str]] = {
 }
 
 
-async def _check_ready_for_activation(dataset: Dataset, db: AsyncSession) -> None:
+async def _check_ready_for_activation(dataset: Dataset, db: AsyncSession) -> DocSchema:
     """Refuse l'activation d'un dataset dont le schema ne decrit aucun champ.
 
     Activer, c'est ouvrir le lot aux operateurs et figer le schema. Un schema
     sans FIELD_SPEC leur presenterait des documents sans rien a annoter, et le
     verrou interdirait ensuite d'y ajouter les champs manquants : le lot serait
     inutilisable et irreparable en meme temps.
+
+    Rend le schema, que l'appelant verrouille une fois l'activation acquise.
     """
     schema = await db.get(DocSchema, dataset.schema_id)
     if schema is None:
@@ -98,6 +111,7 @@ async def _check_ready_for_activation(dataset: Dataset, db: AsyncSession) -> Non
             f"Le schema '{schema.name}' ne declare aucun champ : "
             "activer le dataset le figerait sans rien a annoter"
         )
+    return schema
 
 
 async def _apply_status_transition(dataset: Dataset, target: str, db: AsyncSession) -> None:
@@ -116,7 +130,9 @@ async def _apply_status_transition(dataset: Dataset, target: str, db: AsyncSessi
             f"transition {dataset.status} -> {target} interdite",
         )
     if target == DatasetStatus.ACTIVE.value:
-        await _check_ready_for_activation(dataset, db)
+        # Le verrou implicite (_check_schema_not_locked) devient explicite : le
+        # `locked` rendu par l'API dit la verite, sans attendre un 423.
+        (await _check_ready_for_activation(dataset, db)).locked = True
     dataset.status = target
 
 
@@ -177,12 +193,27 @@ async def patch_dataset(
     row = await db.get(Dataset, dataset_id)
     if not row:
         raise_not_found(Dataset)
-    fields = body.model_dump(exclude_unset=True)
-    # Le statut passe par le cycle de vie, comme sur la route dediee. Le poser
-    # ici par setattr ouvrait une porte derobee : la meme valeur, refusee sur
-    # /status, etait acceptee sur PATCH /datasets/{id}.
-    target_status = fields.pop("status", None)
-    for key, val in fields.items():
+
+    updates = body.model_dump(exclude_unset=True)
+    if "schema_id" in updates and updates["schema_id"] != row.schema_id:
+        if row.status != DatasetStatus.DRAFT.value:
+            raise_conflict(
+                Dataset,
+                "Le schema ne peut changer que sur un dataset DRAFT "
+                f"(status={row.status}) : un dataset actif fige son schema",
+            )
+        new_schema = await db.get(DocSchema, updates["schema_id"])
+        if not new_schema:
+            raise_not_found(DocSchema)
+        existing_documents = (
+            await db.execute(select(count(Document.id)).where(Document.dataset_id == dataset_id))
+        ).scalar_one()
+        if existing_documents > 0:
+            raise_unprocessable(
+                "Impossible de changer le schema d'un dataset contenant deja des documents"
+            )
+    target_status = updates.pop("status", None)
+    for key, val in updates.items():
         setattr(row, key, val)
     if target_status is not None:
         await _apply_status_transition(row, target_status, db)
@@ -194,6 +225,8 @@ async def patch_dataset(
 async def patch_dataset_status(
     dataset_id: int, status: str, db: AsyncSession = Depends(get_db)
 ) -> Dataset:
+    if status not in {s.value for s in DatasetStatus}:
+        raise_unprocessable(f"Statut invalide: {status}")
     row = await db.get(Dataset, dataset_id)
     if not row:
         raise_not_found(Dataset)
@@ -260,4 +293,85 @@ async def ingest_documents(
         rejected=sum(1 for r in items if r.status == "rejected"),
         in_error=sum(1 for r in items if r.status == "error"),
         results=items,
+    )
+
+
+async def _require_document_remover(
+    dataset_id: int,
+    caller: Caller = Depends(get_caller),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Reserve le retrait d'un document aux administrateurs.
+
+    Administrateur Metier (BUSINESS_ADMIN) du projet du dataset, ou role de plateforme
+    transverse : Administrateur et Superviseur NOTA. Etre BUSINESS_ADMIN d'un autre projet,
+    meme de la meme organisation, ne suffit pas. Les services machine sont refuses,
+    contrairement a la creation de projet : un worker n'a aucune raison de retirer un
+    document, et la cle partagee ne doit pas l'autoriser.
+    """
+    dataset = await db.get(Dataset, dataset_id)
+    if dataset is None:
+        raise_not_found(Dataset)
+    if isinstance(caller, UserCaller):
+        if caller.platform_role in CROSS_ORGANISATION_ROLE_VALUES:
+            return
+        role = await db.scalar(
+            select(UserProject.role)
+            .join(User, User.id == UserProject.user_id)
+            .where(
+                UserProject.project_id == dataset.project_id,
+                func.upper(User.matricule) == caller.matricule.upper(),
+            )
+        )
+        if role == ProjectRole.BUSINESS_ADMIN.value:
+            return
+    raise HTTPException(
+        status_code=403,
+        detail="Retrait de document reserve aux administrateurs du projet",
+    )
+
+
+@router.delete(
+    "/{dataset_id}/documents/{document_id}",
+    status_code=204,
+    response_model=None,
+    response_class=Response,
+    dependencies=[Depends(_require_document_remover)],
+)
+async def remove_document(
+    dataset_id: int,
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Retire un document du dataset (symetrique de l'ingestion).
+
+    Suppression definitive, sans soft delete comme les autres : les champs, les jobs et les
+    resultats OCR partent avec le document (ON DELETE CASCADE, declare par le modele).
+    Le fichier et son contenu sur le PVC restent, la purge relevant de la verification des
+    references sur file_id. 403 hors administrateurs, 404 si le document n'appartient pas
+    a ce dataset, 409 s'il est exporte ou si un job a deja ete soumis.
+    """
+    document = await db.get(Document, document_id)
+    if document is None or document.dataset_id != dataset_id:
+        raise_not_found(Document)
+    if document.status == DocumentStatus.EXPORTED.value:
+        raise_conflict(Document, "Un document exporte ne peut pas etre retire du dataset")
+    # Un job soumis est du travail rendu, et il compte dans le consensus : on ne retire un
+    # document que tant qu'aucun operateur n'a soumis. Les jobs non soumis partent avec lui.
+    submitted: int = (
+        await db.execute(
+            select(count(Job.id))
+            .where(Job.document_id == document_id)
+            .where(Job.state == JobState.SUBMITTED.value)
+        )
+    ).scalar_one() or 0
+    if submitted:
+        raise_conflict(
+            Document,
+            f"{submitted} job(s) soumis : le document ne peut plus etre retire du dataset",
+        )
+    await db.delete(document)
+    await db.flush()
+    logger.info(
+        "Document retire du dataset [dataset_id=%s document_id=%s]", dataset_id, document_id
     )

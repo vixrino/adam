@@ -1,7 +1,9 @@
-"""Organisations
-GET : lecture simple
+"""
+Organisations
+Cree une fois par les administrateurs techniques
+GET  : lecture simple
 POST : creation d'une org, archivage et restauration
-PATCH : mise a jour Org name
+PATCH: mise a jour Org name
 """
 
 from datetime import datetime, timezone
@@ -15,7 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from adam_api.dependencies.db import get_db
 from adam_core.models import Organisation, User
-from adam_core.schemas.responses import OrgUserOut, OrganisationOut, UserProjectRefOut
+from adam_core.schemas.responses import OrganisationOut, OrgUserOut, UserProjectRefOut
 from adam_core.utils.exceptions import (
     raise_already_archived,
     raise_conflict,
@@ -91,7 +93,9 @@ async def list_organisation_users(
             full_name=r.full_name,
             matricule=r.matricule,
             status=r.status,
-            projects=[UserProjectRefOut(project_id=up.project_id, role=up.role) for up in r.user_projects],
+            projects=[
+                UserProjectRefOut(project_id=up.project_id, role=up.role) for up in r.user_projects
+            ],
         )
         for r in rows
     ]

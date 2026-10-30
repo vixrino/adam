@@ -1,16 +1,16 @@
 """Worker de pre-alimentation OCR : polling des documents INGESTED.
 
 Un document ingere porte ses images mais aucun champ. Ce worker les lui donne :
-il soumet les images a l'OCR, recupere le schema attendu via le dataset, fusionne
-les deux, cree les DOCUMENT_FIELD par l'API, et fait passer le document en
-IN_PROGRESS.
+il soumet les images a l'OCR, lit le schema attendu via le dataset, fusionne
+les deux, cree les DOCUMENT_FIELD, et fait passer le document en IN_PROGRESS.
 
-Ce qui passe par la base et ce qui passe par HTTP
--------------------------------------------------
-Le polling et la transition de statut se font en base directe, comme les autres
-workers. La lecture du schema et la creation des champs passent par l'API : la
-validation de coherence field_spec/schema et la contrainte d'unicite y vivent
-deja, les dupliquer ici serait le debut d'une divergence.
+Tout passe par la base
+----------------------
+Le worker n'appelle pas l'API : le middleware exa-pie exige un JWT sur chaque
+route, que le X-Internal-Token d'un service ne fournit pas (400 "token not
+found"). La creation des champs reutilise adam_api.services.document_fields, ou
+vivent la validation de coherence field_spec/schema et la contrainte d'unicite :
+une seule implementation, appelee par la route comme par le worker.
 
 Isolation des erreurs
 ---------------------
@@ -52,15 +52,19 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from sqlalchemy import case, func, literal, select, update
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import selectinload
 
-from adam_api.core.config import API_PREFIX, settings
+from adam_api.core.config import settings
+from adam_api.exceptions.document_fields import FieldSpecMismatch
+from adam_api.services import document_fields
 from adam_core.db.session import get_async_session
 from adam_core.enums.status import DocumentStatus
-from adam_core.models import Document, File
+from adam_core.models import DocSchema, Dataset, Document, File
 from adam_core.schemas.interface_contract import SmartdocDocument
 from adam_core.utils.pdf_render import PdfRenderError, reorder_pdf
 from adam_worker.base_worker import BaseWorker
@@ -71,7 +75,6 @@ from adam_worker.connectors.base import (
     OcrConnectorError,
 )
 from adam_worker.connectors.modele import ModeleDocument
-from adam_worker.prepopulation.api_client import ApiClient, ApiClientError
 from adam_worker.prepopulation.merger import count_detected, merge
 
 _BATCH_SIZE = 20
@@ -81,41 +84,16 @@ _DEFAULT_POLL_INTERVAL = 30.0
 def default_pages_dir(file_id: int) -> Path:
     """Repertoire des images de page, relatif a la racine du PVC.
 
-    La convention est celle du pipeline d'ingestion : file_id/pages/, que
-    utils.pdf_render definit aussi.
+    La convention est celle du pipeline d'ingestion : file_id/pages/. Elle est
+    redefinie ici plutot qu'importee de utils.pdf_render, ou elle vit aussi :
+    ce module la importe PyMuPDF, et faire dependre la pre-alimentation d'un
+    moteur de rendu PDF pour une concatenation de chemin serait une dette
+    gratuite — le worker ne rend aucune image, il les lit.
 
     Le resolveur est injectable via `pages_dir` : si la convention change, ou
     differe entre deux deploiements, elle se surcharge sans toucher au worker.
     """
     return Path(str(file_id)) / "pages"
-
-
-#: Adresses d'ecoute qui ne designent aucun hote joignable. `0.0.0.0` et `::`
-#: signifient "toutes les interfaces locales" : elles disent a un serveur ou se
-#: mettre, pas a un client ou aller.
-#: nosec B104 : bandit y voit une ecoute sur toutes les interfaces, mais rien
-#: n'ecoute ici. Ces valeurs sont reconnues pour etre remplacees par 127.0.0.1
-#: dans _api_origin, ce qui est precisement l'inverse d'un bind.
-_WILDCARD_HOSTS = {"0.0.0.0", "::", "[::]", ""}  # nosec B104
-
-
-def _api_origin() -> str:
-    """Origine HTTP de l'API, telle qu'un client doit la composer.
-
-    api_host est l'adresse d'ECOUTE de l'API. La reutiliser telle quelle pour un
-    appel sortant marche tant qu'elle vaut un hote reel, et casse des qu'elle
-    vaut le joker d'ecoute : le worker tente alors une connexion vers 0.0.0.0,
-    que la pile reseau refuse — ECONNREFUSED sous Windows, comportement variable
-    ailleurs.
-
-    Le joker est donc rabattu sur localhost, qui est ce qu'il designe du point de
-    vue d'un processus tournant sur la meme machine. Un deploiement ou l'API vit
-    ailleurs renseigne api_host avec son nom d'hote, et rien ne change ici.
-    """
-    host = settings.api_host.strip()
-    if host in _WILDCARD_HOSTS:
-        host = "127.0.0.1"
-    return f"http://{host}:{settings.api_port}"
 
 
 class PrepopulationError(Exception):
@@ -137,7 +115,6 @@ class PrepopulationWorker(BaseWorker):
     def __init__(
         self,
         connector: Optional[BaseOcrConnector] = None,
-        api_client: Optional[ApiClient] = None,
         *,
         batch_size: int = _BATCH_SIZE,
         pvc_root: Optional[Path] = None,
@@ -146,19 +123,6 @@ class PrepopulationWorker(BaseWorker):
     ) -> None:
         super().__init__()
         self.connector = connector or connector_from_settings(settings)
-        self.api_client = api_client or ApiClient(
-            # API_PREFIX est celui que main.py monte : sans lui, chaque appel
-            # part en 404, que le worker traduirait en documents ERROR sans
-            # que la vraie cause apparaisse nulle part.
-            base_url=f"{_api_origin()}{API_PREFIX}",
-            # Sans cette cle, aucun en-tete d'authentification n'est emis et
-            # get_caller rejette l'appel en 401 : le worker mettait alors CHAQUE
-            # document en ERROR avec « schema injoignable », en production
-            # uniquement — le script de test surcharge get_caller par un
-            # ServiceCaller et ne voyait donc rien.
-            api_key=settings.internal_api_key,
-            timeout_seconds=float(settings.ocr_timeout_seconds),
-        )
         self.batch_size = batch_size
         self.pvc_root = pvc_root or Path(settings.pvc_mount_path)
         self.pages_dir = pages_dir
@@ -177,10 +141,16 @@ class PrepopulationWorker(BaseWorker):
         # detail qui compte. Annoncer le decompte n'ajoutait rien devant N lignes
         # qui le disent.
         self.logger.debug("%s document(s) INGESTED a pre-alimenter", len(candidates))
+        cycle_started = perf_counter()
+        pre_alimentes = 0
+        en_erreur = 0
+        champs_crees = 0
         for document_id in candidates:
             try:
-                await self._process_one(document_id)
+                champs_crees += await self._process_one(document_id)
+                pre_alimentes += 1
             except PrepopulationError as exc:
+                en_erreur += 1
                 # Echec attendu et deja diagnostique : on sort le document de la
                 # file plutot que de le laisser repoller sans fin.
                 self.logger.error(
@@ -191,10 +161,20 @@ class PrepopulationWorker(BaseWorker):
                 await self._set_error(document_id, {"message": str(exc), **exc.details})
             except Exception:  # pylint: disable=broad-exception-caught
                 # Filet : un imprevu ne doit pas interrompre le lot.
+                en_erreur += 1
                 self.logger.exception("echec inattendu [document_id=%s]", document_id)
                 await self._set_error(
                     document_id, {"message": "echec inattendu, voir les logs du worker"}
                 )
+        # Bilan du cycle : INGESTED -> IN_PROGRESS (champs crees) ou ERROR (motif en metadata).
+        self.logger.info(
+            "cycle termine [documents=%s pre_alimentes=%s error=%s champs_crees=%s duree=%.2fs]",
+            len(candidates),
+            pre_alimentes,
+            en_erreur,
+            champs_crees,
+            perf_counter() - cycle_started,
+        )
 
     async def _fetch_candidates(self) -> List[int]:
         """Documents prets, les plus anciens d'abord."""
@@ -215,7 +195,8 @@ class PrepopulationWorker(BaseWorker):
 
     # -- Traitement d'un document -------------------------------------------
 
-    async def _process_one(self, document_id: int) -> None:
+    async def _process_one(self, document_id: int) -> int:
+        """Pre-alimente un document ; retourne le nombre de champs crees."""
         dataset_id, file_id, file_path = await self._load_context(document_id)
         images = self._page_images(file_id)
 
@@ -233,10 +214,7 @@ class PrepopulationWorker(BaseWorker):
         if not payloads:
             raise PrepopulationError(f"schema du dataset {dataset_id} sans field_spec")
 
-        try:
-            result = await self.api_client.create_fields_bulk(document_id, payloads)
-        except ApiClientError as exc:
-            raise PrepopulationError(f"creation des champs refusee : {exc}") from exc
+        result = await self._create_fields(document_id, payloads)
 
         await self._set_status(document_id, DocumentStatus.IN_PROGRESS)
         self.logger.info(
@@ -246,10 +224,11 @@ class PrepopulationWorker(BaseWorker):
             dataset_id,
             len(payloads),
             count_detected(payloads),
-            len(result.get("created", [])),
-            len(result.get("skipped", [])),
+            len(result.created),
+            len(result.skipped),
             "oui" if ocr is not None else "non",
         )
+        return len(result.created)
 
     async def _load_context(self, document_id: int) -> Tuple[int, int, str]:
         async with get_async_session() as db:
@@ -298,12 +277,44 @@ class PrepopulationWorker(BaseWorker):
         return ocr
 
     async def _load_schema(self, dataset_id: int, document_id: int) -> Dict[str, Any]:
-        try:
-            return await self.api_client.get_dataset_schema(dataset_id)
-        except ApiClientError as exc:
-            raise PrepopulationError(
-                f"schema injoignable pour le document {document_id} : {exc}"
-            ) from exc
+        """Schema du dataset sous la forme que lisent le modele OCR et le merger."""
+        async with get_async_session() as db:
+            schema = (
+                await db.execute(
+                    select(DocSchema)
+                    .join(Dataset, Dataset.schema_id == DocSchema.id)
+                    .where(Dataset.id == dataset_id)
+                    .options(selectinload(DocSchema.field_specs), selectinload(DocSchema.pages))
+                )
+            ).scalar_one_or_none()
+            if schema is None:
+                raise PrepopulationError(
+                    f"schema introuvable pour le document {document_id} (dataset {dataset_id})"
+                )
+            return {
+                "name": schema.name,
+                "pages": [
+                    {"page_number": p.page_number, "description": p.description}
+                    for p in schema.pages
+                ],
+                "field_specs": [
+                    {c.name: getattr(fs, c.name) for c in fs.__table__.columns}
+                    for fs in sorted(schema.field_specs, key=lambda x: (x.page, x.display_order))
+                ],
+            }
+
+    async def _create_fields(
+        self, document_id: int, payloads: List[Dict[str, Any]]
+    ) -> document_fields.BulkOutcome:
+        """Cree les champs avec le service de l'API, dans la transaction du worker."""
+        async with get_async_session() as db:
+            document = await document_fields.get_document_or_none(db, document_id)
+            if document is None:
+                raise PrepopulationError("document introuvable")
+            try:
+                return await document_fields.create_bulk(db, document, payloads)
+            except FieldSpecMismatch as exc:
+                raise PrepopulationError(f"creation des champs refusee : {exc}") from exc
 
     async def _set_status(self, document_id: int, status: DocumentStatus) -> None:
         async with get_async_session() as db:

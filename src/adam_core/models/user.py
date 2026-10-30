@@ -1,4 +1,5 @@
-"""Table USER : utilisateur de la plateforme ADAM.
+"""
+Table USER : utilisateur de la plateforme NOTA.
 
 L'accès aux projets et les rôles métier associés sont gérés via USER_PROJECT.
 La colonne ``platform_role`` porte, elle, le rôle transverse éventuel
@@ -11,6 +12,11 @@ from typing import Optional
 from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+created_at: Mapped[datetime] = mapped_column(
+    DateTime(timezone=True),
+    nullable=False,
+    server_default=func.now(),
+)
 from adam_core.db.base import Base
 from adam_core.db.scoping import OrganisationScoped
 from adam_core.enums.status import UserStatus
@@ -29,9 +35,6 @@ class User(OrganisationScoped, Base):
     email: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String, nullable=False)
     matricule: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
-    # Role transverse (PlatformRole), NULL pour un utilisateur purement metier.
-    # Renseigne, il fait franchir la frontiere d'organisation : cf. la docstring
-    # de adam_api.dependencies.db.
     platform_role: Mapped[Optional[str]] = mapped_column(
         String,
         nullable=True,
@@ -47,20 +50,17 @@ class User(OrganisationScoped, Base):
         nullable=False,
         server_default=func.now(),
     )
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
     )
-    last_login_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-    deleted_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     organisation: Mapped["Organisation"] = relationship(  # type: ignore[name-defined]

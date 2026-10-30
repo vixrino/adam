@@ -7,8 +7,8 @@ boucle, pour qu'un worker ne meure jamais sur un incident isole.
 
 from __future__ import annotations
 
-import asyncio
 from abc import ABC, abstractmethod
+import asyncio
 
 from adam_core.utils.logging import get_logger
 
@@ -35,7 +35,6 @@ class BaseWorker(ABC):
                 await self.poll()
             except Exception:
                 self.logger.exception("%s: echec du cycle de polling", self.__class__.__name__)
-            # on ne dort pas si un arret a ete demande pendant le cycle
             if self._is_running:
                 await asyncio.sleep(self.poll_interval_seconds)
         self.logger.info("%s arrete proprement", self.__class__.__name__)

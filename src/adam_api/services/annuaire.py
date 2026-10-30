@@ -36,8 +36,8 @@ ne justifient pas un pool.
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass
+import time
 from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 from adam_core.utils.logging import get_logger
@@ -156,7 +156,9 @@ def personne_depuis_attributs(attributs: Dict[str, Any]) -> Optional[PersonneAnn
     if matricule is None:
         return None
     prenom, nom = valeur("givenName"), valeur("sn")
-    nom_affiche = valeur("displayName") or " ".join(p for p in (prenom, nom) if p) or matricule
+    # « Prenom NOM » depuis givenName/sn : displayName peut porter des mentions
+    # (service, prestataire...) qui n'ont rien a faire dans l'IHM.
+    nom_affiche = " ".join(p for p in (prenom, nom and nom.upper()) if p) or matricule
     return PersonneAnnuaire(
         matricule=matricule,
         nom_affiche=nom_affiche,

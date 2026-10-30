@@ -29,7 +29,6 @@ def connector_from_settings(settings: "Settings") -> BaseOcrConnector:
         api_key=settings.mistral_api_key,
         endpoint=settings.mistral_ocr_endpoint,
         model=settings.mistral_ocr_model,
-        annotation_model=settings.mistral_annotation_model,
         timeout_seconds=float(settings.ocr_timeout_seconds),
         ca_bundle=settings.mistral_ca_bundle or None,
     )

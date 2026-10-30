@@ -14,11 +14,11 @@ donc l'espace /documents. C'est voulu : du point de vue de l'appelant, les
 champs d'un document sont une sous-ressource du document, quel que soit le
 fichier ou le code vit.
 
-Pourquoi passer par HTTP plutot que par l'ORM
-----------------------------------------------
-PrepopulationWorker pourrait ecrire directement en base. Le faire passer par ces
-endpoints centralise ici la coherence field_spec/schema et la contrainte
-d'unicite, au lieu de les dupliquer dans chaque service qui creerait des champs.
+Le worker n'utilise pas ces routes
+-----------------------------------
+PrepopulationWorker appelle directement services.document_fields : exa-pie exige
+un JWT sur chaque route, que le token d'un service ne fournit pas. La coherence
+field_spec/schema et l'unicite vivent dans le service, donc une seule fois.
 """
 
 from __future__ import annotations
@@ -111,11 +111,6 @@ async def create_document_fields_bulk(
 
     Un field_spec_id hors schema rejette le lot entier en 422, pour ne pas
     laisser un document a moitie pre-alimente.
-
-    201 quand au moins un champ est cree, 200 sinon. Un rejeu integral annoncant
-    Created, alors qu'il n'a rien cree, dit le contraire de ce que porte son
-    corps de reponse ; la difference se lit dans un onglet reseau ou un journal
-    d'acces, la ou personne n'ouvrira le corps.
     """
     document = await _load_document(db, document_id)
     payloads = [item.model_dump() for item in body.fields]

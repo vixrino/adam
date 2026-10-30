@@ -26,13 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from adam_core.schemas.interface_contract import SmartdocDocument
-from adam_worker.benchmark.comparateur import (
-    _texte,
-    comparer,
-    distance_edition,
-    empreinte,
-    normaliser,
-)
+from adam_worker.benchmark.comparateur import comparer, empreinte
 from adam_worker.prepopulation.merger import index_ocr_pairs, merge, semantic_key
 
 
@@ -51,7 +45,6 @@ class ChampVerite:
     attendu: Optional[str]
     #: Au moins une field_proposal : le champ a ete regarde par un humain.
     verifie: bool
-    page: int = 0
 
     @property
     def cle(self) -> str:
@@ -65,71 +58,9 @@ class ChampVerite:
 
 @dataclass
 class Agregat:
-    """Comptes d'un champ (une ligne de tableau compte comme un champ).
-
-    Matrice de l'extraction, sur les champs verifies :
-        verite vide,    lecture vide       vn   (exclu du score)
-        verite vide,    lecture remplie    fp   (valeur inventee)
-        verite remplie, lecture vide       fn   (valeur manquee)
-        verite remplie, lecture egale      vp
-        verite remplie, lecture differente fp + fn, et substitutions
-    """
-
     field_key: str
     compared: int = 0
     diff_count: int = 0
-    vp: int = 0
-    fp: int = 0
-    fn: int = 0
-    vn: int = 0
-    substitutions: int = 0
-    somme_distance: int = 0
-    somme_longueur_attendue: int = 0
-    page: Optional[int] = None
-    section_id: Optional[str] = None
-    value_type: Optional[str] = None
-    sensitive: bool = False
-
-    def ajouter(self, autre: "Agregat") -> None:
-        """Cumule les comptes d'un autre agregat du meme champ."""
-        for nom in COMPTES:
-            setattr(self, nom, getattr(self, nom) + getattr(autre, nom))
-
-
-#: Champs additifs d'un Agregat, dans l'ordre ou ils s'ecrivent en base.
-COMPTES = (
-    "compared",
-    "diff_count",
-    "vp",
-    "fp",
-    "fn",
-    "vn",
-    "substitutions",
-    "somme_distance",
-    "somme_longueur_attendue",
-)
-
-
-def _classer(agregat: Agregat, attendu: Any, lu: Any, ecart: Any) -> None:
-    """Range un champ juge dans la matrice, et cumule le taux par caractere."""
-    texte_attendu = _texte(str(attendu)) if attendu is not None else ""
-    texte_lu = _texte(str(lu)) if lu is not None else ""
-    agregat.somme_longueur_attendue += len(texte_attendu)
-    if attendu is None and lu is None:
-        agregat.vn += 1
-    elif attendu is None:
-        agregat.fp += 1
-        agregat.somme_distance += len(texte_lu)
-    elif lu is None:
-        agregat.fn += 1
-        agregat.somme_distance += len(texte_attendu)
-    elif ecart is None:
-        agregat.vp += 1
-    else:
-        agregat.fp += 1
-        agregat.fn += 1
-        agregat.substitutions += 1
-        agregat.somme_distance += distance_edition(texte_attendu, texte_lu)
 
 
 @dataclass
@@ -194,27 +125,12 @@ def evaluer_document(
         if not champ.verifie:
             continue
         resultat.fields_human_verified += 1
-        agregat = resultat.agregats.setdefault(
-            champ.field_spec_id,
-            Agregat(
-                champ.libelle,
-                page=champ.page,
-                section_id=champ.section_id,
-                value_type=champ.value_type,
-                sensitive=champ.sensitive,
-            ),
-        )
+        agregat = resultat.agregats.setdefault(champ.field_spec_id, Agregat(champ.libelle))
         agregat.compared += 1
 
         lu = lecture.get("ocr_value")
         confiance = lecture.get("ocr_confidence") if confiance_fournie else None
         ecart = comparer(champ.attendu, lu, champ.value_type)
-        _classer(
-            agregat,
-            normaliser(champ.attendu, champ.value_type),
-            normaliser(lu, champ.value_type),
-            ecart,
-        )
         if confiance is not None:
             compte = histogramme[champ.value_type].setdefault(_tranche(confiance), [0, 0])
             compte[1 if ecart else 0] += 1

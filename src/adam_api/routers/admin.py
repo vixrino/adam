@@ -12,5 +12,6 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 async def force_resolve(document_id: int, dataset_id: int) -> dict[str, Any]:
     if not settings.is_dev:
         raise HTTPException(status_code=403)
+
     result = await try_resolve(document_id, dataset_id)
     return result

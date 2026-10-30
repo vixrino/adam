@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
@@ -21,6 +21,20 @@ if TYPE_CHECKING:
 
 class Job(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "job"
+
+    __table_args__ = (
+        # Un agent n'a qu'un job vivant par document. Partiel : un job annule ne compte pas, et
+        # l'operateur peut en recevoir un nouveau. C'est la garantie au dernier point, que ni un
+        # script, ni un seed, ni un autre endpoint ne contournent ; POST /jobs verrouille en plus
+        # la ligne du document pour eviter l'erreur plutot que de la rattraper.
+        Index(
+            "uq_job_agent_document_active",
+            "document_id",
+            "agent_id",
+            unique=True,
+            postgresql_where=text(f"state <> '{JobState.CANCELLED.value}'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     dataset_id: Mapped[int] = mapped_column(

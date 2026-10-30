@@ -26,21 +26,16 @@ la distance d'edition (son ampleur) et la categorie de l'ecart sont rendus.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 import hashlib
 import hmac
 import re
-import unicodedata
-from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Optional
+import unicodedata
 
 from adam_core.enums.status import ComparisonDiffKind, ComparisonVerdict, FieldValueType
 from adam_core.utils.field_parser import parse_field_value
-
-#: Version de la regle de comparaison (normalisation, verdicts, matrice). A
-#: incrementer a chaque changement : deux executions dont la version differe ne
-#: se comparent pas, un meme moteur pouvant y gagner ou perdre des points.
-COMPARATEUR_VERSION = "1"
 
 #: Tolerance sur les nombres : deux montants lus « 1738.26 » et « 1738.2600001 »
 #: sont la meme lecture.

@@ -1,4 +1,5 @@
-"""Table FILE : fichier physique stocké sur PVC.
+"""
+Table FILE : fichier physique stocké sur PVC.
 
 Un enregistrement FILE est unique par contenu.
 Plusieurs DOCUMENT peuvent référencer le même FILE.

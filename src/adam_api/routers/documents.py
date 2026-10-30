@@ -1,20 +1,25 @@
-"""Documents - GET/POST/PATCH endpoints."""
+"""
+Documents
+Un document regroupe ces champs, et est lie a un fichier stocke.
+GET  : lecture simple, enrichie (view=full), fields, by-section
+POST : creation d'un document
+PATCH: mise a jour statut (avec garde-fou polling) et champs
+"""
 
-from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
-from anyio import Path as AsyncPath
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.functions import count
 
-from adam_api.core.config import settings
 from adam_api.dependencies.db import get_db
-from adam_core.enums.status import DocumentStatus, JobState
-from adam_core.models import Document, DocumentField
+from adam_api.services.page_images import serve_page_image
+from adam_core.enums.status import DocumentFieldStatus, JobState
+from adam_core.models import Document, DocumentField, Job
 from adam_core.schemas.responses import (
     DocumentFieldInPageOut,
     DocumentFieldOut,
@@ -22,16 +27,15 @@ from adam_core.schemas.responses import (
     DocumentFieldsBySectionOut,
     DocumentFullOut,
     DocumentJobOut,
-    DocumentJobProgressOut,
     DocumentOcrResultOut,
     DocumentOut,
     DocumentPageOut,
     DocumentSectionOut,
+    DocumentStatsOut,
     FieldBySectionItemOut,
     FileRefOut,
 )
 from adam_core.utils.exceptions import raise_conflict, raise_not_found
-from adam_core.utils.pdf_render import PAGE_IMAGE_DPI, page_image_relative_path
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -52,6 +56,7 @@ class DocumentFieldPatch(BaseModel):
     resolved_value: Optional[str] = None
     status: Optional[str] = None
     consensus_reached: Optional[bool] = None
+    ocr_polygon: Optional[List[float]] = None
 
 
 @router.get("", response_model=List[DocumentOut])
@@ -108,7 +113,6 @@ async def get_document(
                     ocr_value=df.ocr_value,
                     resolved_value=df.resolved_value,
                     status=df.status,
-                    consensus_reached=df.consensus_reached,
                 )
             )
 
@@ -135,9 +139,7 @@ async def get_document(
 
     # Vue simple — CA-2 : charger le fichier pour page_count
     result = await db.execute(
-        select(Document)
-        .where(Document.id == document_id)
-        .options(selectinload(Document.file))
+        select(Document).where(Document.id == document_id).options(selectinload(Document.file))
     )
     doc = result.scalar_one_or_none()
     if not doc:
@@ -148,47 +150,6 @@ async def get_document(
         status=doc.status,
         metadata=doc.metadata_,
         page_count=doc.file.page_count if doc.file else None,
-    )
-
-
-@router.get("/{document_id}/job-progress", response_model=DocumentJobProgressOut)
-async def get_document_job_progress(
-    document_id: int, db: AsyncSession = Depends(get_db)
-) -> DocumentJobProgressOut:
-    """Etat du Job actif d'un Document, pour piloter le bouton Continuer du front.
-
-    Un Job actif est un Job non termine (state ASSIGNED ou IN_PROGRESS). CA-4 :
-    un Document sans Job actif renvoie 200 avec has_active_job=False, distinct
-    du 404 d'un Document introuvable.
-    """
-    result = await db.execute(
-        select(Document).where(Document.id == document_id).options(selectinload(Document.jobs))
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise_not_found(Document)  # CA-4 : distinct du "pas de job actif"
-
-    active_states = {JobState.ASSIGNED.value, JobState.IN_PROGRESS.value}
-    active_jobs = [j for j in doc.jobs if j.state in active_states]
-    active = max(active_jobs, key=lambda j: j.id, default=None)
-
-    # CA-3 : action exploitable par le front
-    action: Literal["CONTINUE", "REVIEW", "UNAVAILABLE"]
-    if active is not None:
-        action = "CONTINUE"
-    elif doc.status in (DocumentStatus.VALIDATED.value, DocumentStatus.EXPORTED.value) or any(
-        j.state == JobState.SUBMITTED.value for j in doc.jobs
-    ):
-        action = "REVIEW"
-    else:
-        action = "UNAVAILABLE"
-
-    return DocumentJobProgressOut(
-        document_id=doc.id,
-        has_active_job=active is not None,  # CA-1
-        active_job_id=active.id if active else None,
-        step=active.step if active else None,  # CA-2
-        action=action,
     )
 
 
@@ -209,60 +170,77 @@ async def get_document_page_image(
     doc = result.scalar_one_or_none()
     if not doc:
         raise_not_found(Document)
-    if doc.file is None:
-        raise_not_found(Document, "Aucun fichier associe a ce document")
 
     # CA-4 : page 1-indexee, bornee par le page_count renseigne par le worker
-    if page_number < 1 or page_number > doc.file.page_count:
-        raise_not_found(
-            Document,
-            f"Page {page_number} hors bornes (document de {doc.file.page_count} page(s))",
-        )
+    return await serve_page_image(
+        Document, doc.file, page_number, no_file_detail="Aucun fichier associe a ce document"
+    )
 
-    image_path = Path(settings.pvc_mount_path) / page_image_relative_path(doc.file.id, page_number)
-    async_image_path = AsyncPath(image_path)
-    if not await async_image_path.is_file():
-        # CA-3 : le worker n'a pas (encore) genere les images de ce document
-        raise_not_found(
-            Document,
-            f"Image de la page {page_number} absente du PVC (images non generees)",
+
+@router.get("/{document_id}/stats", response_model=DocumentStatsOut)
+async def get_document_stats(
+    document_id: int, db: AsyncSession = Depends(get_db)
+) -> DocumentStatsOut:
+    """Progression et contributeurs d'un document (une ligne de la liste).
+
+    Pendant de GET /datasets/{id}/stats un cran plus bas. Un document compte
+    comme valide dans les stats dataset (Document.status == VALIDATED) ssi
+    total_fields > 0 et validated_fields == total_fields ici : le consensus
+    pose consensus_reached sur chaque champ dans la meme transaction que le
+    passage du document a VALIDATED (cf. services/consensus.py).
+    """
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise_not_found(Document)
+
+    total_fields: int = (
+        await db.execute(
+            select(count(DocumentField.id)).where(DocumentField.document_id == document_id)
         )
-    # X-Image-Dpi : le front a besoin du DPI de rendu pour l'affichage
-    return FileResponse(
-        image_path,
-        media_type="image/png",
-        filename=image_path.name,
-        headers={"X-Image-Dpi": str(PAGE_IMAGE_DPI)},
+    ).scalar_one()
+    validated_fields: int = (
+        await db.execute(
+            select(count(DocumentField.id))
+            .where(DocumentField.document_id == document_id)
+            .where(DocumentField.consensus_reached.is_(True))
+        )
+    ).scalar_one()
+    disputed_fields: int = (
+        await db.execute(
+            select(count(DocumentField.id))
+            .where(DocumentField.document_id == document_id)
+            .where(DocumentField.status == DocumentFieldStatus.DISPUTED.value)
+        )
+    ).scalar_one()
+    # Contributeur = operateur dont un job a au moins ete ouvert (IN_PROGRESS)
+    # ou soumis. ASSIGNED jamais ouvert / CANCELLED ne comptent pas.
+    contributors_count: int = (
+        await db.execute(
+            select(count(func.distinct(Job.agent_id)))
+            .where(Job.document_id == document_id)
+            .where(Job.state.in_([JobState.IN_PROGRESS.value, JobState.SUBMITTED.value]))
+        )
+    ).scalar_one()
+
+    return DocumentStatsOut(
+        id=document_id,
+        total_fields=total_fields,
+        validated_fields=validated_fields,
+        disputed_fields=disputed_fields,
+        contributors_count=contributors_count,
     )
 
 
 @router.get("/{document_id}/fields", response_model=List[DocumentFieldOut])
 async def get_document_fields(
     document_id: int, db: AsyncSession = Depends(get_db)
-) -> List[DocumentFieldOut]:
-    rows = (
-        await db.execute(
-            select(DocumentField)
-            .where(DocumentField.document_id == document_id)
-            .options(selectinload(DocumentField.field_spec))
-        )
-    ).scalars().all()
-    return [
-        DocumentFieldOut(
-            id=df.id,
-            document_id=df.document_id,
-            field_spec_id=df.field_spec_id,
-            group_id=df.group_id,
-            value_type=df.field_spec.value_type if df.field_spec else None,
-            ocr_value=df.ocr_value,
-            resolved_value=df.resolved_value,
-            status=df.status,
-            ocr_confidence=df.ocr_confidence,
-            consensus_reached=df.consensus_reached,
-            ocr_polygon=df.ocr_polygon,
-        )
-        for df in rows
-    ]
+) -> List[DocumentField]:
+    rows = list(
+        (await db.execute(select(DocumentField).where(DocumentField.document_id == document_id)))
+        .scalars()
+        .all()
+    )
+    return rows
 
 
 @router.get("/{document_id}/fields/by-section", response_model=DocumentFieldsBySectionOut)
@@ -306,9 +284,7 @@ async def patch_document(
     document_id: int, body: DocumentPatch, db: AsyncSession = Depends(get_db)
 ) -> Document:
     result = await db.execute(
-        select(Document)
-        .where(Document.id == document_id)
-        .options(selectinload(Document.file))
+        select(Document).where(Document.id == document_id).options(selectinload(Document.file))
     )
     doc = result.scalar_one_or_none()
     if not doc:
@@ -333,4 +309,10 @@ async def patch_document_field(
     for key, val in body.model_dump(exclude_unset=True).items():
         setattr(df, key, val)
     await db.flush()
-    return DocumentFieldPatchOut(id=df.id, status=df.status, resolved_value=df.resolved_value)
+    return DocumentFieldPatchOut(
+        id=df.id,
+        status=df.status,
+        resolved_value=df.resolved_value,
+        consensus_reached=df.consensus_reached,
+        ocr_polygon=df.ocr_polygon,
+    )

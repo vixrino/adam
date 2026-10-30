@@ -21,6 +21,7 @@ Roles de plateforme (colonne ``user.platform_role``)
                     tests, campagnes, rapports, export, verrouillage.
     NOTA_ADMIN      Administrateur NOTA : organisations, utilisateurs et
                     droits, configuration de la plateforme, schemas JSON.
+
     NOTA_CLIENT     Client NOTA : commanditaire des travaux de labellisation,
                     consulte l'avancement et les livrables de son organisation.
 
@@ -43,16 +44,6 @@ valeur ; ``CROSS_ORGANISATION_ROLE_VALUES`` repond a "ce role neutralise-t-il le
 filtrage ?", et c'est celui qu'utilise ``adam_api.dependencies.db``. Les
 confondre — un seul set derive de l'enumeration entiere — ferait de tout nouveau
 role de plateforme un acces total a la plateforme par le seul fait de l'ajouter.
-
-Pourquoi l'ancien UserRole a disparu
-------------------------------------
-UserRole valait {OPERATOR, SUPERVISOR, ADMIN}. Sa valeur ADMIN recouvrait a la
-fois l'Administrateur Metier et l'Administrateur NOTA, dont le RACI oppose les
-responsabilites : administrer les utilisateurs et droits est R pour le second et
-I pour le premier, affecter les taches aux operateurs est l'inverse. Les
-confondre revenait a accorder a chacun les droits de l'autre. SUPERVISOR, de son
-cote, etait stocke sur une adhesion a un projet alors qu'il designe un role
-transverse, ce qui obligeait a inscrire un superviseur dans chaque projet.
 """
 
 from enum import Enum
@@ -66,11 +57,7 @@ class ProjectRole(str, Enum):
 
 
 class PlatformRole(str, Enum):
-    """Role porte par l'utilisateur lui-meme, independant de tout projet.
-
-    Independant d'un projet ne veut pas dire independant d'une organisation :
-    NOTA_CLIENT reste enferme dans la sienne (cf. docstring du module).
-    """
+    """Role porte par l'utilisateur lui-meme, independant de tout projet."""
 
     NOTA_SUPERVISOR = "NOTA_SUPERVISOR"
     NOTA_ADMIN = "NOTA_ADMIN"
@@ -80,9 +67,6 @@ class PlatformRole(str, Enum):
 #: Valeurs admises sur ``user.platform_role``, pour les tests d'appartenance.
 PLATFORM_ROLE_VALUES = frozenset(role.value for role in PlatformRole)
 
-#: Roles dont la session s'ouvre sans filtrage : ils traversent organisations et
-#: projets. Enumere explicitement, et non derive de PlatformRole : le filtrage
-#: reste ainsi ferme par defaut, et ouvrir un nouveau role est un acte delibere.
 CROSS_ORGANISATION_ROLE_VALUES = frozenset(
     {
         PlatformRole.NOTA_SUPERVISOR.value,

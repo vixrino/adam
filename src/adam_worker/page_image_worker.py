@@ -2,12 +2,7 @@
 
 Polling sur DOCUMENT.status == RECEIVED : convertit chaque page du PDF
 source (lu depuis le PVC via FILE) en PNG ecrit dans file_id/pages/,
-renseigne FILE.page_count, puis passe le Document a INGESTED.
-
-INGESTED et non IN_PROGRESS : les images sont pretes, mais le document n'a
-encore aucun champ. C'est PrepopulationWorker qui prend la suite, pre-alimente
-les DOCUMENT_FIELD depuis l'OCR, et le fait alors passer a IN_PROGRESS. Sauter
-cette etape laisserait sa file vide en permanence.
+renseigne FILE.page_count, puis passe le Document a IN_PROGRESS.
 
 Chaque Document est traite dans sa propre transaction, verrouillee avec
 `FOR UPDATE SKIP LOCKED` : si plusieurs instances du worker tournent en
@@ -22,6 +17,7 @@ batch (CA-5).
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from pathlib import Path
 from time import perf_counter
 from typing import List, Optional
@@ -51,21 +47,24 @@ class PageImageWorker(BaseWorker):
         if not candidate_ids:
             self.logger.debug("aucun document RECEIVED")
             return
-        # En DEBUG : le meme decompte est rendu par « cycle termine », qui porte
-        # en plus la duree. Deux lignes INFO pour un seul chiffre encadraient
-        # chaque lot sans rien apprendre.
         self.logger.debug("%s document(s) RECEIVED a traiter", len(candidate_ids))
         cycle_started = perf_counter()
+        issues: Counter[str] = Counter()
         for document_id in candidate_ids:
             try:
-                await self._process_one(document_id)
+                issues[await self._process_one(document_id)] += 1
             except Exception:
                 self.logger.exception(
                     "echec inattendu generation images [document_id=%s]", document_id
                 )
+                issues["error"] += 1
+        # Bilan du cycle : RECEIVED -> INGESTED (images rendues) ou ERROR (PDF illisible).
         self.logger.info(
-            "cycle termine [documents=%s duree=%.2fs]",
+            "cycle termine [documents=%s ingested=%s error=%s ignores=%s duree=%.2fs]",
             len(candidate_ids),
+            issues["ingested"],
+            issues["error"],
+            issues["skipped"],
             perf_counter() - cycle_started,
         )
 
@@ -84,18 +83,19 @@ class PageImageWorker(BaseWorker):
             )
             return list(rows)
 
-    async def _process_one(self, document_id: int) -> None:
+    async def _process_one(self, document_id: int) -> str:
+        """Retourne le sort du document : ingested, error ou skipped."""
         async with get_async_session() as db:
             document = await self._lock_document(db, document_id)
             if document is None:
-                return  # deja traite ou verrouille par un autre worker (CA-6)
+                return "skipped"  # deja traite ou verrouille par un autre worker (CA-6)
 
             file_row = await db.get(File, document.file_id)
             if file_row is None:
                 self.logger.error(
                     "FILE introuvable [document_id=%s file_id=%s]", document_id, document.file_id
                 )
-                return
+                return "skipped"
 
             pdf_path = self.pvc_root / file_row.file_path
             output_dir = self.pvc_root / pages_relative_dir(file_row.id)
@@ -116,7 +116,7 @@ class PageImageWorker(BaseWorker):
                     perf_counter() - render_started,
                 )
                 document.status = DocumentStatus.ERROR.value
-                return
+                return "error"
             render_seconds = perf_counter() - render_started
 
             file_row.page_count = len(written)
@@ -128,6 +128,7 @@ class PageImageWorker(BaseWorker):
                 len(written),
                 render_seconds,
             )
+            return "ingested"
 
     async def _lock_document(self, db: AsyncSession, document_id: int) -> Optional[Document]:
         document = (

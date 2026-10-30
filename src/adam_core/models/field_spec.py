@@ -80,11 +80,6 @@ class FieldSpec(OrganisationScoped, ProjectScoped, Base):
         nullable=False,
         comment="Libellé affiché à l'opérateur",
     )
-    #: Ce que le champ contient, dit au moteur d'extraction : c'est la
-    #: description de la propriete du json_schema envoye a Mistral. Plus riche
-    #: que display_label, qui est fait pour l'ecran ; a defaut, c'est lui qui
-    #: sert.
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     value_type: Mapped[str] = mapped_column(
         String,
         nullable=False,
@@ -92,10 +87,17 @@ class FieldSpec(OrganisationScoped, ProjectScoped, Base):
         comment="Type de valeur : TEXT, NUMBER, DATE, DATETIME, BOOLEAN",
     )
     required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    #: Champ porteur de donnee personnelle sensible (NIR, IBAN, nom...). Pilote
-    #: la politique de stockage de comparison_result : valeurs en clair pour un
-    #: champ non sensible, HMAC et distance d'edition sinon.
-    sensitive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sensitive: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="Donnee personnelle / sensible (PII)",
+    )
+    description: Mapped[Optional[str]] = mapped_column(
+        String,
+        nullable=True,
+        comment="Texte libre passe au prompt d'extraction OCR/LLM",
+    )
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Polygon : 8 floats [x1,y1,x2,y2,x3,y3,x4,y4]

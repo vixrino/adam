@@ -46,7 +46,7 @@ class FieldProposal(OrganisationScoped, ProjectScoped, Base):
         default=JobStep.VALIDATION.value,
         comment="Étape à laquelle la proposition a été soumise",
     )
-    value_type: Mapped[Optional[str]] = mapped_column(
+    value_type: Mapped[str] = mapped_column(
         String,
         nullable=False,
         default=FieldValueType.TEXT.value,

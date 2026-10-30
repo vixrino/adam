@@ -1,40 +1,19 @@
-"""Point d'entree des workers ADAM : lance tous les workers en parallele.
-
-Stub minimal Sprint 3 : pas de scheduler, chaque worker boucle sur son
-propre polling (voir BaseWorker.run_forever).
-
-echo est force a False, comme dans les lanceurs individuels. Avec APP_ENV=dev,
-l'echo SQLAlchemy imprime chaque instruction emise, BEGIN et COMMIT compris :
-quatre workers qui interrogent la base toutes les quelques secondes noient
-alors les lignes du worker lui-meme, les seules qui disent ce qui se passe.
-Le lecteur d'un journal de worker cherche « quel document, quel echec », pas
-le SQL qui l'a amene. Pour ce dernier, relancer ponctuellement avec echo=True.
-"""
-
 from __future__ import annotations
 
 import asyncio
 import signal
 
 from adam_core.core.config import get_core_settings
-from adam_core.db.session import init_engine
+from adam_core.db.session import ensure_database, init_engine
 from adam_core.utils.logging import setup_logging
 from adam_worker.base_worker import BaseWorker
-from adam_worker.consensus_worker import ConsensusWorker
-from adam_worker.document_progress_worker import DocumentProgressWorker
-from adam_worker.page_image_worker import PageImageWorker
 from adam_worker.benchmark.worker import TestExecutionWorker
+from adam_worker.consensus_worker import ConsensusWorker
+from adam_worker.page_image_worker import PageImageWorker
 from adam_worker.prepopulation.poller import PrepopulationWorker
 
 
 def _install_signal_handlers(workers: list[BaseWorker]) -> None:
-    """Graceful shutdown : sur SIGINT/SIGTERM (k8s), demande l'arret de chaque
-    worker, qui terminera son cycle en cours avant de s'arreter.
-
-    add_signal_handler n'est pas supporte sur Windows : on l'ignore alors
-    (contexte dev uniquement, le deploiement reel tourne sous Linux).
-    """
-
     def _request_stop() -> None:
         for worker in workers:
             worker.stop()
@@ -51,12 +30,12 @@ async def main() -> None:
     core = get_core_settings()
     setup_logging(core)
     init_engine(core.async_database_url, echo=False)
+    await ensure_database()
 
     workers: list[BaseWorker] = [
         PageImageWorker(),
-        PrepopulationWorker(),
         ConsensusWorker(),
-        DocumentProgressWorker(),
+        PrepopulationWorker(),
         TestExecutionWorker(),
     ]
     _install_signal_handlers(workers)

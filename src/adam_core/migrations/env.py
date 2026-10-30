@@ -1,42 +1,80 @@
-"""Alembic async env.py."""
-
-from logging.config import fileConfig
+import asyncio
+from pathlib import Path
+import sys
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 
-from adam_core.core.config import get_core_settings
-from adam_core.db.base import Base
+# Path setup
+_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(_ROOT / "src"))
+
+from adam_core.core.config import CoreSettings
+from adam_core.db.base import SCHEMA_NAME, Base
 import adam_core.models  # noqa: F401
+from adam_core.utils.logging import get_logger, setup_logging
 
+_settings = CoreSettings()
+setup_logging(_settings)
+logger = get_logger(__name__)
+
+# Config Alembic
 config = context.config
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-_settings = get_core_settings()
-config.set_main_option("sqlalchemy.url", _settings.async_database_url)
+
+
+def include_name(name: str | None, type_: str, _parent_names: object) -> bool:
+    """Base partagee : ne regarder que notre schema, jamais les tables des autres applications."""
+    return name == SCHEMA_NAME if type_ == "schema" else True
+
+
+# La base est partagee et nos tables vivent dans SCHEMA_NAME, y compris la table de versions.
+_SCHEMA_OPTIONS = {
+    "include_schemas": True,
+    "include_name": include_name,
+    "version_table_schema": SCHEMA_NAME,
+}
 
 
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
-    context.configure(url=url, target_metadata=target_metadata, literal_binds=True)
+    sync_url = _settings.async_database_url.replace("+asyncpg", "")
+    context.configure(
+        url=sync_url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+        compare_type=True,
+        compare_server_default=True,
+        **_SCHEMA_OPTIONS,
+    )
     with context.begin_transaction():
+        context.execute(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA_NAME}"')
+        context.execute(f'SET search_path TO "{SCHEMA_NAME}"')
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        compare_server_default=True,
+        **_SCHEMA_OPTIONS,
+    )
     with context.begin_transaction():
+        # Les migrations existantes ecrivent des noms non qualifies (`op.create_table("user")`,
+        # `ALTER TYPE ...`) : le search_path les range dans le schema.
+        connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA_NAME}"'))
+        connection.execute(text(f'SET search_path TO "{SCHEMA_NAME}"'))
         context.run_migrations()
 
 
-async def run_async_migrations() -> None:
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+async def run_migrations_online() -> None:
+    connectable = create_async_engine(
+        _settings.async_database_url,
         poolclass=pool.NullPool,
     )
     async with connectable.connect() as connection:
@@ -44,12 +82,7 @@ async def run_async_migrations() -> None:
     await connectable.dispose()
 
 
-def run_migrations_online() -> None:
-    import asyncio
-    asyncio.run(run_async_migrations())
-
-
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    run_migrations_online()
+    asyncio.run(run_migrations_online())

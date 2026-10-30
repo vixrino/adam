@@ -30,7 +30,7 @@ from adam_core.models import (
     TestExecution,
     TestRecipe,
 )
-from adam_worker.benchmark.evaluation import COMPTES, Agregat, ChampVerite
+from adam_worker.benchmark.evaluation import Agregat, ChampVerite
 
 
 @dataclass(frozen=True)
@@ -105,17 +105,6 @@ class DepotBenchmark:
                 recipe_status=str(ligne.status),
                 document_ids=list(ligne.document_ids or []),
                 schema_id=int(ligne.schema_id),
-            )
-
-    async def identifier(
-        self, execution_id: int, comparateur_version: str, schema_hash: str
-    ) -> None:
-        """Note ce qui doit concorder pour que deux scores se comparent."""
-        async with get_async_session() as db:
-            await db.execute(
-                update(TestExecution)
-                .where(TestExecution.id == execution_id)
-                .values(comparateur_version=comparateur_version, schema_hash=schema_hash)
             )
 
     async def schema(self, schema_id: int) -> Dict[str, Any]:
@@ -196,7 +185,6 @@ class DepotBenchmark:
                 sensitive=bool(fs.sensitive),
                 attendu=df.resolved_value,
                 verifie=bool(est_verifie),
-                page=fs.page,
             )
             for df, fs, est_verifie in lignes
         ]
@@ -245,11 +233,8 @@ class DepotBenchmark:
                             "execution_id": execution_id,
                             "field_spec_id": field_spec_id,
                             "field_key": agregat.field_key,
-                            "page": agregat.page,
-                            "section_id": agregat.section_id,
-                            "value_type": agregat.value_type,
-                            "sensitive": agregat.sensitive,
-                            **{nom: getattr(agregat, nom) for nom in COMPTES},
+                            "compared": agregat.compared,
+                            "diff_count": agregat.diff_count,
                         }
                         for field_spec_id, agregat in agregats.items()
                     ]
@@ -257,7 +242,10 @@ class DepotBenchmark:
                 await db.execute(
                     instruction.on_conflict_do_update(
                         constraint="uq_evaluation_report_execution_field_spec",
-                        set_={nom: getattr(instruction.excluded, nom) for nom in COMPTES},
+                        set_={
+                            "compared": instruction.excluded.compared,
+                            "diff_count": instruction.excluded.diff_count,
+                        },
                     )
                 )
             await db.execute(

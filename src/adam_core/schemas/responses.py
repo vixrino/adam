@@ -7,9 +7,9 @@ Chaque schema correspond a un type de retour d'endpoint.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
 # Organisation
@@ -145,7 +145,6 @@ class DocumentFieldInPageOut(BaseModel):
     ocr_value: Optional[str] = None
     resolved_value: Optional[str] = None
     status: str
-    consensus_reached: bool
 
 
 class DocumentSectionOut(BaseModel):
@@ -175,21 +174,6 @@ class DocumentJobOut(BaseModel):
     state: str
 
 
-class DocumentJobProgressOut(BaseModel):
-    """Reponse GET /documents/{id}/job-progress.
-
-    Expose l'etat du Job actif d'un Document pour piloter le bouton
-    Continuer / Revoir / Indisponible du front. `has_active_job=False`
-    est une reponse valide (200) distincte d'un Document introuvable (404).
-    """
-
-    document_id: int
-    has_active_job: bool
-    active_job_id: Optional[int] = None
-    step: Optional[str] = None  # etape du job actif : VALIDATION | CONSENSUS | CORRECTION
-    action: Literal["CONTINUE", "REVIEW", "UNAVAILABLE"]
-
-
 class DocumentFullOut(BaseModel):
     """Reponse detaillee (GET /documents/{id}?view=full)."""
 
@@ -203,6 +187,17 @@ class DocumentFullOut(BaseModel):
     jobs: List[DocumentJobOut] = Field(default_factory=list)
     page_count: Optional[int] = None
     image_paths: Optional[List[str]] = None
+
+
+class DocumentStatsOut(BaseModel):
+    """GET /documents/{id}/stats — progression + contributeurs pour une ligne de liste."""
+
+    id: int
+    total_fields: int
+    validated_fields: int
+    #: Champs sans majorite apres un consensus : le document attend un arbitrage, pas d'autres votes.
+    disputed_fields: int = 0
+    contributors_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -230,11 +225,7 @@ class DocumentFieldsBySectionOut(BaseModel):
 
 
 class DocumentFieldOut(BaseModel):
-    """CA-3 : inclut ocr_polygon, statut et valeur resolue.
-
-    ocr_value et resolved_value sont exposees dans leur type natif JSON
-    (bool, int, float ou str) selon value_type, via parse_field_value.
-    """
+    """CA-3 : inclut ocr_polygon, statut et valeur resolue."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -242,21 +233,12 @@ class DocumentFieldOut(BaseModel):
     document_id: int
     field_spec_id: int
     group_id: Optional[str] = None
-    value_type: Optional[str] = None
-    ocr_value: Optional[Any] = None
-    resolved_value: Optional[Any] = None
+    ocr_value: Optional[str] = None
+    resolved_value: Optional[str] = None
     status: str
     ocr_confidence: Optional[float] = None
     consensus_reached: bool
     ocr_polygon: Optional[List[float]] = None
-
-    @model_validator(mode="after")
-    def _parse_values(self) -> "DocumentFieldOut":
-        from adam_core.utils.field_parser import parse_field_value
-
-        self.ocr_value = parse_field_value(self.ocr_value, self.value_type)
-        self.resolved_value = parse_field_value(self.resolved_value, self.value_type)
-        return self
 
 
 class DocumentFieldPatchOut(BaseModel):
@@ -265,6 +247,8 @@ class DocumentFieldPatchOut(BaseModel):
     id: int
     status: str
     resolved_value: Optional[str] = None
+    consensus_reached: bool
+    ocr_polygon: Optional[List[float]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +416,16 @@ class OrgUserOut(BaseModel):
     projects: List[UserProjectRefOut] = []
 
 
+class OrganisationPatchOut(BaseModel):
+    id: int
+    name: str
+
+
+class OrganisationArchiveOut(BaseModel):
+    id: int
+    archived: bool
+
+
 # ---------------------------------------------------------------------------
 # Project
 # ---------------------------------------------------------------------------
@@ -441,17 +435,16 @@ class ProjectOut(BaseModel):
     id: int
     name: str
     organisation_id: int
+    status: str
+    updated_at: Optional[datetime] = None
 
 
 class ProjectDetailOut(BaseModel):
     id: int
     name: str
-    #: Optionnel parce que project.description l'est en base (Text nullable).
-    #: Le declarer obligatoire ferait echouer la lecture de tout projet cree
-    #: sans description — en 500, la validation de reponse survenant apres le
-    #: retour de la route.
     description: Optional[str] = None
     status: str
+    organisation_id: int
     updated_at: Optional[datetime] = None
 
 
@@ -464,6 +457,14 @@ class UserProjectOut(BaseModel):
     user_id: int
     project_id: int
     role: str
+
+
+class ProjectUserOut(BaseModel):
+    user_id: int
+    project_id: int
+    role: str
+    email: str
+    full_name: str
 
 
 class UserRolePatchOut(BaseModel):
@@ -484,6 +485,7 @@ class SchemaListItemOut(BaseModel):
     document_type: str
     version: int
     project_id: int
+    locked: bool = False
     created_at: Optional[datetime] = None
 
 
@@ -497,6 +499,7 @@ class FieldSpecItemOut(BaseModel):
     description: Optional[str] = None
     value_type: str
     required: bool
+    sensitive: bool = False
     display_order: int
     group_id: Optional[str] = None
     polygon: Optional[List[float]] = None
@@ -542,7 +545,17 @@ class SchemaDetailOut(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     pages: List[SchemaPageOut] = []
+    locked: bool = False
     field_specs: List[FieldSpecItemOut] = []
+    specimen_file_id: Optional[int] = None
+    specimen_page_count: Optional[int] = None
+
+
+class SchemaSpecimenOut(BaseModel):
+    """Reponse POST /schemas/{schema_id}/specimen."""
+
+    file_id: int
+    page_count: int
 
 
 class SchemaCreatedOut(BaseModel):
@@ -550,6 +563,7 @@ class SchemaCreatedOut(BaseModel):
     name: str
     document_type: str
     version: int
+    locked: bool = False
     field_specs_created: int = 0
 
 
@@ -583,6 +597,7 @@ class UserDetailOut(BaseModel):
     matricule: str
     status: str
     organisation_id: int
+    platform_role: Optional[str] = None
     created_at: Optional[datetime] = None
     last_login_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

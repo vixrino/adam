@@ -1,4 +1,4 @@
-"""Point d'entree unique des deploiements ADAM : l'API, les workers, ou les deux.
+"""Point d'entree unique des deploiements nota : l'API, les workers, ou les deux.
 
     python launcher.py           # les deux, comme `all`
     python launcher.py api
@@ -29,6 +29,8 @@ import threading
 import time
 from pathlib import Path
 from typing import IO, Callable, Sequence
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 #: Delai laisse a un processus fils pour finir son cycle avant d'etre tue.
 _STOP_TIMEOUT_SECONDS = 30
@@ -161,7 +163,7 @@ _TARGETS: dict[str, Callable[[], int | None]] = {
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Lance la cible demandee et rend le code de sortie du processus."""
-    parser = argparse.ArgumentParser(description="Lanceur ADAM : API, workers, ou les deux.")
+    parser = argparse.ArgumentParser(description="Lanceur nota : API, workers, ou les deux.")
     parser.add_argument(
         "target",
         nargs="?",

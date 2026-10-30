@@ -28,8 +28,8 @@ id="credits_consommation.reference" et group_id="pret_2", la forme du contrat
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
+import re
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from adam_core.enums.status import FieldValueType
@@ -111,8 +111,10 @@ def propriete(spec: Mapping[str, Any], group_id: Optional[str] = None) -> FieldD
     """
     description = spec.get("description") or spec.get("display_label") or spec["field_key"]
     if group_id:
-        numero = re.search(r"(\d+)$", group_id)
-        ligne = f"ligne n° {numero.group(1)} du tableau" if numero else f"instance {group_id}"
+        numero = _trailing_number(group_id)
+        ligne = (
+            f"ligne n° {numero} du tableau" if numero else f"instance {group_id}"
+        )  # sans .group(1)
         description = f"{description} ({ligne})"
     value_type = str(spec.get("value_type") or FieldValueType.TEXT.value).upper()
     if value_type == FieldValueType.BOOLEAN.value:
@@ -122,3 +124,11 @@ def propriete(spec: Mapping[str, Any], group_id: Optional[str] = None) -> FieldD
     if value_type in (FieldValueType.DATE.value, FieldValueType.DATETIME.value):
         return {"description": description, "type": "string", "format": "date"}
     return {"description": description, "type": "string"}
+
+
+def _trailing_number(group_id: str) -> str | None:
+    """Chiffres finaux de group_id (« enfant_1 » -> « 1 »), ou None."""
+    start = len(group_id)
+    while start > 0 and group_id[start - 1].isdecimal():
+        start -= 1
+    return group_id[start:] or None
