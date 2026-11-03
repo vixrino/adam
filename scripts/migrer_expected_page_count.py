@@ -236,6 +236,31 @@ DDL_DIRECT = [
     "ALTER TABLE test_recipe ADD COLUMN IF NOT EXISTS config JSONB NOT NULL DEFAULT '{}'::jsonb",
 ]
 
+#: Colonnes des metriques du benchmark, toutes verifiees : une base ou seule la
+#: derniere (test_recipe.config) existait passait pour a jour, et le worker
+#: plantait ensuite sur test_execution.comparateur_version.
+COLONNES_METRIQUES = [
+    *(
+        ("evaluation_report", nom)
+        for nom in (
+            "vp",
+            "fp",
+            "fn",
+            "vn",
+            "substitutions",
+            "somme_distance",
+            "somme_longueur_attendue",
+            "page",
+            "section_id",
+            "value_type",
+            "sensitive",
+        )
+    ),
+    ("test_execution", "comparateur_version"),
+    ("test_execution", "schema_hash"),
+    ("test_recipe", "config"),
+]
+
 
 @dataclass(frozen=True)
 class Changement:
@@ -382,13 +407,15 @@ async def _etat(core: str) -> Dict[str, bool]:
                 requete_colonne, {"t": "field_spec", "c": "description"}
             )
             schema_page = await conn.execute(text("SELECT to_regclass('schema_page') IS NOT NULL"))
-            # La derniere colonne ajoutee par le changement : si elle est la, tout l'est.
-            metriques = await conn.execute(requete_colonne, {"t": "test_recipe", "c": "config"})
+            metriques = True
+            for table, colonne in COLONNES_METRIQUES:
+                presente = await conn.execute(requete_colonne, {"t": table, "c": colonne})
+                metriques = metriques and bool(presente.scalar_one())
             return {
                 "expected_page_count": bool(page_count.scalar_one()),
                 "description": bool(description.scalar_one()),
                 "schema_page": bool(schema_page.scalar_one()),
-                "metriques": bool(metriques.scalar_one()),
+                "metriques": metriques,
             }
     finally:
         await engine.dispose()
