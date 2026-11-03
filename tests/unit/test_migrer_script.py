@@ -106,3 +106,24 @@ async def test_toutes_les_colonnes_metriques_presentes(monkeypatch: pytest.Monke
     script = _script()
     monkeypatch.setattr(script, "_engine", lambda _core: _Moteur(set()))
     assert (await script._etat("adam_core"))["metriques"] is True
+
+
+def test_ddl_metriques_joue_le_ddl_direct_du_paquet_trouve(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "ddl_metriques", SCRIPT.parent / "ddl_metriques.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    appels: list[str] = []
+
+    async def _ddl(core: str) -> None:
+        appels.append(core)
+
+    monkeypatch.setattr(module.migrer, "_paquet_core", lambda: ("nota_core", Path("x")))
+    monkeypatch.setattr(module.migrer, "_ddl_direct", _ddl)
+    module.main()
+    assert appels == ["nota_core"]
+    assert "nota_core : colonnes des metriques en place" in capsys.readouterr().out
