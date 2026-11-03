@@ -4,3 +4,5 @@
 
 
 
+
+uv run python scripts/migrer_expected_page_count.py --dry-run
