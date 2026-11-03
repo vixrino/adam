@@ -54,17 +54,22 @@ def test_chaque_colonne_metrique_est_creee_par_le_ddl_direct() -> None:
 
 
 class _Resultat:
-    def __init__(self, valeur: bool) -> None:
+    def __init__(self, valeur: bool, schemas: list[str]) -> None:
         self.valeur = valeur
+        self.schemas = schemas
 
     def scalar_one(self) -> bool:
         return self.valeur
 
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        return iter([(s,) for s in self.schemas])
+
 
 class _Connexion:
-    """Base ou toutes les colonnes existent, sauf celles de `absentes`."""
+    """Base ou tout existe dans chaque schema, sauf les (schema, table, colonne) absents."""
 
-    def __init__(self, absentes: set[tuple[str, str]]) -> None:
+    def __init__(self, schemas: list[str], absentes: set[tuple[str, str, str]]) -> None:
+        self.schemas = schemas
         self.absentes = absentes
 
     async def __aenter__(self) -> "_Connexion":
@@ -75,16 +80,18 @@ class _Connexion:
 
     async def execute(self, _requete: object, params: dict | None = None) -> _Resultat:
         if params is None:
-            return _Resultat(True)
-        return _Resultat((params["t"], params["c"]) not in self.absentes)
+            return _Resultat(True, self.schemas)
+        cle = (params["s"], params["t"], params.get("c", ""))
+        return _Resultat(cle not in self.absentes, self.schemas)
 
 
 class _Moteur:
-    def __init__(self, absentes: set[tuple[str, str]]) -> None:
+    def __init__(self, schemas: list[str], absentes: set[tuple[str, str, str]]) -> None:
+        self.schemas = schemas
         self.absentes = absentes
 
     def connect(self) -> _Connexion:
-        return _Connexion(self.absentes)
+        return _Connexion(self.schemas, self.absentes)
 
     async def dispose(self) -> None:
         return None
@@ -93,18 +100,29 @@ class _Moteur:
 async def test_une_colonne_metrique_absente_rend_la_base_incomplete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Cas reel : test_recipe.config present, test_execution.comparateur_version absent.
+    # test_recipe.config present, test_execution.comparateur_version absent.
     script = _script()
-    absentes = {("test_execution", "comparateur_version")}
-    monkeypatch.setattr(script, "_engine", lambda _core: _Moteur(absentes))
+    absentes = {("public", "test_execution", "comparateur_version")}
+    monkeypatch.setattr(script, "_engine", lambda _core: _Moteur(["public"], absentes))
     etat = await script._etat("adam_core")
     assert etat["metriques"] is False
     assert etat["schema_page"] is True
 
 
+async def test_un_schema_en_retard_suffit_a_rendre_la_base_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Cas reel nota : public a jour, nota (lu par le worker) sans la colonne.
+    script = _script()
+    absentes = {("nota", "test_execution", "comparateur_version")}
+    moteur = _Moteur(["nota", "public"], absentes)
+    monkeypatch.setattr(script, "_engine", lambda _core: moteur)
+    assert (await script._etat("nota_core"))["metriques"] is False
+
+
 async def test_toutes_les_colonnes_metriques_presentes(monkeypatch: pytest.MonkeyPatch) -> None:
     script = _script()
-    monkeypatch.setattr(script, "_engine", lambda _core: _Moteur(set()))
+    monkeypatch.setattr(script, "_engine", lambda _core: _Moteur(["nota", "public"], set()))
     assert (await script._etat("adam_core"))["metriques"] is True
 
 
@@ -119,11 +137,14 @@ def test_ddl_metriques_joue_le_ddl_direct_du_paquet_trouve(
     spec.loader.exec_module(module)
     appels: list[str] = []
 
-    async def _ddl(core: str) -> None:
+    async def _ddl(core: str) -> list[str]:
         appels.append(core)
+        return ["public", "nota"]
 
     monkeypatch.setattr(module.migrer, "_paquet_core", lambda: ("nota_core", Path("x")))
     monkeypatch.setattr(module.migrer, "_ddl_direct", _ddl)
     module.main()
     assert appels == ["nota_core"]
-    assert "nota_core : colonnes des metriques en place" in capsys.readouterr().out
+    assert (
+        "nota_core : colonnes des metriques en place dans public, nota" in capsys.readouterr().out
+    )

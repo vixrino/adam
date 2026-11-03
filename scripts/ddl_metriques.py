@@ -7,7 +7,8 @@ alembic, sans passer par l'etat que calcule migrer_expected_page_count.py.
 Avant sa correction, ce script-la jugeait la base a jour des que
 test_recipe.config existait, et ne creait donc pas
 test_execution.comparateur_version : le worker de benchmark plantait a chaque
-cycle. Ici, le DDL direct est joue sans condition ; chaque instruction est en
+cycle. Ici, le DDL direct est joue sans condition, dans chaque schema qui
+porte les tables (nota en a deux, public et nota) ; chaque instruction est en
 IF NOT EXISTS, le relancer ne change rien.
 
 Le paquet *_core est trouve sous src/ : le script tourne tel quel dans les deux
@@ -31,8 +32,10 @@ import migrer_expected_page_count as migrer  # noqa: E402
 def main() -> None:
     """Joue le DDL direct sur la base du .env et dit quel paquet a servi."""
     core, _ = migrer._paquet_core()
-    asyncio.run(migrer._ddl_direct(core))
-    print(f" {core} : colonnes des metriques en place ({len(migrer.DDL_DIRECT)} instructions)")
+    schemas = asyncio.run(migrer._ddl_direct(core))
+    if not schemas:
+        raise SystemExit(f" {core} : aucune table dataset en base, rien a mettre au niveau")
+    print(f" {core} : colonnes des metriques en place dans {', '.join(schemas)}")
 
 
 if __name__ == "__main__":

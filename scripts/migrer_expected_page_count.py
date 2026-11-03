@@ -372,6 +372,26 @@ def _engine(core: str) -> Any:
     return create_async_engine(settings.async_database_url)
 
 
+async def _schemas(conn: Any) -> List[str]:
+    """Schemas Postgres qui portent les tables de l'application.
+
+    Une base nota avait a la fois public.test_execution et nota.test_execution :
+    l'etat lu dans public disait tout en place, le DDL sans schema allait dans
+    public, et le worker, qui lit nota, plantait toujours. Chaque schema est donc
+    verifie et mis au niveau.
+    """
+    from sqlalchemy import text
+
+    lignes = await conn.execute(
+        text(
+            "SELECT DISTINCT table_schema FROM information_schema.tables "
+            "WHERE table_name = 'dataset' "
+            "AND table_schema NOT IN ('pg_catalog', 'information_schema') ORDER BY 1"
+        )
+    )
+    return [r[0] for r in lignes]
+
+
 async def _versions_alembic(core: str) -> List[str]:
     from sqlalchemy import text
 
@@ -395,40 +415,53 @@ async def _etat(core: str) -> Dict[str, bool]:
 
     requete_colonne = text(
         "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
-        "WHERE table_name = :t AND column_name = :c)"
+        "WHERE table_schema = :s AND table_name = :t AND column_name = :c)"
     )
+    requete_table = text(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = :s AND table_name = :t)"
+    )
+
+    async def colonne(conn: Any, schema: str, table: str, nom: str) -> bool:
+        resultat = await conn.execute(requete_colonne, {"s": schema, "t": table, "c": nom})
+        return bool(resultat.scalar_one())
+
     engine = _engine(core)
     try:
         async with engine.connect() as conn:
-            page_count = await conn.execute(
-                requete_colonne, {"t": "dataset", "c": "expected_page_count"}
+            # Un element n'est en place que s'il l'est dans chaque schema.
+            etat = dict.fromkeys(
+                ("expected_page_count", "description", "schema_page", "metriques"), True
             )
-            description = await conn.execute(
-                requete_colonne, {"t": "field_spec", "c": "description"}
-            )
-            schema_page = await conn.execute(text("SELECT to_regclass('schema_page') IS NOT NULL"))
-            metriques = True
-            for table, colonne in COLONNES_METRIQUES:
-                presente = await conn.execute(requete_colonne, {"t": table, "c": colonne})
-                metriques = metriques and bool(presente.scalar_one())
-            return {
-                "expected_page_count": bool(page_count.scalar_one()),
-                "description": bool(description.scalar_one()),
-                "schema_page": bool(schema_page.scalar_one()),
-                "metriques": metriques,
-            }
+            for schema in await _schemas(conn):
+                etat["expected_page_count"] &= await colonne(
+                    conn, schema, "dataset", "expected_page_count"
+                )
+                etat["description"] &= await colonne(conn, schema, "field_spec", "description")
+                table = await conn.execute(requete_table, {"s": schema, "t": "schema_page"})
+                etat["schema_page"] &= bool(table.scalar_one())
+                for nom_table, nom in COLONNES_METRIQUES:
+                    etat["metriques"] &= await colonne(conn, schema, nom_table, nom)
+            return etat
     finally:
         await engine.dispose()
 
 
-async def _ddl_direct(core: str) -> None:
+async def _ddl_direct(core: str) -> List[str]:
+    """Joue le DDL direct dans chaque schema de l'application ; rend ces schemas."""
     from sqlalchemy import text
 
     engine = _engine(core)
     try:
         async with engine.begin() as conn:
-            for instruction in DDL_DIRECT:
-                await conn.execute(text(instruction))
+            schemas = await _schemas(conn)
+            for schema in schemas:
+                quote = conn.dialect.identifier_preparer.quote(schema)
+                # SET LOCAL : le search_path ne vaut que pour cette transaction.
+                await conn.execute(text(f"SET LOCAL search_path TO {quote}"))
+                for instruction in DDL_DIRECT:
+                    await conn.execute(text(instruction))
+            return schemas
     finally:
         await engine.dispose()
 
