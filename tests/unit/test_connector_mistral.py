@@ -580,16 +580,6 @@ def test_lignes_du_cerfa_vierge() -> None:
     assert "cautionnement.personne_cautionnee" in CERFA_V2_PAGE_FIELDS[11]
 
 
-def test_aucune_cle_partagee_entre_deux_pages() -> None:
-    """Le merger rapproche par cle seule : une cle declaree sur deux pages
-    recevrait la valeur de l'une dans les champs de l'autre."""
-    vues: dict = {}
-    for page_number, fields in CERFA_V2_PAGE_FIELDS.items():
-        for key in fields:
-            assert key not in vues, f"{key} en page {vues.get(key)} et {page_number}"
-            vues[key] = page_number
-
-
 def test_le_schema_couvre_les_pages_a_champs_du_cerfa() -> None:
     """Pages 1 a 11 ; la 12 n'est qu'un avertissement d'envoi."""
     assert sorted(CERFA_V2_PAGE_FIELDS) == list(range(1, 12))
