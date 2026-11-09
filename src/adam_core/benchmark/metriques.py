@@ -394,22 +394,22 @@ def _avertissements(
         # Execution faite avant que le worker ne compte la matrice : ses champs
         # ont ete juges, mais vp/fp/fn/vn valent leur defaut, 0.
         messages.append(
-            "execution anterieure aux metriques : comptes non enregistres, "
+            "exécution antérieure aux métriques : comptes non enregistrés, "
             "relancer la recette pour obtenir le score"
         )
     if documents < DOCUMENTS_MINIMUM:
         messages.append(
-            f"echantillon trop petit : {documents} document(s), moins de {DOCUMENTS_MINIMUM}"
+            f"échantillon trop petit : {documents} document(s), moins de {DOCUMENTS_MINIMUM}"
         )
     if not global_["assez_de_donnees"]:
         messages.append(
-            f"pas assez de donnees : {global_['valeurs_jugees']} valeur(s) jugee(s), "
+            f"pas assez de données : {global_['valeurs_jugees']} valeur(s) jugée(s), "
             f"moins de {EFFECTIF_MINIMAL}"
         )
     if perimetre and verifies < perimetre:
         messages.append(
-            f"verification partielle : {verifies} champ(s) verifie(s) sur {perimetre} ; "
-            "les taux ne valent que pour les champs regardes par un humain"
+            f"vérification partielle : {verifies} champ(s) vérifié(s) sur {perimetre} ; "
+            "les taux ne valent que pour les champs regardés par un humain"
         )
     if execution.get("error_message"):
         messages.append(str(execution["error_message"]))

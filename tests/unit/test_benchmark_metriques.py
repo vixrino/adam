@@ -133,9 +133,9 @@ class TestCalculer:
         petite = dict(EXECUTION, documents_compared=1, fields_human_verified=40)
         m = calculer([_ligne("a.b", vp=2)], petite)
         texte = " ".join(m["avertissements"])
-        assert "echantillon trop petit" in texte
-        assert "pas assez de donnees" in texte
-        assert "verification partielle" in texte
+        assert "échantillon trop petit" in texte
+        assert "pas assez de données" in texte
+        assert "vérification partielle" in texte
         assert m["echantillon"]["trop_petit"] is True
 
 
@@ -164,7 +164,7 @@ class TestGardeFousLecture:
     def test_execution_anterieure_aux_metriques_signalee(self) -> None:
         """Lignes ecrites avant la matrice : compared > 0, vp/fp/fn/vn a 0."""
         m = calculer([_ligne("a.b", compared=7, diff_count=2)], EXECUTION)
-        assert any("anterieure aux metriques" in a for a in m["avertissements"])
+        assert any("antérieure aux métriques" in a for a in m["avertissements"])
 
     def test_sans_version_non_comparable(self) -> None:
         sans = dict(EXECUTION, comparateur_version=None)

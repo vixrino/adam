@@ -304,3 +304,50 @@ class TestExecutions:
             "champs_verifies": 2,
         }
         assert m["global"]["justes"] == 9  # le score reste celui de tout le test
+
+
+class TestRapportPdf:
+    def test_pdf_avec_filtres(self) -> None:
+        cr = SimpleNamespace(
+            verdict="WRONG",
+            diff_kind="TOTAL",
+            expected_value=None,
+            observed_value="Sofinco",
+            edit_distance=7,
+        )
+        df = SimpleNamespace(document_id=14, group_id=None)
+        fs = SimpleNamespace(section_id="credits", field_key="montant", page=10, sensitive=False)
+        db = _db(
+            {
+                "TestExecution": _execution(),
+                "TestRecipe": _recette(),
+                "Dataset": SimpleNamespace(name="cerfa"),
+            },
+            _resultat(
+                scalars=[
+                    _rapport("deposant.nom", vp=8, fn=2),
+                    _rapport("credits.montant", vp=1, fp=3, value_type="NUMBER"),
+                ]
+            ),
+            _resultat(),
+            _resultat(all_=[(cr, df, fs, "inventee")]),
+        )
+        r = _client(SUPERVISEUR, db).get(
+            "/test-executions/1/metriques.pdf", params={"type_champ": "NUMBER"}
+        )
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"] == "application/pdf"
+        assert 'filename="rapport-test-1.pdf"' in r.headers["content-disposition"]
+        assert r.content.startswith(b"%PDF-")
+        # Un seul champ retenu : une seule requete d'extraits.
+        assert db.execute.await_count == 3
+
+    def test_pdf_avant_la_fin_409(self) -> None:
+        db = _db({"TestExecution": _execution("RUNNING")})
+        r = _client(SUPERVISEUR, db).get("/test-executions/1/metriques.pdf")
+        assert r.status_code == 409
+
+    def test_pdf_reserve_au_benchmark(self) -> None:
+        db = _db({"TestExecution": _execution()})
+        r = _client(OPERATEUR, db).get("/test-executions/1/metriques.pdf")
+        assert r.status_code == 403
