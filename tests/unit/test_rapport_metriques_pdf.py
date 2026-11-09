@@ -171,3 +171,22 @@ def test_cle_trop_longue_coupee_dans_sa_colonne() -> None:
         if s["text"] and s["text"] in cle
     ]
     assert len(spans) >= 2 and all(s["bbox"][2] <= limite for s in spans)
+
+
+def test_sans_fichier_de_police_les_polices_integrees(monkeypatch: Any) -> None:
+    """Un depot sans le dossier polices/ rend quand meme le PDF, en Helvetica."""
+    from adam_api.services import rapport_metriques_pdf as module
+
+    for nom in ("_REGULIER", "_MOYEN", "_DEMI_GRAS", "_GRAS", "_FIXE"):
+        police = getattr(module, nom)
+        sans = module._Police(  # pylint: disable=protected-access
+            police.nom, "absente.ttf", police.interne, crenage=police.crenage
+        )
+        monkeypatch.setattr(module, nom, sans)
+    m = calculer(_lignes(), EXECUTION)
+    pdf = _rendre(m, {"deposant.nom": [_ecart(14, "Durand", "Dupont")]})
+    texte = _texte(pdf)
+    assert "Rapport de qualité d'extraction" in texte and "Doc #14 · page 1" in texte
+    polices = {f[3] for f in pymupdf.open("pdf", pdf)[0].get_fonts()}
+    # Les polices integrees de MuPDF : Nimbus Sans (Helvetica) et Nimbus Mono.
+    assert any("Nimbus Sans" in p for p in polices) and not any("Inter" in p for p in polices)

@@ -42,19 +42,20 @@ _POLICES = Path(__file__).with_name("polices")
 
 
 class _Police:
-    """Une police de la maquette et ses metriques (en fraction de la taille)."""
+    """Une police de la maquette.
 
-    def __init__(
-        self, nom: str, fichier: str, ascendant: float, descendant: float, crenage: bool = True
-    ) -> None:
+    Le fichier de ``polices/`` s'il est la ; sinon la police integree a
+    PyMuPDF (Helvetica, Helvetica gras, Courier) : le PDF reste juste, a peine
+    moins fidele a la maquette, et un depot peut se passer des fichiers.
+    """
+
+    def __init__(self, nom: str, fichier: str, interne: str, crenage: bool = True) -> None:
         self.nom = nom
-        self.fichier = fichier
-        self.chemin = str(_POLICES / fichier)
+        self.chemin = _POLICES / fichier
+        self.interne = interne
         #: Faconner le texte comme le navigateur (crenage) ; inutile a chasse fixe.
         self.crenage = crenage
         self._places: Dict[Tuple[str, float], Tuple[str, List[float], float]] = {}
-        self.ascendant = ascendant
-        self.descendant = descendant
         self._font: Optional[pymupdf.Font] = None
         self._largeurs: Dict[Tuple[str, float], float] = {}
 
@@ -62,8 +63,16 @@ class _Police:
     def font(self) -> pymupdf.Font:
         """La police chargee une fois, pour mesurer et pour ecrire."""
         if self._font is None:
-            self._font = pymupdf.Font(fontfile=self.chemin)
+            if self.chemin.is_file():
+                self._font = pymupdf.Font(fontfile=str(self.chemin))
+            else:
+                self._font = pymupdf.Font(self.interne)
         return self._font
+
+    @property
+    def ascendant(self) -> float:
+        """Hauteur au-dessus de la ligne de base, en fraction de la taille."""
+        return float(self.font.ascender)
 
     def glyphes(self, texte: str) -> str:
         """Identifiants des glyphes, en hexadecimal, pour l'operateur TJ."""
@@ -131,15 +140,22 @@ class _Police:
         return resultat
 
 
-# Metriques des fichiers : Inter 0,96875 / 0,2421875 ; JetBrains Mono 1,02 / 0,30.
-# La hauteur de ligne « normale » du navigateur est leur somme.
-_REGULIER = _Police("inter-4", "Inter-Regular.ttf", 0.96875, 0.2421875)
-_MOYEN = _Police("inter-5", "Inter-Medium.ttf", 0.96875, 0.2421875)
-_DEMI_GRAS = _Police("inter-6", "Inter-SemiBold.ttf", 0.96875, 0.2421875)
-_GRAS = _Police("inter-7", "Inter-Bold.ttf", 0.96875, 0.2421875)
-_FIXE = _Police("mono-4", "JetBrainsMono-Regular.ttf", 1.02, 0.30, crenage=False)
+# Graisses de la maquette ; sans fichier, le moyen et le demi-gras deviennent
+# du regulier et du gras.
+_REGULIER = _Police("inter-4", "Inter-Regular.ttf", "helv")
+_MOYEN = _Police("inter-5", "Inter-Medium.ttf", "helv")
+_DEMI_GRAS = _Police("inter-6", "Inter-SemiBold.ttf", "hebo")
+_GRAS = _Police("inter-7", "Inter-Bold.ttf", "hebo")
+_FIXE = _Police("mono-4", "JetBrainsMono-Regular.ttf", "cour", crenage=False)
 
 _BROUILLON = pymupdf.Rect(0, 0, 4000, 200)
+
+
+def _archive(police: _Police) -> pymupdf.Archive:
+    """La police, fichier ou integree, sous le nom que la CSS reclame."""
+    archive = pymupdf.Archive()
+    archive.add(police.font.buffer, f"{police.nom}.ttf")
+    return archive
 
 
 def _faconner(police: _Police, texte: str, taille: float) -> List[Tuple[str, float]]:
@@ -148,12 +164,10 @@ def _faconner(police: _Police, texte: str, taille: float) -> List[Tuple[str, flo
     try:
         page = document.new_page(width=_BROUILLON.width, height=_BROUILLON.height)
         css = (
-            f"@font-face{{font-family:F;src:url({police.fichier})}}"
+            f"@font-face{{font-family:F;src:url({police.nom}.ttf)}}"
             f"*{{font-family:F;font-size:{taille}px;white-space:pre;margin:0}}"
         )
-        page.insert_htmlbox(
-            _BROUILLON, html.escape(texte), css=css, archive=pymupdf.Archive(str(_POLICES))
-        )
+        page.insert_htmlbox(_BROUILLON, html.escape(texte), css=css, archive=_archive(police))
         return [
             (c["c"], float(c["origin"][0]))
             for bloc in page.get_text("rawdict")["blocks"]
@@ -300,7 +314,7 @@ class _Page:
         ajustements tronques derivaient jusqu'a 0,5 px en fin de ligne.
         """
         if police.nom not in self._polices:
-            self.page.insert_font(fontname=police.nom, fontfile=police.chemin)
+            self.page.insert_font(fontname=police.nom, fontbuffer=police.font.buffer)
             self._polices.add(police.nom)
         base = (y + round(police.ascendant * taille)) * _K
         if not police.crenage or len(texte) < 2:
