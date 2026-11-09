@@ -89,10 +89,12 @@ def test_entete_taux_et_pied_de_page() -> None:
     assert "NOTA · Rapport de qualité d'extraction" in texte
     assert "Dataset cerfa_13594-02_v2 · recette #3" in texte
     assert "Moteur : mistral · 12 documents" in texte and "Édité le 09/11/2026" in texte
-    # 28 justes ; 28 + 3 fausses + 1 manquee = 32 valeurs remplies
+    # Taux de lectures justes = global.taux_lectures_justes, le champ que lit la
+    # page : 28 justes sur 34 ecrites (28 + 3 fausses + 3 inventees). Donnees
+    # asymetriques (1 manquee, 3 inventees) : le rappel, 28/32, donnerait 88 %.
     assert "Taux de lectures justes" in texte
-    assert "· 28 lus correctement sur 32" in texte
-    assert "88 %" in texte  # 28 / 32
+    assert "· 28 lus correctement sur 34" in texte
+    assert "82 %" in texte and "88 %" not in texte
     assert "Marge d'incertitude : " in texte
     assert "Généré par NOTA · comparateur v1 · schéma 9e40b5c6" in texte
     assert "Page 1 / 1" in texte
@@ -190,3 +192,22 @@ def test_sans_fichier_de_police_les_polices_integrees(monkeypatch: Any) -> None:
     polices = {f[3] for f in pymupdf.open("pdf", pdf)[0].get_fonts()}
     # Les polices integrees de MuPDF : Nimbus Sans (Helvetica) et Nimbus Mono.
     assert any("Nimbus Sans" in p for p in polices) and not any("Inter" in p for p in polices)
+
+
+def test_filtre_section_par_son_libelle() -> None:
+    m = calculer(_lignes(), EXECUTION, filtres=FiltresChamps(sections=("gestion_budget",)))
+    texte = _texte(_rendre(m))
+    assert "Section : Gestion_budget" in texte  # libelle du schema, pas l'id
+
+
+def test_ligne_des_filtres_longue_passe_a_la_ligne() -> None:
+    lignes = [_ligne(f"section_au_libelle_tres_long_{i}.champ", vp=1, fn=1) for i in range(6)]
+    sections = tuple(f"section_au_libelle_tres_long_{i}" for i in range(6))
+    pdf = _rendre(calculer(lignes, EXECUTION, filtres=FiltresChamps(sections=sections)))
+    page = pymupdf.open("pdf", pdf)[0]
+    droite = 738 * page.rect.width / 794
+    spans = [
+        s for b in page.get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]
+    ]
+    assert "6 champs" in _texte(pdf)
+    assert all(s["bbox"][2] <= droite for s in spans if s["text"].strip())

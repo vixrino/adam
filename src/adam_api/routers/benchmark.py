@@ -407,7 +407,7 @@ async def _metriques(
         ).all()
     }
     colonnes = [c.name for c in EvaluationReport.__table__.columns]
-    return calculer(
+    metriques = calculer(
         [
             {**{c: getattr(rapport, c) for c in colonnes}, "section_label": libelle}
             for rapport, libelle in lignes
@@ -418,6 +418,14 @@ async def _metriques(
         tous_les_champs,
         filtres,
     )
+    # Pour l'en-tete « Dataset X · recette #3 », sans deux appels de plus.
+    dataset = await db.get(Dataset, recette.dataset_id) if recette else None
+    metriques["recette"] = {"id": execution.recipe_id, "name": getattr(recette, "name", None)}
+    metriques["dataset"] = {
+        "id": getattr(recette, "dataset_id", None),
+        "name": getattr(dataset, "name", None),
+    }
+    return metriques
 
 
 @router.get("/test-executions/comparaison")
@@ -478,9 +486,6 @@ async def metriques_pdf(
     taux et marge, repartition, filtres appliques, champs en erreur, extraits
     des documents en erreur. Un champ sensible n'y montre jamais de valeur."""
     metriques = await _metriques(db, execution_id, False, filtres)
-    execution = await db.get(TestExecution, execution_id)
-    recette = await db.get(TestRecipe, execution.recipe_id) if execution else None
-    dataset = await db.get(Dataset, recette.dataset_id) if recette else None
     extraits = {
         champ: rapport_metriques_pdf.dict_ecarts(
             await lire_ecarts(
@@ -496,11 +501,8 @@ async def metriques_pdf(
     pdf = await run_in_threadpool(
         rapport_metriques_pdf.rendre_pdf,
         metriques,
-        recette={
-            "id": execution.recipe_id if execution else None,
-            "name": getattr(recette, "name", None),
-        },
-        dataset=getattr(dataset, "name", None),
+        recette=metriques["recette"],
+        dataset=metriques["dataset"]["name"],
         extraits=extraits,
         edite_le=datetime.now(timezone.utc),
     )
@@ -524,18 +526,15 @@ def _decouper_champ(champ: str) -> Tuple[str, Optional[str]]:
     return trouve["cle"], trouve["ligne"]
 
 
-async def lire_ecarts(
-    db: AsyncSession,
+def _requete_ecarts(
     execution_id: int,
     *,
     verdict: Optional[str] = None,
     field_key: Optional[str] = None,
     champs: Optional[List[str]] = None,
     types_erreur: Optional[List[str]] = None,
-    limit: Optional[int] = 100,
-    offset: int = 0,
-) -> List[EcartOut]:
-    """Les ecarts d'une execution, document par document.
+) -> Any:
+    """La requete des ecarts filtres, sans ordre ni pagination.
 
     Le type d'erreur se deduit de la valeur attendue : vide, le moteur l'a
     inventee. Un champ sensible ne stocke pas cette valeur ; elle est alors lue
@@ -557,16 +556,7 @@ async def lire_ecarts(
         .join(DocumentField, DocumentField.id == ComparisonResult.document_field_id)
         .join(FieldSpec, FieldSpec.id == DocumentField.field_spec_id)
         .where(ComparisonResult.execution_id == execution_id)
-        .order_by(
-            DocumentField.document_id,
-            FieldSpec.page,
-            FieldSpec.display_order,
-            ComparisonResult.id,
-        )
-        .offset(offset)
     )
-    if limit is not None:
-        requete = requete.limit(limit)
     if verdict is not None:
         requete = requete.where(ComparisonResult.verdict == verdict)
     if field_key is not None:
@@ -590,8 +580,39 @@ async def lire_ecarts(
         requete = requete.where(or_(*conditions))
     if types_erreur:
         requete = requete.where(type_erreur.in_(types_erreur))
+    return requete
+
+
+async def lire_ecarts(
+    db: AsyncSession,
+    execution_id: int,
+    *,
+    limit: Optional[int] = 100,
+    offset: int = 0,
+    **filtres: Any,
+) -> List[EcartOut]:
+    """Les ecarts d'une execution, document par document (filtres de
+    _requete_ecarts : verdict, field_key, champs, types_erreur)."""
+    requete = (
+        _requete_ecarts(execution_id, **filtres)
+        .order_by(
+            DocumentField.document_id,
+            FieldSpec.page,
+            FieldSpec.display_order,
+            ComparisonResult.id,
+        )
+        .offset(offset)
+    )
+    if limit is not None:
+        requete = requete.limit(limit)
     lignes = (await db.execute(requete)).all()
     return [_ecart_out(cr, df, fs, str(type_)) for cr, df, fs, type_ in lignes]
+
+
+async def compter_ecarts(db: AsyncSession, execution_id: int, **filtres: Any) -> int:
+    """Nombre d'ecarts avec les memes filtres : le N de « Document i sur N »."""
+    requete = select(func.count()).select_from(_requete_ecarts(execution_id, **filtres).subquery())
+    return int((await db.execute(requete)).scalar_one())
 
 
 def _ecart_out(cr: ComparisonResult, df: DocumentField, fs: FieldSpec, type_: str) -> EcartOut:
@@ -619,6 +640,7 @@ def _ecart_out(cr: ComparisonResult, df: DocumentField, fs: FieldSpec, type_: st
 @router.get("/test-executions/{execution_id}/ecarts", response_model=List[EcartOut])
 async def ecarts_execution(
     execution_id: int,
+    reponse: Response,
     verdict: Optional[str] = Query(None, description="MISSING ou WRONG"),
     field_key: Optional[str] = Query(None, description="Prefixe de cle"),
     champ: List[str] = Query(
@@ -632,18 +654,17 @@ async def ecarts_execution(
 ) -> List[EcartOut]:
     """Les erreurs du moteur, document par document. Avec ``champ`` : les
     documents ou ce champ est en erreur, pour les parcourir un a un.
+    L'en-tete X-Total-Count donne leur nombre, toutes pages confondues.
 
     Un champ sensible n'y montre jamais de valeur : seuls le verdict, le type
     d'erreur, la categorie et l'ampleur."""
     if await db.get(TestExecution, execution_id) is None:
         raise HTTPException(status_code=404, detail="Execution introuvable")
-    return await lire_ecarts(
-        db,
-        execution_id,
-        verdict=verdict,
-        field_key=field_key,
-        champs=champ,
-        types_erreur=list(type_erreur),
-        limit=limit,
-        offset=offset,
-    )
+    filtres: Dict[str, Any] = {
+        "verdict": verdict,
+        "field_key": field_key,
+        "champs": champ,
+        "types_erreur": list(type_erreur),
+    }
+    reponse.headers["X-Total-Count"] = str(await compter_ecarts(db, execution_id, **filtres))
+    return await lire_ecarts(db, execution_id, limit=limit, offset=offset, **filtres)

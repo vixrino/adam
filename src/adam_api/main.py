@@ -62,7 +62,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Image-Dpi"],
+    # Content-Disposition : nom du PDF telecharge ; X-Total-Count : pagination.
+    expose_headers=["X-Image-Dpi", "Content-Disposition", "X-Total-Count"],
 )
 # Le plus externe : compresse toute reponse de plus de 1 Ko que le client
 # accepte en gzip (les metriques d'un CERFA : ~10x plus legeres).

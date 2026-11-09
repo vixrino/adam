@@ -148,9 +148,40 @@ class TestComparer:
         c = comparer(a, b)
         assert c["comparable"] is True
         assert c["global"]["taux_valeurs_trouvees"]["evolution"] == 0.1875  # 11/16 -> 14/16
-        # a.c n'a pas bouge : compte, pas liste.
-        assert [ch["champ"] for ch in c["par_champ"]] == ["a.b"]
+        # Tous les champs sont listes ; a.c n'a pas bouge, il est aussi compte.
+        assert {ch["champ"] for ch in c["par_champ"]} == {"a.b", "a.c"}
         assert c["champs_inchanges"] == 1
+        ab = next(ch for ch in c["par_champ"] if ch["champ"] == "a.b")
+        assert (ab["reussite_a"], ab["reussite_b"], ab["ecart_pts"]) == (0.6, 0.9, 30.0)
+
+    def test_champ_d_un_seul_cote_et_regressions_d_abord(self) -> None:
+        a = calculer(
+            [_ligne("a.b", vp=9, fn=1), _ligne("a.c", vp=5)], EXECUTION, tous_les_champs=True
+        )
+        b = calculer(
+            [_ligne("a.b", vp=5, fn=5), _ligne("a.d", vp=3)],
+            dict(EXECUTION, id=2),
+            tous_les_champs=True,
+        )
+        c = comparer(a, b)
+        par_champ = {ch["champ"]: ch for ch in c["par_champ"]}
+        assert c["par_champ"][0]["champ"] == "a.b"  # -40 pts : la regression en tete
+        assert par_champ["a.c"]["present_b"] is False and par_champ["a.c"]["ecart_pts"] is None
+        assert par_champ["a.d"]["present_a"] is False and par_champ["a.d"]["reussite_b"] == 1.0
+
+    def test_par_section_et_documents(self) -> None:
+        lignes = [_ligne("a.b", vp=6, fn=4, section_label="Section A")]
+        a = calculer(lignes, EXECUTION, tous_les_champs=True)
+        b = calculer(
+            [_ligne("a.b", vp=8, fn=2, section_label="Section A")],
+            dict(EXECUTION, id=2, documents_compared=11),
+            tous_les_champs=True,
+        )
+        c = comparer(a, b)
+        assert c["par_section"]["a"]["libelle"] == "Section A"
+        assert c["par_section"]["a"]["ecart_pts"] == 0.0  # pas de fp : 100 % des deux cotes
+        assert (c["a"]["documents"], c["b"]["documents"]) == (12, 11)
+        assert "nombre de documents different" in c["raisons"]
 
     def test_non_comparable_signale(self) -> None:
         a = calculer([_ligne("a.b", vp=6)], EXECUTION)
@@ -248,3 +279,19 @@ class TestParChamp:
             "champs": 0,
             "champs_verifies": 4,
         }
+
+
+class TestLibellesEtEchantillon:
+    def test_par_section_porte_son_libelle(self) -> None:
+        m = calculer(
+            [_ligne("co_deposant.nom", vp=1, section_label="Co-déposant"), _ligne("x.y", vp=1)],
+            EXECUTION,
+        )
+        assert m["par_section"]["co_deposant"]["libelle"] == "Co-déposant"
+        assert m["par_section"]["x"]["libelle"] == "x"  # sans libelle : l'id
+
+    def test_champs_par_document(self) -> None:
+        m = calculer([_ligne("a.b", vp=1)], dict(EXECUTION, fields_compared=642 * 12))
+        assert m["echantillon"]["champs_par_document"] == 642
+        vide = calculer([_ligne("a.b", vp=1)], dict(EXECUTION, documents_compared=0))
+        assert vide["echantillon"]["champs_par_document"] is None

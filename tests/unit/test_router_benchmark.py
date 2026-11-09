@@ -24,6 +24,7 @@ def _resultat(
 ) -> MagicMock:
     r = MagicMock()
     r.scalar_one_or_none.return_value = scalar
+    r.scalar_one.return_value = scalar
     r.scalars.return_value.all.return_value = scalars or []
     r.all.return_value = all_ or []
     return r
@@ -236,9 +237,14 @@ class TestExecutions:
         )
         df = SimpleNamespace(document_id=14, group_id=None)
         fs = SimpleNamespace(section_id="gestion_budget", field_key="iban", page=4, sensitive=True)
-        db = _db({"TestExecution": _execution()}, _resultat(all_=[(cr, df, fs, "fausse")]))
+        db = _db(
+            {"TestExecution": _execution()},
+            _resultat(scalar=1),  # le compte, pour X-Total-Count
+            _resultat(all_=[(cr, df, fs, "fausse")]),
+        )
         r = _client(SUPERVISEUR, db).get("/test-executions/1/ecarts")
         assert r.status_code == 200, r.text
+        assert r.headers["X-Total-Count"] == "1"
         ecart = r.json()[0]
         assert ecart["field_key"] == "gestion_budget.iban"
         assert ecart["champ"] == "gestion_budget.iban" and ecart["type_erreur"] == "fausse"
@@ -256,7 +262,11 @@ class TestExecutions:
         fs = SimpleNamespace(
             section_id="credits_consommation", field_key="nom_creancier", page=11, sensitive=False
         )
-        db = _db({"TestExecution": _execution()}, _resultat(all_=[(cr, df, fs, "inventee")]))
+        db = _db(
+            {"TestExecution": _execution()},
+            _resultat(scalar=7),
+            _resultat(all_=[(cr, df, fs, "inventee")]),
+        )
         r = _client(SUPERVISEUR, db).get(
             "/test-executions/1/ecarts",
             params={
@@ -267,6 +277,7 @@ class TestExecutions:
         assert r.status_code == 200, r.text
         assert r.json()[0]["champ"] == "credits_consommation.nom_creancier[pret_7]"
         assert r.json()[0]["type_erreur"] == "inventee"
+        assert r.headers["X-Total-Count"] == "7"  # toutes pages confondues
 
     def test_ecarts_champ_illisible_422(self) -> None:
         db = _db({"TestExecution": _execution()})
@@ -309,6 +320,8 @@ class TestExecutions:
             "champs_verifies": 2,
         }
         assert m["global"]["justes"] == 9  # le score reste celui de tout le test
+        assert m["recette"] == {"id": 3, "name": "r"}
+        assert m["dataset"]["id"] == 4
 
 
 class TestRapportPdf:
