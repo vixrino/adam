@@ -210,4 +210,7 @@ def test_ligne_des_filtres_longue_passe_a_la_ligne() -> None:
         s for b in page.get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]
     ]
     assert "6 champs" in _texte(pdf)
-    assert all(s["bbox"][2] <= droite for s in spans if s["text"].strip())
+    # Un demi-point de tolerance : un texte aligne a droite finit pile sur la
+    # marge, et le contour d'un glyphe Helvetica (polices integrees, sans les
+    # fichiers de polices/) la depasse d'une fraction invisible.
+    assert all(s["bbox"][2] <= droite + 0.5 for s in spans if s["text"].strip())
