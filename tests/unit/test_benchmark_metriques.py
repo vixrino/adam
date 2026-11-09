@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from adam_core.benchmark.metriques import bloc, calculer, comparer, wilson
+from adam_core.benchmark.metriques import (
+    FiltresChamps,
+    bloc,
+    calculer,
+    comparer,
+    detail_champ,
+    wilson,
+)
 
 
 def _ligne(field_key: str, **comptes: Any) -> Dict[str, Any]:
@@ -39,7 +46,11 @@ class TestFormules:
         assert b["taux_lectures_justes"] == 0.8 and b["taux_valeurs_trouvees"] == 0.8
         assert b["score"] == 0.8
         assert (b["justes"], b["fausses"], b["manquees"], b["inventees"], b["vides"]) == (
-            8, 1, 1, 1, 50,
+            8,
+            1,
+            1,
+            1,
+            50,
         )
         assert b["valeurs_jugees"] == 11  # chaque valeur dans une seule case
         assert b["taux_erreur"] == round(3 / 11, 4)
@@ -160,3 +171,80 @@ class TestGardeFousLecture:
         c = comparer(calculer([_ligne("a.b", vp=5)], sans), calculer([_ligne("a.b", vp=5)], sans))
         assert c["comparable"] is False
         assert "version du comparateur differente" in c["raisons"]
+
+
+class TestParChamp:
+    """Reussite, documents en erreur, echec principal, et les filtres."""
+
+    def _lignes(self) -> list:
+        return [
+            # 10 documents : 7 justes, 2 fausses, 1 manquee -> reussite 0.7
+            _ligne("deposant.nom", vp=7, fp=2, fn=3, substitutions=2),
+            # 4 documents : 1 juste, 3 inventees -> reussite 0.25
+            _ligne("credits.montant", vp=1, fp=3, value_type="NUMBER"),
+            # 5 documents, tous justes
+            _ligne("deposant.ville", vp=5, vn=5),
+            # que des vides : pas de reussite
+            _ligne("certification.lieu", vn=10),
+        ]
+
+    def test_detail_champ(self) -> None:
+        champ = bloc([_ligne("a.b", vp=7, fp=2, fn=3, substitutions=2)], fourchettes=False)
+        assert detail_champ(champ) == {
+            "reussite": 0.7,
+            "documents_en_erreur": 3,
+            "echec_principal": "fausse",
+        }
+        juste = bloc([_ligne("a.b", vp=4)], fourchettes=False)
+        assert detail_champ(juste)["echec_principal"] is None
+        vide = bloc([_ligne("a.b", vn=4)], fourchettes=False)
+        assert detail_champ(vide)["reussite"] is None
+
+    def test_a_egalite_fausse_avant_les_autres(self) -> None:
+        champ = bloc([_ligne("a.b", fp=2, fn=2, substitutions=1)], fourchettes=False)
+        # 1 fausse, 1 manquee, 1 inventee
+        assert detail_champ(champ)["echec_principal"] == "fausse"
+
+    def test_par_champ_porte_le_detail_et_trie_par_reussite(self) -> None:
+        m = calculer(self._lignes(), EXECUTION, tous_les_champs=True)
+        assert [c["champ"] for c in m["par_champ"]] == [
+            "credits.montant",
+            "deposant.nom",
+            "deposant.ville",
+            "certification.lieu",
+        ]
+        montant = m["par_champ"][0]
+        assert montant["reussite"] == 0.25 and montant["documents_en_erreur"] == 3
+        assert montant["echec_principal"] == "inventee" and montant["section"] == "credits"
+
+    def test_sans_filtre_selection_compte_tout(self) -> None:
+        m = calculer(self._lignes(), EXECUTION)
+        assert m["selection"] == {"filtres": {}, "champs": 2, "champs_verifies": 4}
+
+    def test_chaque_filtre(self) -> None:
+        def champs(**filtres: Any) -> list:
+            m = calculer(
+                self._lignes(), EXECUTION, tous_les_champs=True, filtres=FiltresChamps(**filtres)
+            )
+            return [c["champ"] for c in m["par_champ"]]
+
+        assert champs(recherche="NOM") == ["deposant.nom"]
+        assert champs(types_champ=("number",)) == ["credits.montant"]
+        assert champs(sections=("deposant",)) == ["deposant.nom", "deposant.ville"]
+        # strictement inferieure ; le champ sans reussite est ecarte
+        assert champs(reussite_inferieure_a=0.7) == ["credits.montant"]
+        assert champs(types_erreur=("manquee",)) == ["deposant.nom"]
+        assert champs(types_erreur=("inventee", "manquee")) == ["credits.montant", "deposant.nom"]
+        # plusieurs filtres : ET
+        assert champs(sections=("deposant",), reussite_inferieure_a=1.0) == ["deposant.nom"]
+
+    def test_les_filtres_ne_touchent_que_par_champ(self) -> None:
+        sans = calculer(self._lignes(), EXECUTION)
+        avec = calculer(self._lignes(), EXECUTION, filtres=FiltresChamps(recherche="ville"))
+        assert avec["global"] == sans["global"] and avec["par_section"] == sans["par_section"]
+        assert avec["par_champ"] == []
+        assert avec["selection"] == {
+            "filtres": {"recherche": "ville"},
+            "champs": 0,
+            "champs_verifies": 4,
+        }

@@ -27,6 +27,20 @@ En base, evaluation_report garde la matrice classique : vp = justes,
 fp = fausses + inventees, fn = fausses + manquees, vn = vides,
 substitutions = fausses.
 
+Par champ, en plus du bloc ci-dessus
+------------------------------------
+Un document donne une seule valeur par champ (une ligne de tableau compte
+comme un champ). D'ou, sans autre donnee que les comptes :
+
+    reussite             justes / valeurs jugees : part des documents ou le
+                         champ est bien lu (les vides hors calcul)
+    documents_en_erreur  fausses + manquees + inventees
+    echec_principal      la plus frequente des trois, « fausse » d'abord a
+                         egalite : c'est l'erreur qui passe inapercue
+
+Les filtres (FiltresChamps) ne portent que sur ``par_champ`` : le score et les
+decompositions restent ceux de tout le test.
+
 Garde-fous
 ----------
 - Les vides n'entrent dans aucun ratio : un CERFA est surtout vide, et un
@@ -44,12 +58,20 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 #: En dessous, un taux est publie mais marque « effectif insuffisant ».
 EFFECTIF_MINIMAL = 5
 #: Une execution sur moins de documents est marquee « echantillon faible ».
 DOCUMENTS_MINIMUM = 10
+
+#: Types d'erreur d'un champ, tels que l'API les nomme, et leur compte dans bloc().
+TYPES_ERREUR: Dict[str, str] = {
+    "fausse": "fausses",
+    "manquee": "manquees",
+    "inventee": "inventees",
+}
 
 _COMPTES = (
     "vp",
@@ -101,7 +123,7 @@ def bloc(lignes: Iterable[Mapping[str, Any]], fourchettes: bool = True) -> Dict[
     # Forme equivalente a 2PR/(P+R), mais definie des qu'une valeur est en jeu :
     # un champ jamais lu (0 vp, 5 fn) n'a pas de precision, et son score vaut 0,
     # pas « indefini » — sinon le pire champ disparaitrait du classement.
-    resultat = {
+    resultat: Dict[str, Any] = {
         "valeurs_jugees": valeurs,
         "justes": vp,
         "fausses": fausses,
@@ -157,12 +179,76 @@ def _a_des_erreurs(champ: Mapping[str, Any]) -> bool:
     return bool(champ["fausses"] or champ["manquees"] or champ["inventees"])
 
 
+def detail_champ(champ: Mapping[str, Any]) -> Dict[str, Any]:
+    """Reussite, documents en erreur et echec principal d'un champ."""
+    erreurs = {nom: int(champ[compte]) for nom, compte in TYPES_ERREUR.items()}
+    en_erreur = sum(erreurs.values())
+    return {
+        "reussite": _arrondi(_ratio(int(champ["justes"]), int(champ["valeurs_jugees"]))),
+        "documents_en_erreur": en_erreur,
+        # max garde le premier a egalite : l'ordre de TYPES_ERREUR decide.
+        "echec_principal": max(erreurs, key=lambda nom: erreurs[nom]) if en_erreur else None,
+    }
+
+
+@dataclass(frozen=True)
+class FiltresChamps:
+    """Filtres de la liste des champs, les memes pour la page et le PDF.
+
+    Vide, un filtre ne retient rien. Plusieurs valeurs d'un meme filtre se
+    cumulent (OU), plusieurs filtres se combinent (ET).
+    """
+
+    #: Morceau de la cle du champ, sans tenir compte de la casse.
+    recherche: Optional[str] = None
+    #: value_type : TEXT, NUMBER, DATE, BOOLEAN.
+    types_champ: Tuple[str, ...] = ()
+    #: Reussite strictement inferieure a ce seuil (0 a 1). Un champ sans valeur
+    #: jugee (que des vides) n'a pas de reussite : il est alors ecarte.
+    reussite_inferieure_a: Optional[float] = None
+    #: Au moins une erreur de l'un de ces types (cles de TYPES_ERREUR).
+    types_erreur: Tuple[str, ...] = ()
+    #: section_id.
+    sections: Tuple[str, ...] = ()
+
+    def actifs(self) -> Dict[str, Any]:
+        """Les filtres renseignes, pour les rappeler a l'ecran et dans le PDF."""
+        tous = {
+            "recherche": self.recherche or None,
+            "types_champ": list(self.types_champ),
+            "reussite_inferieure_a": self.reussite_inferieure_a,
+            "types_erreur": list(self.types_erreur),
+            "sections": list(self.sections),
+        }
+        return {nom: valeur for nom, valeur in tous.items() if valeur not in (None, [])}
+
+    def garde(self, champ: Mapping[str, Any]) -> bool:
+        """Vrai si le champ (une entree de par_champ) passe tous les filtres."""
+        if self.recherche and self.recherche.lower() not in str(champ["champ"]).lower():
+            return False
+        types = {t.upper() for t in self.types_champ}
+        if types and str(champ.get("type") or "").upper() not in types:
+            return False
+        if self.sections and champ.get("section") not in self.sections:
+            return False
+        if self.reussite_inferieure_a is not None and (
+            champ["reussite"] is None or champ["reussite"] >= self.reussite_inferieure_a
+        ):
+            return False
+        if self.types_erreur and not any(
+            champ[TYPES_ERREUR[nom]] for nom in self.types_erreur if nom in TYPES_ERREUR
+        ):
+            return False
+        return True
+
+
 def calculer(
     lignes: Sequence[Mapping[str, Any]],
     execution: Mapping[str, Any],
     config: Optional[Mapping[str, Any]] = None,
     categories: Optional[Mapping[str, int]] = None,
     tous_les_champs: bool = False,
+    filtres: Optional[FiltresChamps] = None,
 ) -> Dict[str, Any]:
     """Toutes les metriques d'une execution.
 
@@ -175,6 +261,8 @@ def calculer(
         tous_les_champs: faux, ``par_champ`` ne garde que les champs en
             erreur. Sur un CERFA de 618 champs, la liste complete faisait
             94 % de la reponse, et un champ sans erreur n'y apprend rien.
+        filtres: restreignent ``par_champ``, apres le choix ci-dessus ; le
+            reste de la reponse porte toujours sur tout le test.
     """
     config = config or {}
     exclus = list(config.get("champs_exclus") or [])
@@ -185,17 +273,30 @@ def calculer(
         {
             "champ": ligne.get("field_key"),
             "page": ligne.get("page"),
+            "section": ligne.get("section_id"),
             "type": ligne.get("value_type"),
             "sensible": bool(ligne.get("sensitive")),
             **bloc([ligne], fourchettes=False),
         }
         for ligne in retenues
     ]
-    # Les pires champs d'abord : c'est ce qu'on regarde.
-    par_champ.sort(key=lambda c: (c["score"] is None, c["score"] if c["score"] is not None else 0))
+    for champ in par_champ:
+        champ.update(detail_champ(champ))
+    # Les pires champs d'abord : c'est ce qu'on regarde. A reussite egale, celui
+    # qui echoue sur le plus de documents.
+    par_champ.sort(
+        key=lambda c: (
+            c["reussite"] is None,
+            c["reussite"] if c["reussite"] is not None else 0,
+            -c["documents_en_erreur"],
+            str(c["champ"]),
+        )
+    )
     # Le verdict porte sur tous les champs, avant le filtre d'affichage.
     verdict = _verdict(global_, par_champ, config)
     en_erreur = [champ for champ in par_champ if _a_des_erreurs(champ)]
+    filtres = filtres or FiltresChamps()
+    affiches = [c for c in (par_champ if tous_les_champs else en_erreur) if filtres.garde(c)]
 
     documents = int(execution.get("documents_compared") or 0)
     perimetre = int(execution.get("fields_compared") or 0)
@@ -218,8 +319,14 @@ def calculer(
         "par_criticite": _par(retenues, _criticite),
         "par_section": _par(retenues, lambda ligne: ligne.get("section_id") or "?"),
         "par_page": _par(retenues, lambda ligne: ligne.get("page") or "?"),
-        "par_champ": par_champ if tous_les_champs else en_erreur,
+        "par_champ": affiches,
         "champs_sans_erreur": len(par_champ) - len(en_erreur),
+        # « 6 champs sur 40 verifies » : ce que par_champ montre, sur quoi.
+        "selection": {
+            "filtres": filtres.actifs(),
+            "champs": len(affiches),
+            "champs_verifies": len(par_champ),
+        },
         "categories_erreurs": dict(categories or {}),
         "echantillon": {
             "documents": documents,

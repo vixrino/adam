@@ -5,8 +5,10 @@ Le parcours d'un test, tel que l'IHM le deroule :
     POST /test-recipes                     figer un lot de documents de reference
     POST /test-executions                  lancer un passage (PENDING)
     GET  /test-executions/{id}             suivre l'avancement (RUNNING...)
-    GET  /test-executions/{id}/metriques   score, justes / fausses / manquees...
-    GET  /test-executions/{id}/ecarts      les erreurs du moteur, champ par champ
+    GET  /test-executions/{id}/metriques   score, justes / fausses / manquees...,
+                                           liste des champs filtrable
+    GET  /test-executions/{id}/ecarts      les erreurs du moteur, document par
+                                           document, pour un champ ou tous
     GET  /test-executions/comparaison      deux passages cote a cote
 
 Le passage lui-meme est fait par le worker de benchmark : ces routes ne font
@@ -19,19 +21,20 @@ recettes de tests, les campagnes et les rapports.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from adam_api.dependencies.auth import UserCaller, require_user
 from adam_api.dependencies.db import get_db
-from adam_core.benchmark.metriques import calculer, comparer
+from adam_core.benchmark.metriques import FiltresChamps, calculer, comparer
 from adam_core.enums.roles import PlatformRole
-from adam_core.enums.status import TestExecutionStatus, TestRecipeStatus
+from adam_core.enums.status import ComparisonVerdict, TestExecutionStatus, TestRecipeStatus
 from adam_core.models import (
     ComparisonResult,
     Dataset,
@@ -129,12 +132,21 @@ class ExecutionOut(BaseModel):
     finished_at: Optional[datetime] = None
 
 
+TypeErreur = Literal["fausse", "manquee", "inventee"]
+
+
 class EcartOut(BaseModel):
     document_id: int
     field_key: str
     group_id: Optional[str] = None
+    #: Le champ tel que /metriques le nomme (par_champ[].champ) : la cle, et la
+    #: ligne pour un tableau repetable, « credits_consommation.reference[pret_7] ».
+    champ: str
     page: int
     verdict: str
+    #: fausse (lu, mais faux), manquee (present, non lu), inventee (lu alors
+    #: que vide).
+    type_erreur: TypeErreur
     diff_kind: Optional[str] = None
     #: Vides pour un champ sensible : seules l'empreinte et l'ampleur sortent.
     expected_value: Optional[str] = None
@@ -337,8 +349,30 @@ async def lister_executions(
     return [_execution_out(e) for e in (await db.execute(requete)).scalars().all()]
 
 
+def filtres_champs(
+    recherche: Optional[str] = Query(None, description="Morceau de la cle du champ"),
+    type_champ: List[str] = Query([], description="TEXT, NUMBER, DATE, BOOLEAN ; repetable"),
+    reussite_inferieure_a: Optional[float] = Query(
+        None, ge=0, le=1, description="Reussite strictement inferieure (0 a 1)"
+    ),
+    type_erreur: List[TypeErreur] = Query([], description="Au moins une erreur de ce type"),
+    section: List[str] = Query([], description="section_id ; repetable"),
+) -> FiltresChamps:
+    """Filtres de la liste des champs, partages par la page et le PDF."""
+    return FiltresChamps(
+        recherche=recherche.strip() if recherche and recherche.strip() else None,
+        types_champ=tuple(type_champ),
+        reussite_inferieure_a=reussite_inferieure_a,
+        types_erreur=tuple(type_erreur),
+        sections=tuple(section),
+    )
+
+
 async def _metriques(
-    db: AsyncSession, execution_id: int, tous_les_champs: bool = False
+    db: AsyncSession,
+    execution_id: int,
+    tous_les_champs: bool = False,
+    filtres: Optional[FiltresChamps] = None,
 ) -> Dict[str, Any]:
     execution = await db.get(TestExecution, execution_id)
     if execution is None:
@@ -376,6 +410,7 @@ async def _metriques(
         recette.config if recette else {},
         categories,
         tous_les_champs,
+        filtres,
     )
 
 
@@ -409,12 +444,122 @@ async def metriques_execution(
     tous_les_champs: bool = Query(
         False, description="Faux : par_champ ne liste que les champs en erreur"
     ),
+    filtres: FiltresChamps = Depends(filtres_champs),
     _: UserCaller = Depends(require_benchmark),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
     """Score, taux, fourchettes, decompositions par type, criticite, section,
-    page et champ, verdict de la config, avertissements."""
-    return await _metriques(db, execution_id, tous_les_champs)
+    page et champ, verdict de la config, avertissements.
+
+    Chaque champ porte sa reussite, ses documents en erreur et son echec
+    principal. Les filtres ne restreignent que ``par_champ`` ; ``selection``
+    rappelle les filtres et compte les champs retenus."""
+    return await _metriques(db, execution_id, tous_les_champs, filtres)
+
+
+_CHAMP = re.compile(r"^(?P<cle>[^\[\]]+)(?:\[(?P<ligne>[^\[\]]+)\])?$")
+
+
+def _decouper_champ(champ: str) -> Tuple[str, Optional[str]]:
+    """« section.cle[ligne] » -> (« section.cle », « ligne ») ; 422 si illisible."""
+    trouve = _CHAMP.match(champ.strip())
+    if trouve is None:
+        raise HTTPException(
+            status_code=422, detail="champ attendu sous la forme section.cle ou section.cle[ligne]"
+        )
+    return trouve["cle"], trouve["ligne"]
+
+
+async def lire_ecarts(
+    db: AsyncSession,
+    execution_id: int,
+    *,
+    verdict: Optional[str] = None,
+    field_key: Optional[str] = None,
+    champs: Optional[List[str]] = None,
+    types_erreur: Optional[List[str]] = None,
+    limit: Optional[int] = 100,
+    offset: int = 0,
+) -> List[EcartOut]:
+    """Les ecarts d'une execution, document par document.
+
+    Le type d'erreur se deduit de la valeur attendue : vide, le moteur l'a
+    inventee. Un champ sensible ne stocke pas cette valeur ; elle est alors lue
+    dans la verite (document_field.resolved_value), pour savoir si elle est
+    vide, et n'est jamais renvoyee.
+    """
+    cle = func.concat(FieldSpec.section_id, ".", FieldSpec.field_key)
+    attendu = case(
+        (FieldSpec.sensitive.is_(True), DocumentField.resolved_value),
+        else_=ComparisonResult.expected_value,
+    )
+    type_erreur = case(
+        (ComparisonResult.verdict == ComparisonVerdict.MISSING.value, "manquee"),
+        (func.trim(func.coalesce(attendu, "")) == "", "inventee"),
+        else_="fausse",
+    )
+    requete = (
+        select(ComparisonResult, DocumentField, FieldSpec, type_erreur)
+        .join(DocumentField, DocumentField.id == ComparisonResult.document_field_id)
+        .join(FieldSpec, FieldSpec.id == DocumentField.field_spec_id)
+        .where(ComparisonResult.execution_id == execution_id)
+        .order_by(
+            DocumentField.document_id,
+            FieldSpec.page,
+            FieldSpec.display_order,
+            ComparisonResult.id,
+        )
+        .offset(offset)
+    )
+    if limit is not None:
+        requete = requete.limit(limit)
+    if verdict is not None:
+        requete = requete.where(ComparisonResult.verdict == verdict)
+    if field_key is not None:
+        requete = requete.where(
+            (FieldSpec.field_key.startswith(field_key)) | (cle.startswith(field_key))
+        )
+    if champs:
+        conditions = []
+        for champ in champs:
+            cle_champ, ligne = _decouper_champ(champ)
+            conditions.append(
+                and_(
+                    (FieldSpec.field_key == cle_champ) | (cle == cle_champ),
+                    (
+                        DocumentField.group_id == ligne
+                        if ligne
+                        else DocumentField.group_id.is_(None)
+                    ),
+                )
+            )
+        requete = requete.where(or_(*conditions))
+    if types_erreur:
+        requete = requete.where(type_erreur.in_(types_erreur))
+    lignes = (await db.execute(requete)).all()
+    return [_ecart_out(cr, df, fs, str(type_)) for cr, df, fs, type_ in lignes]
+
+
+def _ecart_out(cr: ComparisonResult, df: DocumentField, fs: FieldSpec, type_: str) -> EcartOut:
+    field_key = (
+        fs.field_key
+        if fs.field_key.startswith(f"{fs.section_id}.")
+        else f"{fs.section_id}.{fs.field_key}"
+    )
+    return EcartOut(
+        document_id=df.document_id,
+        field_key=field_key,
+        group_id=df.group_id,
+        champ=f"{field_key}[{df.group_id}]" if df.group_id else field_key,
+        page=fs.page,
+        verdict=cr.verdict,
+        type_erreur=cast(TypeErreur, type_),
+        diff_kind=cr.diff_kind,
+        expected_value=cr.expected_value,
+        observed_value=cr.observed_value,
+        edit_distance=cr.edit_distance,
+        sensitive=bool(fs.sensitive),
+    )
 
 
 @router.get("/test-executions/{execution_id}/ecarts", response_model=List[EcartOut])
@@ -422,48 +567,29 @@ async def ecarts_execution(
     execution_id: int,
     verdict: Optional[str] = Query(None, description="MISSING ou WRONG"),
     field_key: Optional[str] = Query(None, description="Prefixe de cle"),
+    champ: List[str] = Query(
+        [], description="Champ exact, tel que par_champ[].champ le nomme ; repetable"
+    ),
+    type_erreur: List[TypeErreur] = Query([], description="fausse, manquee, inventee"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     _: UserCaller = Depends(require_benchmark),
     db: AsyncSession = Depends(get_db),
 ) -> List[EcartOut]:
-    """Les erreurs du moteur, champ par champ. Un champ sensible n'y montre
-    jamais de valeur : seuls le verdict, la categorie et l'ampleur."""
+    """Les erreurs du moteur, document par document. Avec ``champ`` : les
+    documents ou ce champ est en erreur, pour les parcourir un a un.
+
+    Un champ sensible n'y montre jamais de valeur : seuls le verdict, le type
+    d'erreur, la categorie et l'ampleur."""
     if await db.get(TestExecution, execution_id) is None:
         raise HTTPException(status_code=404, detail="Execution introuvable")
-    cle = func.concat(FieldSpec.section_id, ".", FieldSpec.field_key)
-    requete = (
-        select(ComparisonResult, DocumentField, FieldSpec)
-        .join(DocumentField, DocumentField.id == ComparisonResult.document_field_id)
-        .join(FieldSpec, FieldSpec.id == DocumentField.field_spec_id)
-        .where(ComparisonResult.execution_id == execution_id)
-        .order_by(DocumentField.document_id, FieldSpec.page, FieldSpec.display_order)
-        .limit(limit)
-        .offset(offset)
+    return await lire_ecarts(
+        db,
+        execution_id,
+        verdict=verdict,
+        field_key=field_key,
+        champs=champ,
+        types_erreur=list(type_erreur),
+        limit=limit,
+        offset=offset,
     )
-    if verdict is not None:
-        requete = requete.where(ComparisonResult.verdict == verdict)
-    if field_key is not None:
-        requete = requete.where(
-            (FieldSpec.field_key.startswith(field_key)) | (cle.startswith(field_key))
-        )
-    lignes = (await db.execute(requete)).all()
-    return [
-        EcartOut(
-            document_id=df.document_id,
-            field_key=(
-                fs.field_key
-                if fs.field_key.startswith(f"{fs.section_id}.")
-                else f"{fs.section_id}.{fs.field_key}"
-            ),
-            group_id=df.group_id,
-            page=fs.page,
-            verdict=cr.verdict,
-            diff_kind=cr.diff_kind,
-            expected_value=cr.expected_value,
-            observed_value=cr.observed_value,
-            edit_distance=cr.edit_distance,
-            sensitive=bool(fs.sensitive),
-        )
-        for cr, df, fs in lignes
-    ]
