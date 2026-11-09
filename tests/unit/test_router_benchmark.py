@@ -104,6 +104,11 @@ def _execution(status: str = "COMPLETED") -> Any:
     )
 
 
+def _rapports(rapports: List[Any], libelle: Optional[str] = None) -> MagicMock:
+    """Resultat de la requete des rapports : (rapport, libelle de section)."""
+    return _resultat(all_=[(r, libelle) for r in rapports])
+
+
 def _rapport(field_key: str, **comptes: Any) -> Any:
     base = dict(
         id=1,
@@ -187,8 +192,8 @@ class TestExecutions:
         db = _db(
             # seuil_f1 : l'ancien nom, encore lu pour les recettes deja figees.
             {"TestExecution": _execution(), "TestRecipe": _recette(config={"seuil_f1": 0.5})},
-            _resultat(
-                scalars=[
+            _rapports(
+                [
                     _rapport("deposant.nom", vp=8, fn=2),
                     _rapport("deposant.prenoms", vp=1, fp=1, fn=1, substitutions=1),
                 ]
@@ -211,9 +216,9 @@ class TestExecutions:
         execution = _execution()
         db = _db(
             {"TestExecution": execution, "TestRecipe": _recette()},
-            _resultat(scalars=[_rapport("a.b", vp=5)]),
+            _rapports([_rapport("a.b", vp=5)]),
             _resultat(),
-            _resultat(scalars=[_rapport("a.b", vp=4, fn=1)]),
+            _rapports([_rapport("a.b", vp=4, fn=1)]),
             _resultat(),
         )
         r = _client(SUPERVISEUR, db).get("/test-executions/comparaison", params={"a": 1, "b": 1})
@@ -277,8 +282,8 @@ class TestExecutions:
     def test_metriques_filtrees(self) -> None:
         db = _db(
             {"TestExecution": _execution(), "TestRecipe": _recette()},
-            _resultat(
-                scalars=[
+            _rapports(
+                [
                     _rapport("deposant.nom", vp=8, fn=2),
                     _rapport("credits.montant", vp=1, fp=3, value_type="NUMBER"),
                 ]
@@ -323,8 +328,8 @@ class TestRapportPdf:
                 "TestRecipe": _recette(),
                 "Dataset": SimpleNamespace(name="cerfa"),
             },
-            _resultat(
-                scalars=[
+            _rapports(
+                [
                     _rapport("deposant.nom", vp=8, fn=2),
                     _rapport("credits.montant", vp=1, fp=3, value_type="NUMBER"),
                 ]

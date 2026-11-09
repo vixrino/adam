@@ -387,15 +387,15 @@ async def _metriques(
             "une fois COMPLETED",
         )
     recette = await db.get(TestRecipe, execution.recipe_id)
+    # Le libelle de section du schema (« Co-deposant ») accompagne l'id fige
+    # (co_deposant) : c'est lui qu'affichent la page et le PDF.
     lignes = (
-        (
-            await db.execute(
-                select(EvaluationReport).where(EvaluationReport.execution_id == execution_id)
-            )
+        await db.execute(
+            select(EvaluationReport, FieldSpec.section_label)
+            .outerjoin(FieldSpec, FieldSpec.id == EvaluationReport.field_spec_id)
+            .where(EvaluationReport.execution_id == execution_id)
         )
-        .scalars()
-        .all()
-    )
+    ).all()
     categories = {
         str(kind or verdict): int(n)
         for kind, verdict, n in (
@@ -408,7 +408,10 @@ async def _metriques(
     }
     colonnes = [c.name for c in EvaluationReport.__table__.columns]
     return calculer(
-        [{c: getattr(rapport, c) for c in colonnes} for rapport in lignes],
+        [
+            {**{c: getattr(rapport, c) for c in colonnes}, "section_label": libelle}
+            for rapport, libelle in lignes
+        ],
         {c.name: getattr(execution, c.name) for c in TestExecution.__table__.columns},
         recette.config if recette else {},
         categories,

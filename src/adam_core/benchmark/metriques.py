@@ -274,6 +274,8 @@ def calculer(
             "champ": ligne.get("field_key"),
             "page": ligne.get("page"),
             "section": ligne.get("section_id"),
+            # Libelle du schema quand il est connu, sinon l'id de section.
+            "section_libelle": ligne.get("section_label") or ligne.get("section_id"),
             "type": ligne.get("value_type"),
             "sensible": bool(ligne.get("sensitive")),
             **bloc([ligne], fourchettes=False),

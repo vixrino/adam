@@ -1,4 +1,8 @@
-"""PDF du rapport de qualite d'extraction : contenu, filtres, confidentialite."""
+"""PDF du rapport de qualite d'extraction : contenu, filtres, pages, confidentialite.
+
+Le rendu visuel (cotes, couleurs, polices) est compare a la maquette hors des
+tests ; ici, ce que le PDF dit.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +26,6 @@ EXECUTION = {
     "ocr_model_id": "mistral-ocr-latest",
     "comparateur_version": "1",
     "schema_hash": "9e40b5c6aabbcc",
-    "finished_at": datetime(2026, 11, 6, 13, 44, tzinfo=timezone.utc),
     "documents_compared": 12,
     "fields_compared": 100,
     "fields_human_verified": 100,
@@ -35,6 +38,7 @@ def _ligne(field_key: str, **comptes: Any) -> Dict[str, Any]:
         "field_key": field_key,
         "page": 1,
         "section_id": field_key.split(".")[0],
+        "section_label": field_key.split(".")[0].capitalize(),
         "value_type": "TEXT",
         "sensitive": False,
         **comptes,
@@ -51,45 +55,65 @@ def _lignes() -> List[Dict[str, Any]]:
 
 
 def _texte(pdf: bytes) -> str:
-    """Texte du PDF, espaces insecables et ligatures ramenes a la forme simple."""
+    """Texte du PDF, ligatures ramenees a la forme simple."""
     document = pymupdf.open("pdf", pdf)
     texte = "\n".join(page.get_text() for page in document)
-    return texte.replace("\u00a0", " ").replace("\ufb01", "fi").replace("\ufb02", "fl")
+    return texte.replace("ﬁ", "fi").replace("ﬂ", "fl")
 
 
 def _rendre(metriques: Dict[str, Any], extraits: Any = None) -> bytes:
     return rendre_pdf(
         metriques,
-        recette={"id": 3, "name": "CERFA novembre"},
+        recette={"id": 3},
         dataset="cerfa_13594-02_v2",
         extraits=extraits or {},
         edite_le=EDITE_LE,
     )
 
 
+def _ecart(document_id: int, attendu: Any, lu: Any, sensible: bool = False) -> Dict[str, Any]:
+    return {
+        "document_id": document_id,
+        "page": 1,
+        "type_erreur": "fausse",
+        "expected_value": attendu,
+        "observed_value": lu,
+        "sensitive": sensible,
+    }
+
+
 def test_entete_taux_et_pied_de_page() -> None:
-    pdf = _rendre(calculer(_lignes(), EXECUTION, {"score_minimal": 0.9}))
+    pdf = _rendre(calculer(_lignes(), EXECUTION))
     assert pdf.startswith(b"%PDF-")
     texte = _texte(pdf)
-    assert "Rapport de qualité d'extraction" in texte
-    assert "cerfa_13594-02_v2" in texte and "« CERFA novembre »" in texte
-    assert "test #4 du 06/11/2026" in texte and "édité le 09/11/2026" in texte
-    assert "mistral-ocr-latest" in texte
-    # 28 justes sur 28 + 3 fausses + 1 manquee = 32 valeurs remplies
-    assert "28 lues correctement sur 32" in texte
+    assert "NOTA · Rapport de qualité d'extraction" in texte
+    assert "Dataset cerfa_13594-02_v2 · recette #3" in texte
+    assert "Moteur : mistral · 12 documents" in texte and "Édité le 09/11/2026" in texte
+    # 28 justes ; 28 + 3 fausses + 1 manquee = 32 valeurs remplies
+    assert "Taux de lectures justes" in texte
+    assert "· 28 lus correctement sur 32" in texte
     assert "88 %" in texte  # 28 / 32
-    assert "Marge d'incertitude" in texte
-    assert "échoué" in texte  # score sous 0.9
-    assert "schéma 9e40b5c6" in texte and "Page 1 / 1" in texte
+    assert "Marge d'incertitude : " in texte
+    assert "Généré par NOTA · comparateur v1 · schéma 9e40b5c6" in texte
+    assert "Page 1 / 1" in texte
+
+
+def test_tableau_libelles_de_la_maquette() -> None:
+    texte = _texte(_rendre(calculer(_lignes(), EXECUTION)))
+    for titre in ("Champ", "Type", "Réussite", "Échec principal"):
+        assert titre in texte
+    assert "Deposant" in texte  # libelle de section du schema
+    assert "NOMBRE" in texte and "TEXTE" in texte
+    assert "Inventé" in texte and "Lu mais faux" in texte
 
 
 def test_filtres_rappeles_et_champs_filtres() -> None:
     filtres = FiltresChamps(reussite_inferieure_a=0.5, types_champ=("NUMBER",))
     texte = _texte(_rendre(calculer(_lignes(), EXECUTION, filtres=filtres)))
-    assert "Réussite : < 50 %" in texte and "Type de champ : Nombre" in texte
-    assert "1 champ(s)" in texte and "sur 4 vérifiés" in texte
+    assert "Filtres appliqués à ce rapport" in texte
+    assert "Réussite : < 50 % · Type de champ : NOMBRE · Type d'erreur : tous ·" in texte
+    assert "1 champ" in texte and "sur 4 vérifiés" in texte
     assert "credits.montant" in texte and "deposant.nom" not in texte
-    assert "Lu alors que vide · 3 doc(s) en erreur" in texte
 
 
 def test_aucun_champ() -> None:
@@ -100,51 +124,19 @@ def test_aucun_champ() -> None:
 def test_extraits_et_champ_sensible_masque() -> None:
     m = calculer(_lignes(), EXECUTION)
     extraits = {
-        "deposant.nom": [
-            {
-                "document_id": 14,
-                "page": 1,
-                "type_erreur": "fausse",
-                "expected_value": "Durand",
-                "observed_value": "Dupont",
-                "sensitive": False,
-            }
-        ],
+        "deposant.nom": [_ecart(14, "Durand", "Dupont")],
         # Une valeur sensible passee par erreur ne doit jamais s'imprimer.
         "gestion_budget.iban": [
-            {
-                "document_id": 15,
-                "page": 4,
-                "type_erreur": "fausse",
-                "expected_value": "FR7630006000011234567890189",
-                "observed_value": "FR7630006000011234567890180",
-                "sensitive": True,
-            }
+            _ecart(15, "FR7630006000011234567890189", "FR7630006000011234567890180", True)
         ],
+        "credits.montant": [_ecart(16, None, "1200")],
     }
     texte = _texte(_rendre(m, extraits))
-    assert "Document 14 · page 1 · Lu, mais faux" in texte
+    assert "Extraits de documents en erreur" in texte
+    assert "Doc #14 · page 1" in texte
     assert "Durand" in texte and "Dupont" in texte
-    assert "FR76" not in texte and "valeur masquée" in texte
-    # 3 documents en erreur sur deposant.nom, 1 montre
-    assert "(et 2 autre(s))" in texte
-
-
-def test_valeurs_echappees() -> None:
-    m = calculer(_lignes(), EXECUTION)
-    extraits = {
-        "deposant.nom": [
-            {
-                "document_id": 14,
-                "page": 1,
-                "type_erreur": "fausse",
-                "expected_value": "<b>a & b</b>",
-                "observed_value": None,
-                "sensitive": False,
-            }
-        ]
-    }
-    assert "<b>a & b</b>" in _texte(_rendre(m, extraits))
+    assert "FR76" not in texte and "(masquée)" in texte
+    assert "(vide)" in texte
 
 
 def test_extraits_a_montrer_garde_les_pires_en_erreur() -> None:
@@ -161,4 +153,21 @@ def test_gros_rapport_pagine() -> None:
     total = pymupdf.open("pdf", pdf).page_count
     texte = _texte(pdf)
     assert total > 10 and f"Page {total} / {total}" in texte
+    assert "Champs en erreur (suite)" in texte
     assert all(f"champ_{i}\n" in texte for i in range(642))
+
+
+def test_cle_trop_longue_coupee_dans_sa_colonne() -> None:
+    cle = "prestations_familiales.co_deposant_msa_numero_allocataire[ligne_12]"
+    pdf = _rendre(calculer([_ligne(cle, vp=1, fn=1)], EXECUTION))
+    page = pymupdf.open("pdf", pdf)[0]
+    # La colonne Champ s'arrete a 392,3 px de maquette.
+    limite = 392.3 * page.rect.width / 794
+    spans = [
+        s
+        for b in page.get_text("dict")["blocks"]
+        for l in b.get("lines", [])
+        for s in l["spans"]
+        if s["text"] and s["text"] in cle
+    ]
+    assert len(spans) >= 2 and all(s["bbox"][2] <= limite for s in spans)
