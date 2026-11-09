@@ -18,9 +18,9 @@ attendus, page par page, section par section, avec leurs types. Rien de plus.
 
 Champs repetables
 -----------------
-Le CERFA ouvre plusieurs emplacements identiques pour un meme objet : six
-prets a la consommation page 10, plusieurs dettes page 6, plusieurs personnes
-au domicile page 2. cerfa_v2.py, source des champs du schema, les decrit en
+Le CERFA ouvre plusieurs emplacements identiques pour un meme objet : huit
+prets a la consommation (six page 10, deux page 11), plusieurs dettes page 6,
+plusieurs personnes au domicile page 2. cerfa_v2.py, source des champs du schema, les decrit en
 une seule instance ; ce script les deplie.
 
 Ici, la repetition doit exister : un operateur qui annote le
@@ -32,7 +32,8 @@ different.
 
 REPEATABLE_SECTIONS ci-dessous declare, pour chaque section repetable, le
 nombre d'emplacements du formulaire papier. C'est la seule chose a modifier si
-un CERFA ulterieur en ouvre davantage.
+un CERFA ulterieur en ouvre davantage. Un tableau qui court sur plusieurs pages
+dit en plus, dans INSTANCES_PAR_PAGE, quelles lignes porte chaque page.
 
 Usage :
     python scripts/seed_schema_cerfa.py
@@ -117,7 +118,15 @@ REPEATABLE_SECTIONS: Dict[str, Tuple[int, str, str]] = {
     "autres_prets": (2, "autre_pret", "Pret n° {n}"),
     "cautionnement": (2, "caution", "Dette n° {n}"),
     "credits_immobiliers": (4, "pret_immo", "Pret n° {n}"),
-    "credits_consommation": (6, "pret", "Pret n° {n}"),
+    "credits_consommation": (8, "pret", "Pret n° {n}"),
+}
+
+#: Lignes portees par chaque page, pour un tableau repetable qui court sur
+#: plusieurs pages. Numeros imprimes : la ligne 7 est le pret n° 7 du
+#: formulaire, et c'est ce numero que le moteur recoit (connectors/modele.py).
+INSTANCES_PAR_PAGE: Dict[Tuple[str, int], range] = {
+    ("credits_consommation", 10): range(1, 7),
+    ("credits_consommation", 11): range(7, 9),
 }
 
 #: Champs porteurs de donnee personnelle sensible, reconnus par leur suffixe.
@@ -166,6 +175,36 @@ def build_pages(schema_id: int) -> List[SchemaPage]:
     ]
 
 
+def _numeros(section_id: str, page: int, count: int) -> range:
+    """Numeros des lignes d'une section repetable sur une page.
+
+    Toutes les lignes, sauf si la section court sur plusieurs pages : chaque
+    page porte alors les siennes, d'apres INSTANCES_PAR_PAGE.
+    """
+    pages = [p for p, champs in CERFA_V2_PAGE_FIELDS.items() if _porte(champs, section_id)]
+    if len(pages) == 1:
+        return range(1, count + 1)
+    repartition = {
+        p: INSTANCES_PAR_PAGE[(section_id, p)]
+        for p in pages
+        if (section_id, p) in INSTANCES_PAR_PAGE
+    }
+    numeros = sorted(n for r in repartition.values() for n in r)
+    if len(repartition) != len(pages) or numeros != list(range(1, count + 1)):
+        # Sans repartition, chaque page recevrait toutes les lignes : deux
+        # FieldSpec pour le meme (section, group_id, field_key), que la
+        # contrainte d'unicite du schema refuserait a l'insertion.
+        raise ValueError(
+            f"{section_id} est declaree pages {pages} : INSTANCES_PAR_PAGE doit "
+            f"repartir ses lignes 1 a {count} entre ces pages, sans trou ni doublon"
+        )
+    return repartition[page]
+
+
+def _porte(champs: Mapping[str, Any], section_id: str) -> bool:
+    return any(cle.partition(".")[0] == section_id for cle in champs)
+
+
 def build_specs() -> List[Dict[str, Any]]:
     """Deplie CERFA_V2_PAGE_FIELDS en une liste de FieldSpec a creer.
 
@@ -196,9 +235,8 @@ def build_specs() -> List[Dict[str, Any]]:
                 instances = [(None, "")]
             else:
                 count, prefix, instance_label = repeat
-                instances = [
-                    (f"{prefix}_{n}", instance_label.format(n=n)) for n in range(1, count + 1)
-                ]
+                numeros = _numeros(section_id, page, count)
+                instances = [(f"{prefix}_{n}", instance_label.format(n=n)) for n in numeros]
 
             for group_id, instance_label in instances:
                 for field_key, field_def in section_fields:

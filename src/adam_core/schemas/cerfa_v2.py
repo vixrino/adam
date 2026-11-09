@@ -16,9 +16,9 @@ une seule instance. Le seed les deplie en une FIELD_SPEC par ligne (group_id,
 REPEATABLE_SECTIONS), et c'est de ces lignes que l'extraction tire une
 propriete par ligne de tableau (ticket T7, connectors/modele.py).
 
-Les prets a la consommation n° 7 et 8 de la page 11 ne sont pas encore
-declares : le seed place toutes les instances d'une section sur une seule
-page, et il faudrait les repartir entre les pages 10 et 11.
+Le tableau des credits a la consommation court sur deux pages : prets n° 1
+a 6 page 10, n° 7 et 8 page 11. Ses champs sont donc declares sur les deux
+pages, et le seed repartit les lignes entre elles (INSTANCES_PAR_PAGE).
 
 Les types sont ceux du script d'origine, sauf la ou un CERFA reel les a mis
 en defaut : code postal, escalier et etage passent en string, un number
@@ -484,7 +484,9 @@ _PAGE_9: Dict[str, FieldDef] = {
     },
 }
 
-_PAGE_10: Dict[str, FieldDef] = {
+#: Colonnes du tableau des credits a la consommation, qui commence page 10
+#: (prets n° 1 a 6) et se termine page 11 (prets n° 7 et 8).
+_CREDITS_CONSOMMATION: Dict[str, FieldDef] = {
     "credits_consommation.nom_creancier": {
         "description": "Nom du creancier du credit",
         "type": "string",
@@ -523,6 +525,8 @@ _PAGE_10: Dict[str, FieldDef] = {
         "type": "boolean",
     },
 }
+
+_PAGE_10: Dict[str, FieldDef] = dict(_CREDITS_CONSOMMATION)
 
 # -- Pages 3 a 11 ------------------------------------------------------------
 #
@@ -757,14 +761,15 @@ _PAGE_8: Dict[str, FieldDef] = {
     **_poursuites("locations_diverses", "location"),
 }
 
-#: Page 11. La suite du tableau des credits a la consommation (prets 7 et 8)
-#: n'y est pas declaree : ses cles sont celles de la page 10, et deux pages ne
-#: peuvent porter la meme cle tant que les repetables (T7) ne sont pas la.
+#: Page 11, dans l'ordre de lecture : cause du surendettement, fin du tableau
+#: des credits a la consommation (prets n° 7 et 8, memes cles que la page 10,
+#: lignes distinctes par group_id), autres prets, cautionnement.
 _PAGE_11: Dict[str, FieldDef] = {
     "cause_surendettement.texte": {
         "description": "Cause principale du depot du dossier, telle qu'ecrite",
         "type": "string",
     },
+    **_CREDITS_CONSOMMATION,
     **_credit("autres_prets", "autre pret (pret familial, employeur, CAF...)"),
     "cautionnement.nom_creancier": {
         "description": "Nom du creancier de la dette cautionnee",
