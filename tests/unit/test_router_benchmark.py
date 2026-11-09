@@ -231,9 +231,76 @@ class TestExecutions:
         )
         df = SimpleNamespace(document_id=14, group_id=None)
         fs = SimpleNamespace(section_id="gestion_budget", field_key="iban", page=4, sensitive=True)
-        db = _db({"TestExecution": _execution()}, _resultat(all_=[(cr, df, fs)]))
+        db = _db({"TestExecution": _execution()}, _resultat(all_=[(cr, df, fs, "fausse")]))
         r = _client(SUPERVISEUR, db).get("/test-executions/1/ecarts")
         assert r.status_code == 200, r.text
         ecart = r.json()[0]
         assert ecart["field_key"] == "gestion_budget.iban"
+        assert ecart["champ"] == "gestion_budget.iban" and ecart["type_erreur"] == "fausse"
         assert ecart["sensitive"] is True and ecart["expected_value"] is None
+
+    def test_ecarts_d_une_ligne_de_tableau(self) -> None:
+        cr = SimpleNamespace(
+            verdict="WRONG",
+            diff_kind="TOTAL",
+            expected_value=None,
+            observed_value="SOFINCO",
+            edit_distance=7,
+        )
+        df = SimpleNamespace(document_id=14, group_id="pret_7")
+        fs = SimpleNamespace(
+            section_id="credits_consommation", field_key="nom_creancier", page=11, sensitive=False
+        )
+        db = _db({"TestExecution": _execution()}, _resultat(all_=[(cr, df, fs, "inventee")]))
+        r = _client(SUPERVISEUR, db).get(
+            "/test-executions/1/ecarts",
+            params={
+                "champ": "credits_consommation.nom_creancier[pret_7]",
+                "type_erreur": "inventee",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()[0]["champ"] == "credits_consommation.nom_creancier[pret_7]"
+        assert r.json()[0]["type_erreur"] == "inventee"
+
+    def test_ecarts_champ_illisible_422(self) -> None:
+        db = _db({"TestExecution": _execution()})
+        r = _client(SUPERVISEUR, db).get("/test-executions/1/ecarts", params={"champ": "a[b"})
+        assert r.status_code == 422
+
+    def test_type_d_erreur_inconnu_422(self) -> None:
+        db = _db({"TestExecution": _execution()})
+        for route in ("/test-executions/1/ecarts", "/test-executions/1/metriques"):
+            r = _client(SUPERVISEUR, db).get(route, params={"type_erreur": "oubliee"})
+            assert r.status_code == 422, route
+
+    def test_metriques_filtrees(self) -> None:
+        db = _db(
+            {"TestExecution": _execution(), "TestRecipe": _recette()},
+            _resultat(
+                scalars=[
+                    _rapport("deposant.nom", vp=8, fn=2),
+                    _rapport("credits.montant", vp=1, fp=3, value_type="NUMBER"),
+                ]
+            ),
+            _resultat(),
+        )
+        r = _client(SUPERVISEUR, db).get(
+            "/test-executions/1/metriques",
+            params=[
+                ("type_champ", "NUMBER"),
+                ("type_champ", "DATE"),
+                ("reussite_inferieure_a", "0.5"),
+                ("recherche", "  "),
+            ],
+        )
+        assert r.status_code == 200, r.text
+        m = r.json()
+        assert [c["champ"] for c in m["par_champ"]] == ["credits.montant"]
+        assert m["par_champ"][0]["echec_principal"] == "inventee"
+        assert m["selection"] == {
+            "filtres": {"types_champ": ["NUMBER", "DATE"], "reussite_inferieure_a": 0.5},
+            "champs": 1,
+            "champs_verifies": 2,
+        }
+        assert m["global"]["justes"] == 9  # le score reste celui de tout le test
