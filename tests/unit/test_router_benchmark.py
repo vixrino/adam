@@ -104,6 +104,11 @@ def _execution(status: str = "COMPLETED") -> Any:
     )
 
 
+def _rapports(rapports: List[Any], libelle: Optional[str] = None) -> MagicMock:
+    """Resultat de la requete des rapports : (rapport, libelle de section)."""
+    return _resultat(all_=[(r, libelle) for r in rapports])
+
+
 def _rapport(field_key: str, **comptes: Any) -> Any:
     base = dict(
         id=1,
@@ -187,8 +192,8 @@ class TestExecutions:
         db = _db(
             # seuil_f1 : l'ancien nom, encore lu pour les recettes deja figees.
             {"TestExecution": _execution(), "TestRecipe": _recette(config={"seuil_f1": 0.5})},
-            _resultat(
-                scalars=[
+            _rapports(
+                [
                     _rapport("deposant.nom", vp=8, fn=2),
                     _rapport("deposant.prenoms", vp=1, fp=1, fn=1, substitutions=1),
                 ]
@@ -211,9 +216,9 @@ class TestExecutions:
         execution = _execution()
         db = _db(
             {"TestExecution": execution, "TestRecipe": _recette()},
-            _resultat(scalars=[_rapport("a.b", vp=5)]),
+            _rapports([_rapport("a.b", vp=5)]),
             _resultat(),
-            _resultat(scalars=[_rapport("a.b", vp=4, fn=1)]),
+            _rapports([_rapport("a.b", vp=4, fn=1)]),
             _resultat(),
         )
         r = _client(SUPERVISEUR, db).get("/test-executions/comparaison", params={"a": 1, "b": 1})
@@ -277,8 +282,8 @@ class TestExecutions:
     def test_metriques_filtrees(self) -> None:
         db = _db(
             {"TestExecution": _execution(), "TestRecipe": _recette()},
-            _resultat(
-                scalars=[
+            _rapports(
+                [
                     _rapport("deposant.nom", vp=8, fn=2),
                     _rapport("credits.montant", vp=1, fp=3, value_type="NUMBER"),
                 ]
@@ -304,3 +309,50 @@ class TestExecutions:
             "champs_verifies": 2,
         }
         assert m["global"]["justes"] == 9  # le score reste celui de tout le test
+
+
+class TestRapportPdf:
+    def test_pdf_avec_filtres(self) -> None:
+        cr = SimpleNamespace(
+            verdict="WRONG",
+            diff_kind="TOTAL",
+            expected_value=None,
+            observed_value="Sofinco",
+            edit_distance=7,
+        )
+        df = SimpleNamespace(document_id=14, group_id=None)
+        fs = SimpleNamespace(section_id="credits", field_key="montant", page=10, sensitive=False)
+        db = _db(
+            {
+                "TestExecution": _execution(),
+                "TestRecipe": _recette(),
+                "Dataset": SimpleNamespace(name="cerfa"),
+            },
+            _rapports(
+                [
+                    _rapport("deposant.nom", vp=8, fn=2),
+                    _rapport("credits.montant", vp=1, fp=3, value_type="NUMBER"),
+                ]
+            ),
+            _resultat(),
+            _resultat(all_=[(cr, df, fs, "inventee")]),
+        )
+        r = _client(SUPERVISEUR, db).get(
+            "/test-executions/1/metriques.pdf", params={"type_champ": "NUMBER"}
+        )
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"] == "application/pdf"
+        assert 'filename="rapport-test-1.pdf"' in r.headers["content-disposition"]
+        assert r.content.startswith(b"%PDF-")
+        # Un seul champ retenu : une seule requete d'extraits.
+        assert db.execute.await_count == 3
+
+    def test_pdf_avant_la_fin_409(self) -> None:
+        db = _db({"TestExecution": _execution("RUNNING")})
+        r = _client(SUPERVISEUR, db).get("/test-executions/1/metriques.pdf")
+        assert r.status_code == 409
+
+    def test_pdf_reserve_au_benchmark(self) -> None:
+        db = _db({"TestExecution": _execution()})
+        r = _client(OPERATEUR, db).get("/test-executions/1/metriques.pdf")
+        assert r.status_code == 403
