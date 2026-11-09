@@ -165,6 +165,20 @@ def _par(
     return {nom: bloc(groupe) for nom, groupe in sorted(groupes.items())}
 
 
+def _avec_libelles(
+    sections: Dict[str, Dict[str, Any]], lignes: Sequence[Mapping[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
+    """Ajoute a chaque section son libelle du schema (« Co-deposant »), sinon son id."""
+    libelles = {
+        str(ligne.get("section_id") or "?"): ligne.get("section_label")
+        for ligne in lignes
+        if ligne.get("section_label")
+    }
+    for section_id, valeurs in sections.items():
+        valeurs["libelle"] = libelles.get(section_id) or section_id
+    return sections
+
+
 def _exclu(field_key: str, exclus: Sequence[str]) -> bool:
     return any(field_key.startswith(prefixe) for prefixe in exclus)
 
@@ -319,7 +333,9 @@ def calculer(
         "global": global_,
         "par_type": _par(retenues, lambda ligne: ligne.get("value_type") or "?"),
         "par_criticite": _par(retenues, _criticite),
-        "par_section": _par(retenues, lambda ligne: ligne.get("section_id") or "?"),
+        "par_section": _avec_libelles(
+            _par(retenues, lambda ligne: ligne.get("section_id") or "?"), retenues
+        ),
         "par_page": _par(retenues, lambda ligne: ligne.get("page") or "?"),
         "par_champ": affiches,
         "champs_sans_erreur": len(par_champ) - len(en_erreur),
@@ -333,6 +349,8 @@ def calculer(
         "echantillon": {
             "documents": documents,
             "champs_au_total": perimetre,
+            # Les totaux ci-dessus somment tous les documents ; par document :
+            "champs_par_document": round(perimetre / documents) if documents else None,
             "champs_verifies": verifies,
             # Champs regardes par un humain, sur le total : sous 1, une partie
             # de la verite manque, et les taux ne valent que pour elle.
@@ -418,15 +436,26 @@ def _avertissements(
     return messages
 
 
+def _points(x: Optional[float], y: Optional[float]) -> Optional[float]:
+    """Ecart de y sur x en points de pourcentage, a 0,1 pres."""
+    return round((y - x) * 100, 1) if x is not None and y is not None else None
+
+
 def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
     """Compare deux resultats de calculer(tous_les_champs=True) : b par rapport a a.
 
+    a est la reference (colonne « Ref. » de la page), b le passage analyse.
     La comparaison est toujours rendue, mais signalee non comparable si la
-    recette, la version du comparateur ou l'empreinte du schema different :
-    un ecart de score n'y mesurerait pas le moteur. ``par_champ`` ne garde que
-    les champs dont le score a bouge.
+    recette, la version du comparateur, l'empreinte du schema ou le nombre de
+    documents different : un ecart n'y mesurerait pas le moteur.
+
+    ``par_champ`` liste tous les champs, presents d'un cote ou des deux, avec
+    leur reussite de chaque cote et l'ecart en points : le front joint sur
+    ``champ`` sans deviner si un champ absent est inchange. Les regressions
+    d'abord.
     """
-    ea, eb = a["execution"], b["execution"]
+    ea = {**a["execution"], "documents": a["echantillon"]["documents"]}
+    eb = {**b["execution"], "documents": b["echantillon"]["documents"]}
     raisons = [
         f"{libelle} differente"
         for cle, libelle in (
@@ -436,6 +465,8 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
         )
         if ea.get(cle) != eb.get(cle) or ea.get(cle) is None
     ]
+    if ea["documents"] != eb["documents"]:
+        raisons.append("nombre de documents different")
     indicateurs = (
         "score",
         "taux_lectures_justes",
@@ -449,18 +480,50 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
 
     champs_a = {c["champ"]: c for c in a["par_champ"]}
     champs_b = {c["champ"]: c for c in b["par_champ"]}
-    communs = sorted(champs_a.keys() & champs_b.keys())
-    par_champ = [
-        {
-            "champ": cle,
-            "score_a": champs_a[cle]["score"],
-            "score_b": champs_b[cle]["score"],
-            "evolution": delta(champs_a[cle]["score"], champs_b[cle]["score"]),
+    par_champ = []
+    for cle in sorted(champs_a.keys() | champs_b.keys()):
+        ca, cb = champs_a.get(cle), champs_b.get(cle)
+        connu = cb or ca or {}
+        par_champ.append(
+            {
+                "champ": cle,
+                "section": connu.get("section"),
+                "section_libelle": connu.get("section_libelle"),
+                "present_a": ca is not None,
+                "present_b": cb is not None,
+                "reussite_a": ca["reussite"] if ca else None,
+                "reussite_b": cb["reussite"] if cb else None,
+                "ecart_pts": _points(
+                    ca["reussite"] if ca else None, cb["reussite"] if cb else None
+                ),
+                "score_a": ca["score"] if ca else None,
+                "score_b": cb["score"] if cb else None,
+                "evolution": delta(ca["score"] if ca else None, cb["score"] if cb else None),
+            }
+        )
+    par_champ.sort(key=lambda c: (c["ecart_pts"] is None, c["ecart_pts"] or 0, c["champ"]))
+    inchanges = sum(
+        1
+        for c in par_champ
+        if c["present_a"]
+        and c["present_b"]
+        and c["reussite_a"] == c["reussite_b"]
+        and c["score_a"] == c["score_b"]
+    )
+
+    sections_a, sections_b = a["par_section"], b["par_section"]
+    par_section = {}
+    for section in sorted(sections_a.keys() | sections_b.keys()):
+        sa, sb = sections_a.get(section), sections_b.get(section)
+        taux_a = sa["taux_lectures_justes"] if sa else None
+        taux_b = sb["taux_lectures_justes"] if sb else None
+        par_section[section] = {
+            "libelle": (sb or sa or {}).get("libelle", section),
+            "taux_lectures_justes_a": taux_a,
+            "taux_lectures_justes_b": taux_b,
+            "ecart_pts": _points(taux_a, taux_b),
         }
-        for cle in communs
-        if champs_a[cle]["score"] != champs_b[cle]["score"]
-    ]
-    par_champ.sort(key=lambda c: c["evolution"] if c["evolution"] is not None else 0)
+
     return {
         "a": ea,
         "b": eb,
@@ -474,6 +537,7 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
             }
             for nom in indicateurs
         },
+        "par_section": par_section,
         "par_champ": par_champ,
-        "champs_inchanges": len(communs) - len(par_champ),
+        "champs_inchanges": inchanges,
     }

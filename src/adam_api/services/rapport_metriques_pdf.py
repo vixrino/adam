@@ -11,10 +11,9 @@ sous licence OFL.
 Une page A4, puis autant de pages que le tableau des champs en demande ; les
 extraits suivent le tableau. Chaque page porte le pied « Page n / N ».
 
-Ecart assume avec la maquette : la decoupe de la page autour du champ, dans
-les extraits, n'existe pas encore (le moteur OCR ne rend pas de position). La
-zone garde sa taille et son fond, avec la mention de la version 2, au lieu du
-cadre rouge d'illustration.
+Ecart assume avec la maquette : les extraits ne montrent pas de decoupe de
+la page autour du champ. Le moteur OCR ne rend pas de position ; la decoupe
+est abandonnee et les cartes se resserrent.
 
 Un champ sensible ne montre jamais de valeur, meme si on lui en passait une.
 """
@@ -193,7 +192,6 @@ _BORD = _rgb("#c1c7d0")
 _FOND = _rgb("#f7f8fa")
 _LIGNE = _rgb("#eeeeee")
 _BLANC = _rgb("#ffffff")
-_CADRE_DECOUPE = _rgb("#a0aec2")
 
 #: Etiquette de l'echec principal : libelle, fond, texte, bordure, tirets.
 _ETIQUETTES: Dict[str, Tuple[str, Couleur, Couleur, Couleur, str]] = {
@@ -419,32 +417,34 @@ def _anneau(p: _Page, cx: float, cy: float, taux: Optional[float]) -> None:
 def _taux(p: _Page, y: float, metriques: Mapping[str, Any]) -> float:
     g = metriques["global"]
     p.rect(_GAUCHE, y, _DROITE - _GAUCHE, 98, fond=_FOND, bord=_BORD, rayon=5)
-    taux = g.get("taux_valeurs_trouvees")
+    # Le champ qui porte le nom du libelle : la page lit le meme.
+    taux = g.get("taux_lectures_justes")
     _anneau(p, 109, y + 49, taux)
     texte = _pourcent(taux)
     p.texte(109 - _GRAS.largeur(texte, 16) / 2, y + 39, texte, _GRAS, 16, _TEXTE)
-    remplies = int(g["justes"]) + int(g["fausses"]) + int(g["manquees"])
+    # Sur tout ce que le moteur a ecrit : justes, fausses et inventees.
+    ecrites = int(g["justes"]) + int(g["fausses"]) + int(g["inventees"])
     p.morceaux(
         161,
         y + 32,
         (
             ("Taux de lectures justes", _GRAS, _TEXTE),
             (
-                f" · {_nombre(g['justes'])} lus correctement sur {_nombre(remplies)}",
+                f" · {_nombre(g['justes'])} lus correctement sur {_nombre(ecrites)}",
                 _REGULIER,
                 _TEXTE,
             ),
         ),
         12,
     )
-    marge = g.get("fourchette_valeurs_trouvees")
+    marge = g.get("fourchette_lectures_justes")
     if marge:
         ligne = f"Marge d'incertitude : {_pourcent(marge[0])} à {_pourcent(marge[1])}"
         p.texte(161, y + 50, ligne, _REGULIER, 12, _GRIS)
     return y + 98
 
 
-def _libelle_filtres(selection: Mapping[str, Any]) -> str:
+def _libelle_filtres(selection: Mapping[str, Any], sections: Mapping[str, Any]) -> List[str]:
     f = selection.get("filtres") or {}
     seuil = f.get("reussite_inferieure_a")
     types = ", ".join(_TYPES.get(t.upper(), t) for t in f.get("types_champ", []))
@@ -457,29 +457,54 @@ def _libelle_filtres(selection: Mapping[str, Any]) -> str:
         f"Type d'erreur : {erreurs or 'tous'}",
     ]
     if f.get("sections"):
-        morceaux.append("Section : " + ", ".join(f["sections"]))
+        libelles = (sections.get(s_, {}).get("libelle") or s_ for s_ in f["sections"])
+        morceaux.append("Section : " + ", ".join(libelles))
     if f.get("recherche"):
         morceaux.append(f"Recherche : « {f['recherche']} »")
-    return " · ".join(morceaux) + " · "
+    return morceaux
 
 
 def _filtres(p: _Page, y: float, metriques: Mapping[str, Any]) -> float:
+    """Encadre des filtres ; la ligne passe a la ligne entre deux filtres quand
+    elle deborde (plusieurs sections choisies, par exemple)."""
     selection = metriques.get("selection") or {}
-    p.rect(_GAUCHE, y, _DROITE - _GAUCHE, 54, bord=_BLEU, rayon=5)
-    p.texte(71, y + 11, "Filtres appliqués à ce rapport", _GRAS, 11.5, _BLEU)
     champs = int(selection.get("champs", len(metriques.get("par_champ") or [])))
     verifies = _nombre(selection.get("champs_verifies", 0))
-    p.morceaux(
-        71,
-        y + 29,
-        (
-            (_libelle_filtres(selection), _REGULIER, _TEXTE),
-            (f"{_nombre(champs)} champ{'s' if champs > 1 else ''}", _GRAS, _TEXTE),
-            (f" sur {verifies} vérifiés", _REGULIER, _TEXTE),
-        ),
-        11.5,
+    # Chaque groupe reste sur une ligne ; « N champs sur M verifies » est le dernier.
+    largeur_max = _DROITE - 15 - 71
+    groupes: List[List[Tuple[str, _Police]]] = []
+    for filtre in _libelle_filtres(selection, metriques.get("par_section") or {}):
+        texte = f"{filtre} · "
+        if _REGULIER.largeur(texte, 11.5) <= largeur_max:
+            groupes.append([(texte, _REGULIER)])
+            continue
+        # Un filtre plus large qu'une ligne (beaucoup de sections) se coupe
+        # entre ses valeurs.
+        valeurs = filtre.split(", ")
+        for i, valeur in enumerate(valeurs):
+            fin = ", " if i < len(valeurs) - 1 else " · "
+            groupes.append([(valeur + fin, _REGULIER)])
+    groupes.append(
+        [
+            (f"{_nombre(champs)} champ{'s' if champs > 1 else ''}", _GRAS),
+            (f" sur {verifies} vérifiés", _REGULIER),
+        ]
     )
-    return y + 54
+    lignes: List[List[Tuple[str, _Police]]] = [[]]
+    occupee = 0.0
+    for groupe in groupes:
+        largeur = sum(police.largeur(texte, 11.5) for texte, police in groupe)
+        if lignes[-1] and occupee + largeur > largeur_max:
+            lignes.append([])
+            occupee = 0.0
+        lignes[-1].extend(groupe)
+        occupee += largeur
+    hauteur = 54 + 14 * (len(lignes) - 1)
+    p.rect(_GAUCHE, y, _DROITE - _GAUCHE, hauteur, bord=_BLEU, rayon=5)
+    p.texte(71, y + 11, "Filtres appliqués à ce rapport", _GRAS, 11.5, _BLEU)
+    for i, ligne in enumerate(lignes):
+        p.morceaux(71, y + 29 + 14 * i, [(t, pol, _TEXTE) for t, pol in ligne], 11.5)
+    return y + hauteur
 
 
 # -- Tableau des champs ----------------------------------------------------------------
@@ -560,31 +585,22 @@ def _lignes_carte(champ: Champ) -> List[str]:
 
 
 def _hauteur_carte(champ: Champ) -> float:
-    """128 px pour une cle sur une ligne : 9 + 13 + 5 + 58 + 5 + 12 + 5 + 12 + 9."""
-    return 9 + 13 * len(_lignes_carte(champ)) + 5 + 58 + 5 + 12 + 5 + 12 + 9
+    """70 px pour une cle sur une ligne : 9 + 13 (cle) + 5 + 12 (document) + 5 + 12 + 9.
 
-
-def _zone_decoupe(p: _Page, x: float, y: float, largeur: float) -> None:
-    """La zone de la decoupe : fond ligne de la maquette, sans cadre d'illustration."""
-    p.rect(x, y, largeur, 58, fond=_FOND, bord=_CADRE_DECOUPE, rayon=3)
-    # repeating-linear-gradient(0deg, ...) : une ligne de 1 px tous les 10 px,
-    # comptes depuis le bas de la zone interieure.
-    bas = y + 57
-    for k in range(5):
-        p.trait(x + 1, x + largeur - 1, bas - 9.5 - 10 * k, _LIGNE)
-    mention = "Découpe de la page : version 2"
-    p.texte(x + (largeur - _REGULIER.largeur(mention, 9)) / 2, y + 23, mention, _REGULIER, 9, _GRIS)
+    La maquette placait entre la cle et le document une decoupe de la page
+    autour du champ ; elle est abandonnee (le moteur OCR ne rend pas de
+    position), la carte se resserre d'autant.
+    """
+    return 9 + 13 * len(_lignes_carte(champ)) + 5 + 12 + 5 + 12 + 9
 
 
 def _carte(p: _Page, x: float, y: float, hauteur: float, champ: Champ, ecart: Champ) -> None:
     p.rect(x, y, _CARTE_LARGEUR, hauteur, bord=_BORD, rayon=5)
-    interieur, largeur = x + 9, _CARTE_LARGEUR - 18
+    interieur = x + 9
     lignes = _lignes_carte(champ)
     for i, morceau in enumerate(lignes):
         p.texte(interieur, y + 9 + 13 * i, morceau, _FIXE, 10, _TEXTE)
-    haut = y + 9 + 13 * len(lignes) + 5
-    _zone_decoupe(p, interieur, haut, largeur)
-    bas = haut + 58 + 5
+    bas = y + 9 + 13 * len(lignes) + 5
     ligne = f"Doc #{ecart.get('document_id')} · page {ecart.get('page')}"
     p.texte(interieur, bas, ligne, _REGULIER, 10, _GRIS)
     p.morceaux(
