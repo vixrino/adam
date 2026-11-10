@@ -117,7 +117,14 @@ async def _creer_base(nom: str) -> None:
                 "(la supprimer a la main si c'est bien une base de demo)"
             )
         if existe:
-            await conn.execute(f'DROP DATABASE "{nom}" WITH (FORCE)')
+            # Sans WITH (FORCE), absent avant Postgres 13 : couper d'abord les
+            # sessions encore ouvertes sur la base de demo.
+            await conn.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = $1 AND pid <> pg_backend_pid()",
+                nom,
+            )
+            await conn.execute(f'DROP DATABASE "{nom}"')
         await conn.execute(f'CREATE DATABASE "{nom}"')
         await conn.execute(f"COMMENT ON DATABASE \"{nom}\" IS '{MARQUE_DEMO}'")
     finally:
