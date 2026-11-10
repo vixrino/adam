@@ -5,7 +5,7 @@ Fait tourner le benchmark de bout en bout et ecrit le JSON des metriques, sans
 document reel ni appel OCR : pour verifier la chaine, pas pour mesurer un moteur.
 
 Etapes :
-  1. cree une base a part, <POSTGRES_DB>_demo_metriques : seed.py --reset vide
+  1. recree une base a part, <POSTGRES_DB>_demo_metriques : seed.py --reset vide
      toutes les tables, et ne doit jamais tourner sur la base de travail ;
   2. y joue seed.py --reset --fake-ocr (un dossier CERFA fictif) ;
   3. pose une verite humaine sur des champs texte, avec des cas de chaque sorte
@@ -98,9 +98,14 @@ async def _creer_base(nom: str) -> None:
         database="postgres",
     )
     try:
-        existe = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", nom)
-        if not existe:
-            await conn.execute(f'CREATE DATABASE "{nom}"')
+        # Recreee a chaque demo : create_all ne fait que creer les tables
+        # absentes, et une base de demo d'une version precedente garderait ses
+        # anciennes colonnes. Le nom finit toujours par SUFFIXE_BASE (main) :
+        # jamais la base de travail.
+        if not nom.endswith(SUFFIXE_BASE):
+            raise SystemExit(f"refus de supprimer {nom} : ce n'est pas une base de demo")
+        await conn.execute(f'DROP DATABASE IF EXISTS "{nom}" WITH (FORCE)')
+        await conn.execute(f'CREATE DATABASE "{nom}"')
     finally:
         await conn.close()
 

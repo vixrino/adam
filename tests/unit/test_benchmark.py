@@ -209,10 +209,12 @@ class _FauxDepot:
     async def echouer_bloquees(self, delai: timedelta) -> int:
         return 0
 
-    async def reserver_execution(self, provider: str, modele: Optional[str]) -> Any:
-        self.reservations.append((provider, modele))
+    async def reserver_execution(self) -> Any:
         execution, self.execution = self.execution, None
         return execution
+
+    async def noter_moteur(self, execution_id: int, provider: str, modele: Optional[str]) -> None:
+        self.reservations.append((provider, modele))
 
     async def identifier(self, execution_id: int, version: str, empreinte: str) -> None:
         self.identite = (version, empreinte)
@@ -473,3 +475,147 @@ class TestEmpreinteSchema:
         }
         assert empreinte_schema(base) == empreinte_schema(autre_base)
         assert empreinte_schema(base) != empreinte_schema(retype)
+
+
+# -- Moteur choisi par la recette -------------------------------------------------------
+
+
+class _ConnecteurFermable(_FauxConnecteur):
+    name = "mistral"
+    model = "mistral-ocr-2"
+    annotation_model = "annot-2"
+
+    def __init__(self, reponses: List[Any]) -> None:
+        super().__init__(reponses)
+        self.ferme = False
+
+    async def aclose(self) -> None:
+        self.ferme = True
+
+
+class TestMoteurDeLaRecette:
+    def _execution(self, config: Dict[str, Any], hash_export: Optional[str] = None) -> Any:
+        return ExecutionReservee(
+            id=7,
+            recipe_id=3,
+            recipe_status="LOCKED",
+            document_ids=[1],
+            schema_id=5,
+            config=config,
+            schema_hash_export=hash_export,
+        )
+
+    def test_recette_avec_moteur_construit_et_ferme(self) -> None:
+        depot = _FauxDepot(
+            self._execution({"ocr": {"provider": "MISTRAL", "model": "mistral-ocr-2"}}),
+            [_champ(1, "DUPONT")],
+        )
+        defaut = _FauxConnecteur([])
+        propre = _ConnecteurFermable([_ocr(_kv("deposant.nom", "DUPONT"))])
+        recues: List[Any] = []
+
+        def fabrique(config: Any, connecteur_defaut: Any) -> Any:
+            recues.append((config, connecteur_defaut))
+            return propre, True
+
+        worker = TestExecutionWorker(
+            depot, defaut, pvc_root=Path("/inexistant"), cle_hmac=CLE, fabrique=fabrique
+        )
+        worker._images = lambda file_id: [Path("p.png")]
+        asyncio.run(worker.poll())
+
+        config, connecteur_defaut = recues[0]
+        assert (config.provider, config.model) == ("MISTRAL", "mistral-ocr-2")
+        assert connecteur_defaut is defaut
+        assert depot.reservations == [("mistral", "mistral-ocr-2 + annot-2")]
+        assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
+        assert propre.ferme is True
+
+    def test_recette_sans_moteur_garde_celui_du_worker(self) -> None:
+        depot = _FauxDepot(self._execution({}), [_champ(1, "DUPONT")])
+        connecteur = _FauxConnecteur([_ocr(_kv("deposant.nom", "DUPONT"))])
+        asyncio.run(_worker(depot, connecteur).poll())
+        assert depot.reservations == [("faux", "ocr-1 + annot-1")]
+        assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
+
+    def test_moteur_inconstructible_echoue_proprement(self) -> None:
+        depot = _FauxDepot(self._execution({"ocr": {"provider": "MISTRAL"}}), [])
+
+        def fabrique(config: Any, defaut: Any) -> Any:
+            raise ValueError("cle d'API Mistral absente")
+
+        worker = TestExecutionWorker(
+            depot, _FauxConnecteur([]), pvc_root=Path("/x"), cle_hmac=CLE, fabrique=fabrique
+        )
+        asyncio.run(worker.poll())
+        assert depot.fin["statut"] == TestExecutionStatus.FAILED
+        assert "cle d'API Mistral absente" in depot.fin["message"]
+
+    def test_schema_modifie_depuis_l_export_signale(self) -> None:
+        depot = _FauxDepot(self._execution({}, hash_export="autre"), [_champ(1, "DUPONT")])
+        connecteur = _FauxConnecteur([_ocr(_kv("deposant.nom", "DUPONT"))])
+        asyncio.run(_worker(depot, connecteur).poll())
+        assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
+        assert "schema du dataset modifie depuis l'export" in depot.fin["message"]
+
+
+class TestFabriqueDeMoteur:
+    def _settings(self, mock: bool = False) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            ocr_mock_enabled=mock,
+            ocr_mock_confidence=0.9,
+            mistral_api_key="cle",
+            mistral_ocr_endpoint="https://mistral.test",
+            mistral_ocr_model="ocr-env",
+            mistral_annotation_model="annot-env",
+            ocr_timeout_seconds=30,
+            mistral_ca_bundle="",
+        )
+
+    def test_config_vide_rend_le_moteur_du_worker(self) -> None:
+        from adam_core.benchmark.recette import ConfigOcr
+        from adam_worker.connectors import connector_pour_recette
+
+        defaut = _FauxConnecteur([])
+        assert connector_pour_recette(ConfigOcr(), self._settings(), defaut) == (defaut, False)
+
+    def test_mistral_avec_modele_et_consigne_de_la_recette(self) -> None:
+        from adam_core.benchmark.recette import ConfigOcr
+        from adam_worker.connectors import connector_pour_recette
+        from adam_worker.connectors.mistral import _CONSIGNE
+
+        config = ConfigOcr(provider="mistral", model="ocr-2", prompt="Lis les cases.")
+        connecteur, a_fermer = connector_pour_recette(config, self._settings(), None)  # type: ignore[arg-type]
+        assert a_fermer is True
+        assert (connecteur.model, connecteur.annotation_model) == ("ocr-2", "annot-env")
+        assert connecteur.consigne == "Lis les cases." != _CONSIGNE
+        asyncio.run(connecteur.aclose())
+
+    def test_mock_demande(self) -> None:
+        from adam_core.benchmark.recette import ConfigOcr
+        from adam_worker.connectors import connector_pour_recette
+
+        connecteur, _ = connector_pour_recette(ConfigOcr(provider="MOCK"), self._settings(), None)  # type: ignore[arg-type]
+        assert connecteur.name == "mock"
+
+    def test_consigne_envoyee_au_modele_d_annotation(self) -> None:
+        import httpx
+
+        from adam_worker.connectors.mistral import MistralOcrConnector
+
+        recus: List[Dict[str, Any]] = []
+
+        def handler(requete: httpx.Request) -> httpx.Response:
+            import json
+
+            recus.append(json.loads(requete.content))
+            return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://m")
+        connecteur = MistralOcrConnector(
+            "cle", "https://m", client=client, consigne="Consigne de la recette."
+        )
+        asyncio.run(connecteur._extract_fields("texte", 1, {}))
+        assert recus[0]["messages"][0] == {"role": "system", "content": "Consigne de la recette."}

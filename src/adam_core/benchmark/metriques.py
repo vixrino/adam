@@ -309,7 +309,11 @@ def calculer(
         )
     )
     # Le verdict porte sur tous les champs, avant le filtre d'affichage.
-    verdict = _verdict(global_, par_champ, config)
+    par_categorie = _par(retenues, _criticite)
+    sensibles = [ligne for ligne in retenues if ligne.get("sensitive")]
+    if sensibles:
+        par_categorie["sensible"] = bloc(sensibles)
+    verdict = _verdict(global_, par_champ, config, par_categorie)
     en_erreur = [champ for champ in par_champ if _a_des_erreurs(champ)]
     filtres = filtres or FiltresChamps()
     affiches = [c for c in (par_champ if tous_les_champs else en_erreur) if filtres.garde(c)]
@@ -375,26 +379,48 @@ def calculer(
 
 
 def _verdict(
-    global_: Mapping[str, Any], par_champ: Sequence[Mapping[str, Any]], config: Mapping[str, Any]
+    global_: Mapping[str, Any],
+    par_champ: Sequence[Mapping[str, Any]],
+    config: Mapping[str, Any],
+    categories: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Reussi / echoue selon la config de la recette ; None sans seuil."""
+    """Reussi / echoue selon la config de la recette ; None sans seuil.
+
+    Trois sortes de seuils : le score global minimal, un taux d'erreur maximal
+    par champ, un taux d'erreur maximal par categorie (sensible, critique,
+    standard). Une categorie sans champ juge ne fait pas echouer.
+    """
     # seuil_f1 : nom d'avant, encore dans la config des recettes deja figees.
     score_minimal = config.get("score_minimal", config.get("seuil_f1"))
     seuils = config.get("seuils_par_champ") or {}
+    seuils_categorie = config.get("seuils_par_categorie") or {}
+    categories_en_echec = []
+    for categorie, seuil_categorie in sorted(seuils_categorie.items()):
+        taux_categorie = (categories or {}).get(categorie, {}).get("taux_erreur")
+        if taux_categorie is not None and taux_categorie > float(seuil_categorie):
+            categories_en_echec.append(
+                {"categorie": categorie, "taux_erreur": taux_categorie, "seuil": seuil_categorie}
+            )
     champs_en_echec = []
     for champ in par_champ:
         seuil = _seuil_du_champ(str(champ["champ"]), seuils)
         taux = champ["taux_erreur"]
         if seuil is not None and taux is not None and taux > seuil:
             champs_en_echec.append({"champ": champ["champ"], "taux_erreur": taux, "seuil": seuil})
-    if score_minimal is None and not seuils:
-        return {"score_minimal": None, "reussi": None, "champs_en_echec": []}
+    if score_minimal is None and not seuils and not seuils_categorie:
+        return {
+            "score_minimal": None,
+            "reussi": None,
+            "champs_en_echec": [],
+            "categories_en_echec": [],
+        }
     score = global_["score"]
     global_ok = score_minimal is None or (score is not None and score >= float(score_minimal))
     return {
         "score_minimal": score_minimal,
-        "reussi": bool(global_ok and not champs_en_echec),
+        "reussi": bool(global_ok and not champs_en_echec and not categories_en_echec),
         "champs_en_echec": champs_en_echec,
+        "categories_en_echec": categories_en_echec,
     }
 
 

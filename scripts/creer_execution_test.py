@@ -10,6 +10,10 @@ humains. Par defaut, ce sont les documents du dataset dont au moins un champ
 porte une proposition humaine (field_proposal) : les autres n'apporteraient
 aucun champ au denominateur.
 
+Comme par l'API, la recette part d'un export du dataset (dataset_export) : le
+script fige d'abord ces documents dans un export, puis cree la recette sur
+tout l'export.
+
 Le paquet *_core (nota_core ou adam_core) est trouve sous src/ : le script
 tourne tel quel dans les deux depots, depuis la racine du depot (.env).
 
@@ -56,6 +60,7 @@ async def creer(
     from sqlalchemy import func, select
 
     modeles = importlib.import_module(f"{core}.models")
+    schema_benchmark = importlib.import_module(f"{core}.benchmark.schema")
     statuts = importlib.import_module(f"{core}.enums.status")
     session_mod = importlib.import_module(f"{core}.db.session")
     settings = importlib.import_module(f"{api}.core.config").settings
@@ -121,15 +126,32 @@ async def creer(
                     "Sans verite terrain, il n'y a rien a mesurer (--documents pour forcer)."
                 )
             maintenant = datetime.now(timezone.utc)
+            nom_recette = nom or f"recette {maintenant:%Y-%m-%d %H:%M}"
+            schema = await schema_benchmark.schema_en_dict(db, dataset.schema_id)
+            export = modeles.DatasetExport(
+                dataset_id=dataset_id,
+                schema_id=dataset.schema_id,
+                schema_hash=schema_benchmark.empreinte_schema(schema),
+                name=f"export pour {nom_recette}",
+                document_ids=documents,
+                created_by_user_id=createur,
+            )
+            print(f" export : {export.name} — documents {documents}")
+            if not dry_run:
+                db.add(export)
+                await db.flush()
             recette = TestRecipe(
                 dataset_id=dataset_id,
-                name=nom or f"recette {maintenant:%Y-%m-%d %H:%M}",
+                dataset_export_id=export.id,
+                tout_l_export=True,
+                name=nom_recette,
+                version=1,
                 document_ids=documents,
                 status=statuts.TestRecipeStatus.LOCKED.value,
                 locked_at=maintenant,
                 created_by_user_id=createur,
             )
-            print(f" recette : {recette.name} — documents {documents}")
+            print(f" recette : {recette.name} — tout l'export")
             if not dry_run:
                 db.add(recette)
                 await db.flush()

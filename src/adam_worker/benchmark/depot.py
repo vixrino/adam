@@ -8,25 +8,25 @@ evaluation_report : un benchmark ne touche jamais la donnee qu'il mesure.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import exists, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from adam_core.benchmark.schema import schema_en_dict
 from adam_core.db.session import get_async_session
 from adam_core.enums.status import TestExecutionStatus
 from adam_core.models import (
     ComparisonResult,
     Dataset,
-    DocSchema,
+    DatasetExport,
     Document,
     DocumentField,
     EvaluationReport,
     FieldProposal,
     FieldSpec,
-    SchemaPage,
     TestExecution,
     TestRecipe,
 )
@@ -40,6 +40,10 @@ class ExecutionReservee:
     recipe_status: str
     document_ids: List[int]
     schema_id: int
+    #: test_recipe.config : seuils et moteur OCR de la recette.
+    config: Dict[str, Any] = field(default_factory=dict)
+    #: Empreinte du schema a la creation de l'export, si la recette en vient.
+    schema_hash_export: Optional[str] = None
 
 
 class DepotBenchmark:
@@ -66,14 +70,12 @@ class DepotBenchmark:
             )
             return int(getattr(resultat, "rowcount", 0) or 0)
 
-    async def reserver_execution(
-        self, ocr_provider: str, ocr_model_id: Optional[str]
-    ) -> Optional[ExecutionReservee]:
+    async def reserver_execution(self) -> Optional[ExecutionReservee]:
         """Prend la plus ancienne execution PENDING et la passe en RUNNING.
 
         FOR UPDATE SKIP LOCKED : deux workers ne prennent jamais la meme. Le
-        moteur est recopie sur l'execution au lancement : la configuration du
-        dataset peut changer apres.
+        moteur depend de la recette : le worker le construit, puis le note
+        (noter_moteur).
         """
         async with get_async_session() as db:
             execution = (
@@ -89,15 +91,20 @@ class DepotBenchmark:
                 return None
             ligne = (
                 await db.execute(
-                    select(TestRecipe.status, TestRecipe.document_ids, Dataset.schema_id)
+                    select(
+                        TestRecipe.status,
+                        TestRecipe.document_ids,
+                        TestRecipe.config,
+                        Dataset.schema_id,
+                        DatasetExport.schema_hash,
+                    )
                     .join(Dataset, Dataset.id == TestRecipe.dataset_id)
+                    .outerjoin(DatasetExport, DatasetExport.id == TestRecipe.dataset_export_id)
                     .where(TestRecipe.id == execution.recipe_id)
                 )
             ).one()
             execution.status = TestExecutionStatus.RUNNING.value
             execution.started_at = datetime.now(timezone.utc)
-            execution.ocr_provider = ocr_provider
-            execution.ocr_model_id = ocr_model_id
             await db.flush()
             return ExecutionReservee(
                 id=execution.id,
@@ -105,6 +112,19 @@ class DepotBenchmark:
                 recipe_status=str(ligne.status),
                 document_ids=list(ligne.document_ids or []),
                 schema_id=int(ligne.schema_id),
+                config=dict(ligne.config or {}),
+                schema_hash_export=ligne.schema_hash,
+            )
+
+    async def noter_moteur(
+        self, execution_id: int, ocr_provider: str, ocr_model_id: Optional[str]
+    ) -> None:
+        """Recopie sur l'execution le moteur qui lit vraiment."""
+        async with get_async_session() as db:
+            await db.execute(
+                update(TestExecution)
+                .where(TestExecution.id == execution_id)
+                .values(ocr_provider=ocr_provider, ocr_model_id=ocr_model_id)
             )
 
     async def identifier(
@@ -121,45 +141,7 @@ class DepotBenchmark:
     async def schema(self, schema_id: int) -> Dict[str, Any]:
         """Le schema sous la forme de GET /schemas/{id}, pour ModeleDocument."""
         async with get_async_session() as db:
-            nom = (
-                await db.execute(select(DocSchema.name).where(DocSchema.id == schema_id))
-            ).scalar_one()
-            pages = (
-                await db.execute(
-                    select(SchemaPage.page_number, SchemaPage.description)
-                    .where(SchemaPage.schema_id == schema_id)
-                    .order_by(SchemaPage.page_number)
-                )
-            ).all()
-            specs = (
-                (
-                    await db.execute(
-                        select(FieldSpec)
-                        .where(FieldSpec.schema_id == schema_id)
-                        .order_by(FieldSpec.page, FieldSpec.display_order, FieldSpec.id)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        return {
-            "name": nom,
-            "pages": [{"page_number": n, "description": d} for n, d in pages],
-            "field_specs": [
-                {
-                    "id": fs.id,
-                    "page": fs.page,
-                    "section_id": fs.section_id,
-                    "field_key": fs.field_key,
-                    "group_id": fs.group_id,
-                    "display_label": fs.display_label,
-                    "description": fs.description,
-                    "value_type": fs.value_type,
-                    "polygon": fs.polygon,
-                }
-                for fs in specs
-            ],
-        }
+            return await schema_en_dict(db, schema_id)
 
     async def documents(self, document_ids: List[int]) -> List[Tuple[int, int]]:
         """(document_id, file_id) des documents de la recette, dans son ordre."""

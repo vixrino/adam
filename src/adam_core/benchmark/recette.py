@@ -1,0 +1,72 @@
+"""Contrat d'une recette de benchmark : moteur OCR et seuils.
+
+Partage par l'API (qui le valide a la creation) et par le worker (qui en tire
+le moteur a utiliser). Fige avec la recette, dans test_recipe.config : deux
+executions d'une meme recette lisent avec le meme moteur, sauf a creer une
+nouvelle version.
+"""
+
+from __future__ import annotations
+
+from typing import Dict, List, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+#: Fournisseurs que le worker sait construire (adam_worker.connectors).
+#: MOCK ne lit rien : il sert aux demonstrations et aux tests de la chaine.
+FournisseurOcr = Literal["MISTRAL", "MOCK"]
+
+#: Categories de champs que les seuils peuvent viser, comme par_criticite des
+#: metriques, plus « sensible » (donnees personnelles : noms, IBAN...).
+CategorieChamp = Literal["sensible", "critique", "standard"]
+
+
+class ConfigOcr(BaseModel):
+    """Le moteur de lecture de la recette. Un champ vide : celui du worker (.env)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Optional[FournisseurOcr] = None
+    #: Modele OCR (Mistral : /v1/ocr), par exemple « mistral-ocr-latest ».
+    model: Optional[str] = Field(default=None, min_length=1)
+    #: Modele qui range le texte lu dans les champs (Mistral : /v1/chat/completions).
+    annotation_model: Optional[str] = Field(default=None, min_length=1)
+    #: Consigne donnee au modele d'annotation, a la place de celle du code.
+    prompt: Optional[str] = Field(default=None, min_length=1)
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _majuscules(cls, valeur: object) -> object:
+        return valeur.upper() if isinstance(valeur, str) else valeur
+
+
+class ConfigRecette(BaseModel):
+    """Configuration du test, figee avec la recette."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Score global minimal (0 a 1) pour que le passage soit « reussi ».
+    score_minimal: Optional[float] = Field(default=None, ge=0, le=1)
+    #: Taux d'erreur maximal par champ (cle exacte ou prefixe) :
+    #: {"gestion_budget.iban": 0.0}.
+    seuils_par_champ: Dict[str, float] = Field(default_factory=dict)
+    #: Taux d'erreur maximal par categorie de champs : {"sensible": 0.0}.
+    seuils_par_categorie: Dict[CategorieChamp, float] = Field(default_factory=dict)
+    #: Prefixes de cle ignores par les metriques : ["certification."].
+    champs_exclus: List[str] = Field(default_factory=list)
+    #: Le moteur ; absent, celui du worker.
+    ocr: ConfigOcr = Field(default_factory=ConfigOcr)
+
+    @field_validator("seuils_par_champ", "seuils_par_categorie")
+    @classmethod
+    def _taux(cls, seuils: Dict[str, float]) -> Dict[str, float]:
+        for cle, valeur in seuils.items():
+            if not 0 <= valeur <= 1:
+                raise ValueError(f"seuil de {cle} hors de 0 a 1 : {valeur}")
+        return seuils
+
+
+def config_ocr(config: Optional[Dict[str, object]]) -> ConfigOcr:
+    """Le moteur d'une config de recette en base, tolerant les anciennes
+    recettes qui n'en ont pas."""
+    return ConfigOcr.model_validate((config or {}).get("ocr") or {})

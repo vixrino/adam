@@ -65,16 +65,34 @@ def _db(objets: Dict[str, Any], *resultats: MagicMock) -> AsyncMock:
     return db
 
 
-def _recette(status: str = "LOCKED", config: Optional[Dict[str, Any]] = None) -> Any:
-    return SimpleNamespace(
+def _recette(status: str = "LOCKED", config: Optional[Dict[str, Any]] = None, **autres: Any) -> Any:
+    base = dict(
         id=3,
         dataset_id=4,
+        dataset_export_id=8,
+        tout_l_export=False,
+        version=1,
+        recette_racine_id=None,
         name="r",
         description=None,
         document_ids=[14],
         status=status,
         config=config or {},
         locked_at=_NOW,
+        created_at=_NOW,
+    )
+    return SimpleNamespace(**{**base, **autres})
+
+
+def _export(documents: Optional[List[int]] = None) -> Any:
+    return SimpleNamespace(
+        id=8,
+        dataset_id=4,
+        schema_id=9,
+        schema_hash="abcd",
+        name="novembre",
+        description=None,
+        document_ids=documents or [14, 15],
         created_at=_NOW,
     )
 
@@ -139,31 +157,173 @@ class TestDroits:
         assert r.status_code == 403
 
 
-class TestRecettes:
-    def test_creation_figee_sur_les_documents_verifies(self) -> None:
+class TestExports:
+    def test_creation_sur_les_documents_verifies(self) -> None:
         db = _db(
-            {"Dataset": SimpleNamespace(id=4)},
+            {"Dataset": SimpleNamespace(id=4, schema_id=9)},
             _resultat(scalars=[14, 15]),  # documents avec proposition humaine
+            _resultat(scalar="CERFA"),  # schema : nom
+            _resultat(all_=[(1, "Deposant")]),  # schema : pages
+            _resultat(scalars=[]),  # schema : champs
             _resultat(scalar=1),  # createur
         )
         r = _client(SUPERVISEUR, db).post(
-            "/test-recipes",
-            json={"dataset_id": 4, "name": "cerfa", "config": {"score_minimal": 0.9}},
+            "/dataset-exports", json={"dataset_id": 4, "name": "novembre"}
+        )
+        assert r.status_code == 201, r.text
+        corps = r.json()
+        assert corps["document_ids"] == [14, 15] and corps["schema_id"] == 9
+        assert len(corps["schema_hash"]) == 16
+
+    def test_document_hors_du_dataset_422(self) -> None:
+        db = _db({"Dataset": SimpleNamespace(id=4, schema_id=9)}, _resultat(scalars=[14]))
+        r = _client(SUPERVISEUR, db).post(
+            "/dataset-exports", json={"dataset_id": 4, "name": "x", "document_ids": [14, 99]}
+        )
+        assert r.status_code == 422 and "99" in r.text
+
+    def test_sans_verite_terrain_422(self) -> None:
+        db = _db({"Dataset": SimpleNamespace(id=4, schema_id=9)}, _resultat(scalars=[]))
+        r = _client(SUPERVISEUR, db).post("/dataset-exports", json={"dataset_id": 4, "name": "x"})
+        assert r.status_code == 422
+
+    def test_reserve_au_benchmark(self) -> None:
+        db = _db({"Dataset": SimpleNamespace(id=4, schema_id=9)})
+        r = _client(OPERATEUR, db).post("/dataset-exports", json={"dataset_id": 4, "name": "x"})
+        assert r.status_code == 403
+
+
+class TestRecettes:
+    def _creer(self, corps: Dict[str, Any], *resultats: MagicMock) -> Any:
+        db = _db({"DatasetExport": _export()}, *resultats)
+        return _client(SUPERVISEUR, db).post("/test-recipes", json=corps)
+
+    def test_creation_sur_tout_l_export_avec_moteur(self) -> None:
+        r = self._creer(
+            {
+                "dataset_export_id": 8,
+                "name": "cerfa",
+                "tout_l_export": True,
+                "config": {
+                    "score_minimal": 0.9,
+                    "seuils_par_categorie": {"sensible": 0.0},
+                    "ocr": {"provider": "mistral", "model": "mistral-ocr-2", "prompt": "Lis."},
+                },
+            },
+            _resultat(scalar=None),  # nom libre
+            _resultat(scalar=1),  # createur
         )
         assert r.status_code == 201, r.text
         corps = r.json()
         assert corps["status"] == "LOCKED" and corps["document_ids"] == [14, 15]
-        assert corps["config"]["score_minimal"] == 0.9
+        assert (corps["dataset_export_id"], corps["dataset_id"], corps["version"]) == (8, 4, 1)
+        assert corps["config"]["ocr"] == {
+            "provider": "MISTRAL",
+            "model": "mistral-ocr-2",
+            "prompt": "Lis.",
+        }
+        assert corps["config"]["seuils_par_categorie"] == {"sensible": 0.0}
 
-    def test_sans_verite_terrain_422(self) -> None:
-        db = _db({"Dataset": SimpleNamespace(id=4)}, _resultat(scalars=[]))
-        r = _client(SUPERVISEUR, db).post("/test-recipes", json={"dataset_id": 4, "name": "x"})
-        assert r.status_code == 422
+    def test_liste_prise_dans_l_export(self) -> None:
+        r = self._creer(
+            {"dataset_export_id": 8, "name": "c", "document_ids": [15]},
+            _resultat(scalar=None),
+            _resultat(scalar=1),
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["document_ids"] == [15] and r.json()["tout_l_export"] is False
+
+    def test_document_hors_export_422(self) -> None:
+        r = self._creer({"dataset_export_id": 8, "name": "c", "document_ids": [14, 99]})
+        assert r.status_code == 422 and "99" in r.text
+
+    def test_ni_liste_ni_tout_l_export_422(self) -> None:
+        assert self._creer({"dataset_export_id": 8, "name": "c"}).status_code == 422
+
+    def test_liste_et_tout_l_export_422(self) -> None:
+        corps = {"dataset_export_id": 8, "name": "c", "tout_l_export": True, "document_ids": [14]}
+        assert self._creer(corps).status_code == 422
+
+    def test_fournisseur_inconnu_422(self) -> None:
+        corps = {
+            "dataset_export_id": 8,
+            "name": "c",
+            "tout_l_export": True,
+            "config": {"ocr": {"provider": "PULSAR"}},
+        }
+        assert self._creer(corps).status_code == 422
+
+    def test_seuil_hors_bornes_422(self) -> None:
+        corps = {
+            "dataset_export_id": 8,
+            "name": "c",
+            "tout_l_export": True,
+            "config": {"seuils_par_categorie": {"sensible": 2}},
+        }
+        assert self._creer(corps).status_code == 422
+
+    def test_nom_deja_pris_409(self) -> None:
+        r = self._creer(
+            {"dataset_export_id": 8, "name": "c", "tout_l_export": True}, _resultat(scalar=3)
+        )
+        assert r.status_code == 409 and "/test-recipes/3/versions" in r.text
+
+    def test_export_inconnu_404(self) -> None:
+        db = _db({})
+        r = _client(SUPERVISEUR, db).post(
+            "/test-recipes", json={"dataset_export_id": 8, "name": "c", "tout_l_export": True}
+        )
+        assert r.status_code == 404
 
     def test_recette_figee_non_modifiable(self) -> None:
         db = _db({"TestRecipe": _recette("LOCKED")})
-        r = _client(SUPERVISEUR, db).patch("/test-recipes/3", json={"name": "autre"})
-        assert r.status_code == 409
+        r = _client(SUPERVISEUR, db).patch("/test-recipes/3", json={"description": "autre"})
+        assert r.status_code == 409 and "/versions" in r.text
+
+
+class TestVersions:
+    def test_nouvelle_version_avec_un_autre_moteur(self) -> None:
+        source = _recette("LOCKED", config={"score_minimal": 0.8})
+        db = _db(
+            {"TestRecipe": source, "DatasetExport": _export()},
+            _resultat(scalars=[source]),  # famille
+            _resultat(scalar=1),  # createur
+        )
+        r = _client(SUPERVISEUR, db).post(
+            "/test-recipes/3/versions",
+            json={
+                "document_ids": [14, 15],
+                "config": {"score_minimal": 0.8, "ocr": {"model": "mistral-ocr-2"}},
+            },
+        )
+        assert r.status_code == 201, r.text
+        corps = r.json()
+        assert (corps["name"], corps["version"], corps["recette_racine_id"]) == ("r", 2, 3)
+        assert corps["document_ids"] == [14, 15] and corps["status"] == "LOCKED"
+        assert corps["config"]["ocr"] == {"model": "mistral-ocr-2"}
+        assert source.version == 1 and source.document_ids == [14]  # la source ne bouge pas
+
+    def test_sans_corps_reprend_la_source(self) -> None:
+        source = _recette("LOCKED", config={"score_minimal": 0.8})
+        v2 = _recette("LOCKED", id=5, version=2, recette_racine_id=3)
+        db = _db(
+            {"TestRecipe": v2, "DatasetExport": _export()},
+            _resultat(scalars=[source, v2]),
+            _resultat(scalar=1),
+        )
+        r = _client(SUPERVISEUR, db).post("/test-recipes/5/versions", json={})
+        assert r.status_code == 201, r.text
+        corps = r.json()
+        assert (corps["version"], corps["recette_racine_id"]) == (3, 3)
+        assert corps["document_ids"] == [14]
+
+    def test_lister_les_versions(self) -> None:
+        source = _recette("LOCKED")
+        v2 = _recette("LOCKED", id=5, version=2, recette_racine_id=3)
+        db = _db({"TestRecipe": v2}, _resultat(scalars=[source, v2]))
+        r = _client(SUPERVISEUR, db).get("/test-recipes/5/versions")
+        assert r.status_code == 200, r.text
+        assert [v["version"] for v in r.json()] == [1, 2]
 
 
 class TestExecutions:
