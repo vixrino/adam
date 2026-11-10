@@ -45,6 +45,9 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 SUFFIXE_BASE = "_demo_metriques"
+#: Commentaire pose sur la base de demo a sa creation : seule une base qui le
+#: porte peut etre supprimee et recreee par la demo.
+MARQUE_DEMO = "base de demo creee par scripts/demo_metriques.py"
 #: Lecture que le connecteur mock rend pour chaque cle detectee.
 VALEUR_LUE = "valeur-mock"
 #: Repartition des cas sur dix champs : 6 justes, 1 fausse, 1 manquee,
@@ -100,12 +103,23 @@ async def _creer_base(nom: str) -> None:
     try:
         # Recreee a chaque demo : create_all ne fait que creer les tables
         # absentes, et une base de demo d'une version precedente garderait ses
-        # anciennes colonnes. Le nom finit toujours par SUFFIXE_BASE (main) :
-        # jamais la base de travail.
-        if not nom.endswith(SUFFIXE_BASE):
-            raise SystemExit(f"refus de supprimer {nom} : ce n'est pas une base de demo")
-        await conn.execute(f'DROP DATABASE IF EXISTS "{nom}" WITH (FORCE)')
+        # anciennes colonnes. Ne supprime qu'une base que la demo a elle-meme
+        # creee et marquee (commentaire MARQUE_DEMO) : jamais une base de
+        # travail, meme si son nom finissait par le suffixe.
+        marque = await conn.fetchval(
+            "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = $1",
+            nom,
+        )
+        existe = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", nom)
+        if existe and marque != MARQUE_DEMO:
+            raise SystemExit(
+                f"refus de supprimer {nom} : elle n'a pas ete creee par cette demo "
+                "(la supprimer a la main si c'est bien une base de demo)"
+            )
+        if existe:
+            await conn.execute(f'DROP DATABASE "{nom}" WITH (FORCE)')
         await conn.execute(f'CREATE DATABASE "{nom}"')
+        await conn.execute(f"COMMENT ON DATABASE \"{nom}\" IS '{MARQUE_DEMO}'")
     finally:
         await conn.close()
 
@@ -243,7 +257,10 @@ def main() -> None:
         raise SystemExit("POSTGRES_DB absent du .env et de l'environnement")
     base_demo = base_travail.removesuffix(SUFFIXE_BASE) + SUFFIXE_BASE
 
-    print(f" [1/6] base de demo {base_demo} (la base {base_travail} n'est pas touchee)")
+    if base_demo == base_travail:
+        print(f" [1/6] base de demo {base_demo} (POSTGRES_DB vise deja la demo)")
+    else:
+        print(f" [1/6] base de demo {base_demo} (la base {base_travail} n'est pas touchee)")
     asyncio.run(_creer_base(base_demo))
     # Tout ce qui suit, sous-processus compris, vise la base de demo.
     os.environ["POSTGRES_DB"] = base_demo

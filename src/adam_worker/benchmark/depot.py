@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import exists, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from adam_core.benchmark.schema import schema_en_dict
@@ -95,7 +95,11 @@ class DepotBenchmark:
                         TestRecipe.status,
                         TestRecipe.document_ids,
                         TestRecipe.config,
-                        Dataset.schema_id,
+                        # Le schema fige par l'export ; le dataset pour les
+                        # recettes d'avant les exports.
+                        func.coalesce(DatasetExport.schema_id, Dataset.schema_id).label(
+                            "schema_id"
+                        ),
                         DatasetExport.schema_hash,
                     )
                     .join(Dataset, Dataset.id == TestRecipe.dataset_id)

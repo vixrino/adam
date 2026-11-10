@@ -286,7 +286,7 @@ class TestWorker:
         )
         asyncio.run(_worker(depot, connecteur).poll())
 
-        assert depot.reservations == [("faux", "ocr-1 + annot-1")]
+        assert depot.reservations == [("FAUX", "ocr-1 + annot-1")]
         assert [len(e["ecarts"]) for e in depot.enregistrements] == [0, 1]
         assert depot.enregistrements[1]["compteurs"]["ocr_calls_made"] == 3
         assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
@@ -527,7 +527,7 @@ class TestMoteurDeLaRecette:
         config, connecteur_defaut = recues[0]
         assert (config.provider, config.model) == ("MISTRAL", "mistral-ocr-2")
         assert connecteur_defaut is defaut
-        assert depot.reservations == [("mistral", "mistral-ocr-2 + annot-2")]
+        assert depot.reservations == [("MISTRAL", "mistral-ocr-2 + annot-2")]
         assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
         assert propre.ferme is True
 
@@ -535,7 +535,7 @@ class TestMoteurDeLaRecette:
         depot = _FauxDepot(self._execution({}), [_champ(1, "DUPONT")])
         connecteur = _FauxConnecteur([_ocr(_kv("deposant.nom", "DUPONT"))])
         asyncio.run(_worker(depot, connecteur).poll())
-        assert depot.reservations == [("faux", "ocr-1 + annot-1")]
+        assert depot.reservations == [("FAUX", "ocr-1 + annot-1")]
         assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
 
     def test_moteur_inconstructible_echoue_proprement(self) -> None:
@@ -619,3 +619,20 @@ class TestFabriqueDeMoteur:
         )
         asyncio.run(connecteur._extract_fields("texte", 1, {}))
         assert recus[0]["messages"][0] == {"role": "system", "content": "Consigne de la recette."}
+
+
+def test_documents_absents_signales() -> None:
+    """Un document de la recette supprime depuis : le passage le dit."""
+    execution = ExecutionReservee(
+        id=7, recipe_id=3, recipe_status="LOCKED", document_ids=[1, 2], schema_id=5
+    )
+    depot = _FauxDepot(execution, [_champ(1, "DUPONT")])
+
+    async def un_seul(ids: List[int]) -> List[Any]:
+        return [(1, 101)]
+
+    depot.documents = un_seul  # type: ignore[method-assign]
+    connecteur = _FauxConnecteur([_ocr(_kv("deposant.nom", "DUPONT"))])
+    asyncio.run(_worker(depot, connecteur).poll())
+    assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
+    assert "documents de la recette absents de la base : [2]" in depot.fin["message"]

@@ -34,11 +34,13 @@ Echecs
 
 from __future__ import annotations
 
+import hashlib
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from adam_api.core.config import settings
+from adam_core.benchmark.recette import ConfigOcr, config_ocr
 from adam_core.benchmark.schema import empreinte_schema  # reexporte : tests, scripts
 from adam_core.enums.status import TestExecutionStatus, TestRecipeStatus
 from adam_worker.base_worker import BaseWorker
@@ -49,7 +51,6 @@ from adam_worker.benchmark.evaluation import (
     evaluer_document,
     fusionner_histogrammes,
 )
-from adam_core.benchmark.recette import ConfigOcr, config_ocr
 from adam_worker.connectors import connector_from_settings, connector_pour_recette
 from adam_worker.connectors.base import BaseOcrConnector, DocumentNonConforme
 from adam_worker.connectors.modele import ModeleDocument
@@ -118,7 +119,6 @@ class TestExecutionWorker(BaseWorker):
                 message=f"moteur OCR de la recette inconstructible : {exc}",
             )
             return
-        await self.depot.noter_moteur(execution.id, connecteur.name, _modele_ocr(connecteur))
 
         self.logger.info(
             "execution de test demarree [execution_id=%s recette=%s documents=%s]",
@@ -127,6 +127,11 @@ class TestExecutionWorker(BaseWorker):
             len(execution.document_ids),
         )
         try:
+            # Dans le try : si la note echoue, le moteur est quand meme ferme
+            # et l'execution passe en FAILED au lieu de rester RUNNING.
+            await self.depot.noter_moteur(
+                execution.id, connecteur.name.upper(), _modele_ocr(connecteur)
+            )
             await self._executer(execution, connecteur)
         except EchecExecution as exc:
             self.logger.error("execution %s en FAILED : %s", execution.id, exc)
@@ -162,6 +167,7 @@ class TestExecutionWorker(BaseWorker):
         documents = await self.depot.documents(execution.document_ids)
         if not documents:
             raise EchecExecution(f"recette {execution.recipe_id} sans document existant")
+        absents = sorted(set(execution.document_ids) - {d for d, _ in documents})
 
         histogramme: Dict[str, Dict[str, List[int]]] = {}
         agregats: Dict[int, Agregat] = {}
@@ -221,6 +227,10 @@ class TestExecutionWorker(BaseWorker):
             )
 
         constats = []
+        if absents:
+            # Supprimes depuis l'export (droit a l'effacement...) : le passage
+            # porte sur moins de documents que la recette, et doit le dire.
+            constats.append(f"documents de la recette absents de la base : {absents}")
         if execution.schema_hash_export and execution.schema_hash_export != empreinte:
             # Le schema a change depuis l'export : la verite et la lecture ne
             # portent plus tout a fait sur les memes champs qu'a l'export.
@@ -250,4 +260,9 @@ def _modele_ocr(connecteur: BaseOcrConnector) -> Optional[str]:
     Mistral, modele d'annotation — les deux font la lecture."""
     modeles = [getattr(connecteur, attribut, None) for attribut in ("model", "annotation_model")]
     noms = [str(m) for m in modeles if m]
+    consigne = getattr(connecteur, "consigne", None)
+    if consigne:
+        # La consigne change la lecture : son empreinte dit si deux executions
+        # aux scores differents ont lu avec le meme prompt.
+        noms.append("consigne " + hashlib.sha256(str(consigne).encode()).hexdigest()[:8])
     return " + ".join(noms) or None

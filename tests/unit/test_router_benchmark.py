@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from adam_api.core.config import settings
 from adam_api.dependencies.auth import UserCaller, require_user
 from adam_api.dependencies.db import get_db
 from adam_api.routers.benchmark import router
@@ -162,6 +163,7 @@ class TestExports:
         db = _db(
             {"Dataset": SimpleNamespace(id=4, schema_id=9)},
             _resultat(scalars=[14, 15]),  # documents avec proposition humaine
+            _resultat(scalar=None),  # nom d'export libre
             _resultat(scalar="CERFA"),  # schema : nom
             _resultat(all_=[(1, "Deposant")]),  # schema : pages
             _resultat(scalars=[]),  # schema : champs
@@ -217,9 +219,11 @@ class TestRecettes:
         corps = r.json()
         assert corps["status"] == "LOCKED" and corps["document_ids"] == [14, 15]
         assert (corps["dataset_export_id"], corps["dataset_id"], corps["version"]) == (8, 4, 1)
+        # Le modele d'annotation laisse vide prend celui du .env, fige a la creation.
         assert corps["config"]["ocr"] == {
             "provider": "MISTRAL",
             "model": "mistral-ocr-2",
+            "annotation_model": settings.mistral_annotation_model,
             "prompt": "Lis.",
         }
         assert corps["config"]["seuils_par_categorie"] == {"sensible": 0.0}
@@ -281,6 +285,90 @@ class TestRecettes:
         assert r.status_code == 409 and "/versions" in r.text
 
 
+class TestRefus:
+    """Ce que la relecture a releve : recettes sans export, doublons, null."""
+
+    def test_nom_d_export_deja_pris_409(self) -> None:
+        db = _db(
+            {"Dataset": SimpleNamespace(id=4, schema_id=9)},
+            _resultat(scalars=[14]),
+            _resultat(scalar=2),  # nom deja pris
+        )
+        r = _client(SUPERVISEUR, db).post(
+            "/dataset-exports", json={"dataset_id": 4, "name": "novembre"}
+        )
+        assert r.status_code == 409 and "id 2" in r.text
+
+    def test_conflit_a_l_ecriture_409_et_non_500(self) -> None:
+        from sqlalchemy.exc import IntegrityError
+
+        db = _db({"DatasetExport": _export()}, _resultat(scalar=None), _resultat(scalar=1))
+        db.flush = AsyncMock(side_effect=IntegrityError("insert", {}, Exception("unique")))
+        r = _client(SUPERVISEUR, db).post(
+            "/test-recipes", json={"dataset_export_id": 8, "name": "c", "tout_l_export": True}
+        )
+        assert r.status_code == 409
+
+    def test_recette_sans_export_ni_version_ni_patch_ni_execution(self) -> None:
+        ancienne = _recette("LOCKED", dataset_export_id=None)
+        brouillon = _recette("DRAFT", dataset_export_id=None)
+        client = _client(SUPERVISEUR, _db({"TestRecipe": ancienne}))
+        assert client.post("/test-recipes/3/versions", json={}).status_code == 409
+        assert client.post("/test-executions", json={"recipe_id": 3}).status_code == 409
+        client = _client(SUPERVISEUR, _db({"TestRecipe": brouillon}))
+        r = client.patch("/test-recipes/3", json={"document_ids": [999]})
+        assert r.status_code == 409 and "/dataset-exports" in r.text
+
+    def test_version_d_un_brouillon_409(self) -> None:
+        db = _db({"TestRecipe": _recette("DRAFT")})
+        r = _client(SUPERVISEUR, db).post("/test-recipes/3/versions", json={})
+        assert r.status_code == 409 and "PATCH" in r.text
+
+    def test_version_d_une_version_ancienne_409(self) -> None:
+        v1 = _recette("LOCKED")
+        v2 = _recette("LOCKED", id=5, version=2, recette_racine_id=3)
+        db = _db({"TestRecipe": v1}, _resultat(scalars=[v1, v2]))
+        r = _client(SUPERVISEUR, db).post("/test-recipes/3/versions", json={})
+        assert r.status_code == 409 and "/test-recipes/5/versions" in r.text
+
+    def test_null_refuse(self) -> None:
+        db = _db({"TestRecipe": _recette("DRAFT")})
+        r = _client(SUPERVISEUR, db).patch("/test-recipes/3", json={"tout_l_export": None})
+        assert r.status_code == 422
+
+    def test_patch_tout_l_export_faux_garde_la_liste(self) -> None:
+        db = _db(
+            {
+                "TestRecipe": _recette("DRAFT", tout_l_export=True, document_ids=[14, 15]),
+                "DatasetExport": _export(),
+            }
+        )
+        r = _client(SUPERVISEUR, db).patch("/test-recipes/3", json={"tout_l_export": False})
+        assert r.status_code == 200, r.text
+        assert r.json()["document_ids"] == [14, 15] and r.json()["tout_l_export"] is False
+
+    def test_consigne_trop_longue_et_modele_vide(self) -> None:
+        from adam_core.benchmark.recette import CONSIGNE_MAX, ConfigOcr
+
+        corps = {
+            "dataset_export_id": 8,
+            "name": "c",
+            "tout_l_export": True,
+            "config": {"ocr": {"prompt": "x" * (CONSIGNE_MAX + 1)}},
+        }
+        db = _db({"DatasetExport": _export()})
+        assert _client(SUPERVISEUR, db).post("/test-recipes", json=corps).status_code == 422
+        assert ConfigOcr(model="  ", prompt="").model is None
+        assert ConfigOcr(model=" ocr-2 ").model == "ocr-2"
+
+    def test_execution_provisoire_avec_le_moteur_de_la_recette(self) -> None:
+        recette = _recette("LOCKED", config={"ocr": {"provider": "MISTRAL", "model": "ocr-2"}})
+        db = _db({"TestRecipe": recette}, _resultat(scalar=1))
+        r = _client(SUPERVISEUR, db).post("/test-executions", json={"recipe_id": 3})
+        assert r.status_code == 201, r.text
+        assert (r.json()["ocr_provider"], r.json()["ocr_model_id"]) == ("MISTRAL", "ocr-2")
+
+
 class TestVersions:
     def test_nouvelle_version_avec_un_autre_moteur(self) -> None:
         source = _recette("LOCKED", config={"score_minimal": 0.8})
@@ -300,7 +388,8 @@ class TestVersions:
         corps = r.json()
         assert (corps["name"], corps["version"], corps["recette_racine_id"]) == ("r", 2, 3)
         assert corps["document_ids"] == [14, 15] and corps["status"] == "LOCKED"
-        assert corps["config"]["ocr"] == {"model": "mistral-ocr-2"}
+        assert corps["config"]["ocr"]["model"] == "mistral-ocr-2"
+        assert corps["config"]["ocr"]["provider"] in ("MISTRAL", "MOCK")
         assert source.version == 1 and source.document_ids == [14]  # la source ne bouge pas
 
     def test_sans_corps_reprend_la_source(self) -> None:

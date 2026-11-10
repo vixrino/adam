@@ -94,6 +94,11 @@ async def creer(
                 raise SystemExit(f"recette {recipe_id} introuvable")
             if recette.status != statuts.TestRecipeStatus.LOCKED.value:
                 raise SystemExit(f"recette {recipe_id} non verrouillee ({recette.status})")
+            if recette.dataset_export_id is None:
+                raise SystemExit(
+                    f"recette {recipe_id} anterieure aux exports : en recreer une "
+                    "(--dataset-id), elle partira d'un export"
+                )
             dataset = await db.get(Dataset, recette.dataset_id)
             print(f" recette existante id={recette.id} : {len(recette.document_ids)} document(s)")
         else:
@@ -102,7 +107,24 @@ async def creer(
             dataset = await db.get(Dataset, dataset_id)
             if dataset is None:
                 raise SystemExit(f"dataset {dataset_id} introuvable")
-            if not documents:
+            if documents:
+                # Memes controles que l'API : des documents de ce dataset.
+                presents = set(
+                    (
+                        await db.execute(
+                            select(Document.id)
+                            .where(Document.dataset_id == dataset_id)
+                            .where(Document.id.in_(documents))
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                etrangers = sorted(set(documents) - presents)
+                if etrangers:
+                    raise SystemExit(f"documents absents du dataset {dataset_id} : {etrangers}")
+                documents = sorted(set(documents))
+            else:
                 verifies = (
                     select(DocumentField.document_id)
                     .join(FieldProposal, FieldProposal.document_field_id == DocumentField.id)
@@ -126,7 +148,9 @@ async def creer(
                     "Sans verite terrain, il n'y a rien a mesurer (--documents pour forcer)."
                 )
             maintenant = datetime.now(timezone.utc)
-            nom_recette = nom or f"recette {maintenant:%Y-%m-%d %H:%M}"
+            # A la seconde : deux lancements dans la meme minute ne se heurtent
+            # pas sur l'unicite des noms.
+            nom_recette = nom or f"recette {maintenant:%Y-%m-%d %H:%M:%S}"
             schema = await schema_benchmark.schema_en_dict(db, dataset.schema_id)
             export = modeles.DatasetExport(
                 dataset_id=dataset_id,
