@@ -132,6 +132,9 @@ class TestExecutionStatus(str, Enum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    #: Arretee a la demande (POST /test-executions/{id}/cancel). Les ecarts
+    #: deja ecrits restent, mais aucune metrique : le passage est incomplet.
+    CANCELLED = "CANCELLED"
 
 
 class ComparisonVerdict(str, Enum):

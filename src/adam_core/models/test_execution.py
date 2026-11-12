@@ -67,7 +67,7 @@ class TestExecution(OrganisationScoped, ProjectScoped, Base):
         nullable=False,
         default=TestExecutionStatus.PENDING.value,
         index=True,
-        comment="PENDING, RUNNING, COMPLETED, FAILED",
+        comment="PENDING, RUNNING, COMPLETED, FAILED, CANCELLED",
     )
     #: Copies au lancement : la configuration du dataset peut changer apres.
     ocr_provider: Mapped[str] = mapped_column(String, nullable=False)
@@ -85,6 +85,11 @@ class TestExecution(OrganisationScoped, ProjectScoped, Base):
 
     # -- Totaux du passage ---------------------------------------------------
     documents_compared: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Documents passes, compares ou ecartes (images absentes) : la
+    #: progression, la ou documents_compared ne compte que les compares.
+    documents_traites: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     fields_compared: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     #: Sous-ensemble de fields_compared porte par au moins une field_proposal.
     fields_human_verified: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

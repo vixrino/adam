@@ -67,6 +67,11 @@ class EchecExecution(Exception):
     """Echec qui met l'execution en FAILED, avec un message lisible."""
 
 
+class ExecutionAnnulee(Exception):
+    """L'execution a ete annulee depuis l'API : on s'arrete sans la clore,
+    elle est deja CANCELLED."""
+
+
 class TestExecutionWorker(BaseWorker):
     """Execute les recettes de test OCR en attente."""
 
@@ -134,6 +139,8 @@ class TestExecutionWorker(BaseWorker):
                 execution.id, connecteur.name.upper(), _modele_ocr(connecteur)
             )
             await self._executer(execution, connecteur)
+        except ExecutionAnnulee:
+            self.logger.info("execution de test annulee [execution_id=%s]", execution.id)
         except EchecExecution as exc:
             self.logger.error("execution %s en FAILED : %s", execution.id, exc)
             await self.depot.terminer(execution.id, TestExecutionStatus.FAILED, message=str(exc))
@@ -178,12 +185,17 @@ class TestExecutionWorker(BaseWorker):
         verites: Dict[int, str] = {}
 
         for document_id, file_id in documents:
+            # Entre deux documents : un document entame va au bout, ses appels
+            # OCR sont deja payes.
+            if await self.depot.annulee(execution.id):
+                raise ExecutionAnnulee()
             images = self._images(file_id)
             if not images:
                 # Pages jamais rendues : c'est un defaut d'ingestion, pas une
                 # lecture ratee. Le compter MISSING imputerait au moteur une
                 # erreur qui n'est pas la sienne.
                 sans_images.append(document_id)
+                await self.depot.enregistrer_document(execution.id, [], {"documents_traites": 1})
                 continue
             appels_avant = int(getattr(connecteur, "appels", 0))
             try:
@@ -208,6 +220,7 @@ class TestExecutionWorker(BaseWorker):
                 execution.id,
                 resultat.ecarts,
                 {
+                    "documents_traites": 1,
                     "documents_compared": 1,
                     "fields_compared": resultat.fields_compared,
                     "fields_human_verified": resultat.fields_human_verified,

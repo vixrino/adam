@@ -210,6 +210,35 @@ class ComparaisonOut(_Strict):
     champs_inchanges: int
 
 
+# -- Progression d'une execution ---------------------------------------------------
+
+
+class ProgressionOut(_Strict):
+    """Ce que l'IHM affiche pendant un passage : de quoi une barre et une
+    estimation de fin, rafraichies par polling."""
+
+    execution_id: int
+    status: str = Field(description="PENDING, RUNNING, COMPLETED, FAILED, CANCELLED")
+    termine: bool = Field(description="Plus rien ne bougera : arreter le polling")
+    annulable: bool
+    documents_total: int = Field(description="Documents de la recette")
+    documents_traites: int = Field(description="Compares ou ecartes (images absentes)")
+    documents_compares: int
+    pourcentage: float = Field(description="0 a 100 ; 100 une fois COMPLETED")
+    champs_compares: int
+    ecarts: int
+    appels_ocr: int
+    pages_traitees: int
+    secondes_ecoulees: Optional[float] = Field(description="Depuis le debut du passage")
+    secondes_restantes_estimees: Optional[float] = Field(
+        description="Au rythme moyen des documents deja traites ; None sans recul"
+    )
+    dernier_signe_de_vie: Optional[datetime] = Field(
+        description="Ecrit a chaque document : un passage fige se voit ici"
+    )
+    message: Optional[str]
+
+
 # -- Executions d'un export ---------------------------------------------------------
 
 

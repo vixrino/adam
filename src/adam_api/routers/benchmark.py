@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,7 +45,12 @@ from adam_core.benchmark.metriques import FiltresChamps, calculer, comparer
 from adam_core.benchmark.recette import ConfigRecette, config_ocr
 from adam_core.benchmark.schema import empreinte_schema, schema_en_dict
 from adam_core.benchmark.verite import empreintes_documents
-from adam_api.schemas.benchmark import ComparaisonOut, ExecutionDeLExport, MetriquesOut
+from adam_api.schemas.benchmark import (
+    ComparaisonOut,
+    ExecutionDeLExport,
+    MetriquesOut,
+    ProgressionOut,
+)
 from adam_core.enums.roles import PlatformRole
 from adam_core.enums.status import ComparisonVerdict, TestExecutionStatus, TestRecipeStatus
 from adam_core.models import (
@@ -180,6 +185,7 @@ class ExecutionOut(BaseModel):
     schema_hash: Optional[str] = None
     verite_hash: Optional[str] = None
     error_message: Optional[str] = None
+    documents_traites: int = 0
     documents_compared: int
     fields_compared: int
     fields_human_verified: int
@@ -735,6 +741,94 @@ async def lancer_execution(
     )
     db.add(execution)
     await db.flush()
+    return _execution_out(execution)
+
+
+_EN_COURS = (TestExecutionStatus.PENDING.value, TestExecutionStatus.RUNNING.value)
+
+
+@router.get("/test-executions/{execution_id}/progression", response_model=ProgressionOut)
+async def progression_execution(
+    execution_id: int,
+    _: UserCaller = Depends(require_benchmark),
+    db: AsyncSession = Depends(get_db),
+) -> ProgressionOut:
+    """Avancement d'un passage, a interroger toutes les quelques secondes.
+
+    Le worker ecrit ses compteurs a chaque document : la progression avance
+    document par document, pas champ par champ. L'estimation de fin suppose
+    des documents de meme taille."""
+    execution = await db.get(TestExecution, execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Execution introuvable")
+    recette = await db.get(TestRecipe, execution.recipe_id)
+    total = len(getattr(recette, "document_ids", None) or [])
+    traites = int(execution.documents_traites or 0)
+    statut = execution.status
+    if statut == TestExecutionStatus.COMPLETED.value:
+        pourcentage = 100.0
+    else:
+        pourcentage = round(min(traites / total, 1.0) * 100, 1) if total else 0.0
+    ecoule = restant = None
+    if execution.started_at is not None:
+        fin = execution.finished_at or datetime.now(timezone.utc)
+        ecoule = round((fin - execution.started_at).total_seconds(), 1)
+        if statut == TestExecutionStatus.RUNNING.value and 0 < traites < total:
+            restant = round(ecoule / traites * (total - traites), 1)
+    return ProgressionOut(
+        execution_id=execution.id,
+        status=statut,
+        termine=statut not in _EN_COURS,
+        annulable=statut in _EN_COURS,
+        documents_total=total,
+        documents_traites=traites,
+        documents_compares=int(execution.documents_compared or 0),
+        pourcentage=pourcentage,
+        champs_compares=int(execution.fields_compared or 0),
+        ecarts=int(execution.diff_count or 0),
+        appels_ocr=int(execution.ocr_calls_made or 0),
+        pages_traitees=int(execution.pages_processed or 0),
+        secondes_ecoulees=ecoule,
+        secondes_restantes_estimees=restant,
+        dernier_signe_de_vie=execution.updated_at,
+        message=execution.error_message,
+    )
+
+
+@router.post("/test-executions/{execution_id}/cancel", response_model=ExecutionOut)
+async def annuler_execution(
+    execution_id: int,
+    caller: UserCaller = Depends(require_benchmark),
+    db: AsyncSession = Depends(get_db),
+) -> ExecutionOut:
+    """Arrete un passage en attente ou en cours.
+
+    En attente, il ne demarrera pas. En cours, le worker s'arrete avant le
+    document suivant : celui qu'il lit va au bout (ses appels OCR sont deja
+    partis). Les ecarts deja ecrits restent ; pas de metriques, le passage est
+    incomplet. Une seule instruction conditionnelle : un passage termine entre
+    la lecture et l'annulation n'est pas ecrase."""
+    annulee = (
+        await db.execute(
+            update(TestExecution)
+            .where(TestExecution.id == execution_id)
+            .where(TestExecution.status.in_(_EN_COURS))
+            .values(
+                status=TestExecutionStatus.CANCELLED.value,
+                finished_at=datetime.now(timezone.utc),
+                error_message=f"annulee par {caller.matricule}",
+            )
+            .returning(TestExecution.id)
+        )
+    ).scalar_one_or_none()
+    execution = await db.get(TestExecution, execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Execution introuvable")
+    if annulee is None:
+        raise HTTPException(
+            status_code=409, detail=f"execution {execution.status} : plus rien a annuler"
+        )
+    await db.refresh(execution)
     return _execution_out(execution)
 
 
