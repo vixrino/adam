@@ -37,6 +37,7 @@ from adam_worker.benchmark.comparateur import (
     empreinte,
     normaliser,
 )
+from adam_core.db.base import Base
 from adam_core.benchmark.verite import empreinte_document, empreinte_verite
 from adam_worker.benchmark.depot import DepotBenchmark, ExecutionReservee
 from adam_worker.benchmark.evaluation import Agregat, ChampVerite, evaluer_document
@@ -369,7 +370,11 @@ class TestDepotSql:
 
     @staticmethod
     def _sql(instruction: Any) -> str:
-        return str(instruction.compile(dialect=postgresql.dialect()))
+        """Le SQL compile, sans le prefixe de schema (« nota. » dans nota,
+        aucun dans adam) : les memes assertions valent des deux cotes."""
+        sql = str(instruction.compile(dialect=postgresql.dialect()))
+        schema = Base.metadata.schema
+        return sql.replace(f"{schema}.", "") if schema else sql
 
     def test_enregistrer_document(self, session: _SessionEnregistreuse) -> None:
         ecart = {
