@@ -46,7 +46,9 @@ férié). Si la date glisse, la tâche 7 passe en version 2.
 | Champs en erreur | `par_champ[]` : `champ`, `section_libelle`, `type`, `reussite`, `documents_en_erreur`, `echec_principal` |
 | Filtres et « N champs correspondent » | paramètres `recherche`, `type_champ`, `reussite_inferieure_a`, `type_erreur`, `section` ; réponse `selection` |
 | Documents en erreur d'un champ, « Document i sur N » | `/ecarts?champ=<par_champ[].champ>` ; N dans l'en-tête `X-Total-Count` |
-| Comparaison par champ et par section | `/test-executions/comparaison?a=<référence>&b=<analysée>` → `par_champ[]` (`reussite_a`, `reussite_b`, `ecart_pts`), `par_section`, `comparable`, `raisons` |
+| Choisir deux passages à comparer (même export) | `/dataset-exports/{id}/executions` → une ligne par passage terminé : recette, moteur, taux |
+| Comparaison par champ et par section | `/test-executions/comparaison?a=<référence>&b=<analysée>` → `par_champ[]` (`reussite_a`, `reussite_b`, `ecart_pts`), `par_section`, `comparable`, `raisons`, `moteur.changements` |
+| Contrat exact des réponses | modèles Pydantic de `adam_api/schemas/benchmark.py`, visibles dans `/docs` (OpenAPI) |
 | Bouton PDF | `/test-executions/{id}/metriques.pdf`, mêmes filtres que la page |
 
 ## Générer un PDF sans IHM
@@ -61,6 +63,6 @@ POSTGRES_DB=<base>_demo_metriques python scripts/exporter_rapport_pdf.py <id> # 
 
 - Un passage sur de vraies données : vrai CERFA, Mistral, vérité saisie par
   un humain, puis page et PDF. Seules les données de démo ont servi.
-- Deux exécutions d'une même recette, pour développer et tester la
-  comparaison : la démo n'en crée qu'une.
+- Deux recettes sur un même export (deux moteurs), pour développer et tester
+  la comparaison : la démo n'en crée qu'une.
 - Le téléchargement du PDF par l'API réelle, une fois FBI débloqué.
