@@ -1,7 +1,2 @@
-- table dataset_export (lot fige de documents + empreinte du schema) 
-- test_recipe : dataset_export_id, tout_l_export, version, recette_racine_id 
-- unicite (dataset_id, name, version) 
-- moteur OCR et consigne choisis par recette 
-- migration d0e1f2a3b4c5 (schema nomme explicitement) 
-- demo_metriques recree sa base a chaque lancement 
-- script exporter_rapport_pdf.py 
+echo $env:POSTGRES_DB 
+Select-String POSTGRES_DB .env 
