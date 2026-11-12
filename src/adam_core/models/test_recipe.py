@@ -17,12 +17,30 @@ de ce qui ETAIT attendu.
 
 Deux passages ne sont comparables que si la recette n'a pas bouge entre eux :
 d'ou le statut LOCKED, prerequis de toute execution.
+
+Une recette part d'un export de dataset (dataset_export), lot de documents
+fige : elle en prend tous les documents ou une partie. ``dataset_id`` est
+recopie de l'export, pour le filtrage par organisation et par projet.
+
+Versions : une recette figee ne change plus ; la modifier, c'est en creer la
+version suivante (meme nom, ``version`` + 1, ``recette_racine_id`` vers la
+version 1). La config porte le moteur OCR (fournisseur, modeles, consigne)
+et les seuils, voir ConfigRecette dans adam_core.benchmark.recette.
 """
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -50,7 +68,11 @@ class TestRecipe(OrganisationScoped, ProjectScoped, Base):
     __test__ = False
 
     __table_args__ = (
-        UniqueConstraint("dataset_id", "name", name="uq_test_recipe_dataset_name"),
+        # Une recette et ses versions partagent le nom : l'unicite porte sur le
+        # couple (nom, version).
+        UniqueConstraint(
+            "dataset_id", "name", "version", name="uq_test_recipe_dataset_name_version"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -60,8 +82,29 @@ class TestRecipe(OrganisationScoped, ProjectScoped, Base):
         nullable=False,
         index=True,
     )
+    #: L'export d'ou viennent les documents. Nul pour les recettes d'avant les
+    #: exports, faites directement sur un dataset.
+    dataset_export_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("dataset_export.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    #: Vrai : tous les documents de l'export ; faux : la liste document_ids.
+    tout_l_export: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: 1 pour la premiere ; la suivante d'une recette garde son nom.
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    #: La version 1 de la famille ; nul pour la version 1 elle-meme.
+    recette_racine_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("test_recipe.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     #: Perimetre fige au verrouillage : ids des documents evalues.
     document_ids: Mapped[List[int]] = mapped_column(ARRAY(Integer), nullable=False)
     status: Mapped[str] = mapped_column(

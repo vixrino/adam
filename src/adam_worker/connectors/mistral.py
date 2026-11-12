@@ -147,6 +147,7 @@ class MistralOcrConnector(BaseOcrConnector):
         timeout_seconds: float = 30.0,
         ca_bundle: Optional[str] = None,
         client: Optional[httpx.AsyncClient] = None,
+        consigne: Optional[str] = None,
     ) -> None:
         if not api_key:
             raise ValueError("cle d'API Mistral absente : renseigner MISTRAL_API_KEY")
@@ -155,6 +156,9 @@ class MistralOcrConnector(BaseOcrConnector):
         self.endpoint = endpoint.rstrip("/")
         self.model = model
         self.annotation_model = annotation_model
+        #: Consigne du modele d'annotation ; celle d'une recette de benchmark
+        #: remplace celle du code, pour mesurer l'effet d'un autre prompt.
+        self.consigne = consigne or _CONSIGNE
         #: Appels HTTP passes au moteur, reprises comprises. Le benchmark en
         #: tire ocr_calls_made : c'est ce qu'un passage coute.
         self.appels = 0
@@ -299,7 +303,7 @@ class MistralOcrConnector(BaseOcrConnector):
             "model": self.annotation_model,
             "temperature": 0,
             "messages": [
-                {"role": "system", "content": _CONSIGNE},
+                {"role": "system", "content": self.consigne},
                 {"role": "user", "content": markdown},
             ],
             "response_format": _annotation_format(page_number, fields),

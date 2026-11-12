@@ -35,12 +35,14 @@ Echecs
 from __future__ import annotations
 
 import hashlib
-import json
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from adam_api.core.config import settings
+from adam_core.benchmark.recette import ConfigOcr, config_ocr
+from adam_core.benchmark.schema import empreinte_schema  # reexporte : tests, scripts
+from adam_core.benchmark.verite import empreinte_document, empreinte_verite
 from adam_core.enums.status import TestExecutionStatus, TestRecipeStatus
 from adam_worker.base_worker import BaseWorker
 from adam_worker.benchmark.comparateur import COMPARATEUR_VERSION
@@ -50,7 +52,7 @@ from adam_worker.benchmark.evaluation import (
     evaluer_document,
     fusionner_histogrammes,
 )
-from adam_worker.connectors import connector_from_settings
+from adam_worker.connectors import connector_from_settings, connector_pour_recette
 from adam_worker.connectors.base import BaseOcrConnector, DocumentNonConforme
 from adam_worker.connectors.modele import ModeleDocument
 from adam_worker.prepopulation.poller import default_pages_dir
@@ -79,10 +81,18 @@ class TestExecutionWorker(BaseWorker):
         pvc_root: Optional[Path] = None,
         pages_dir: Callable[[int], Path] = default_pages_dir,
         cle_hmac: Optional[str] = None,
+        fabrique: Optional[
+            Callable[[ConfigOcr, BaseOcrConnector], Tuple[BaseOcrConnector, bool]]
+        ] = None,
     ) -> None:
         super().__init__()
         self.depot = depot or DepotBenchmark()
+        #: Le moteur du .env, pour les recettes qui n'en precisent pas.
         self.connector = connector or connector_from_settings(settings)
+        #: Construit le moteur d'une recette ; injectable pour les tests.
+        self.fabrique = fabrique or (
+            lambda config, defaut: connector_pour_recette(config, settings, defaut)
+        )
         self.pvc_root = pvc_root or Path(settings.pvc_mount_path)
         self.pages_dir = pages_dir
         self.cle_hmac = settings.comparison_hmac_key if cle_hmac is None else cle_hmac
@@ -94,9 +104,21 @@ class TestExecutionWorker(BaseWorker):
         if bloquees:
             self.logger.warning("%s execution(s) interrompue(s) passee(s) en FAILED", bloquees)
 
-        execution = await self.depot.reserver_execution(self.connector.name, self._modele_ocr())
+        execution = await self.depot.reserver_execution()
         if execution is None:
             self.logger.debug("aucune execution de test en attente")
+            return
+        try:
+            connecteur, a_fermer = self.fabrique(config_ocr(execution.config), self.connector)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            # Moteur de la recette inconstructible (cle absente...) : l'execution
+            # echoue proprement au lieu de rester RUNNING.
+            self.logger.error("execution %s : moteur OCR inconstructible : %s", execution.id, exc)
+            await self.depot.terminer(
+                execution.id,
+                TestExecutionStatus.FAILED,
+                message=f"moteur OCR de la recette inconstructible : {exc}",
+            )
             return
 
         self.logger.info(
@@ -106,7 +128,12 @@ class TestExecutionWorker(BaseWorker):
             len(execution.document_ids),
         )
         try:
-            await self._executer(execution)
+            # Dans le try : si la note echoue, le moteur est quand meme ferme
+            # et l'execution passe en FAILED au lieu de rester RUNNING.
+            await self.depot.noter_moteur(
+                execution.id, connecteur.name.upper(), _modele_ocr(connecteur)
+            )
+            await self._executer(execution, connecteur)
         except EchecExecution as exc:
             self.logger.error("execution %s en FAILED : %s", execution.id, exc)
             await self.depot.terminer(execution.id, TestExecutionStatus.FAILED, message=str(exc))
@@ -117,19 +144,13 @@ class TestExecutionWorker(BaseWorker):
                 TestExecutionStatus.FAILED,
                 message=f"echec inattendu, voir les logs du worker ({type(exc).__name__})",
             )
-
-    def _modele_ocr(self) -> Optional[str]:
-        """Identifiant du moteur, copie sur l'execution : modele OCR et, pour
-        Mistral, modele d'annotation — les deux font la lecture."""
-        modeles = [
-            getattr(self.connector, attribut, None) for attribut in ("model", "annotation_model")
-        ]
-        noms = [str(m) for m in modeles if m]
-        return " + ".join(noms) or None
+        finally:
+            if a_fermer and hasattr(connecteur, "aclose"):
+                await connecteur.aclose()
 
     # -- Execution ----------------------------------------------------------
 
-    async def _executer(self, execution: ExecutionReservee) -> None:
+    async def _executer(self, execution: ExecutionReservee, connecteur: BaseOcrConnector) -> None:
         if execution.recipe_status != TestRecipeStatus.LOCKED.value:
             raise EchecExecution(
                 f"recette {execution.recipe_id} non verrouillee ({execution.recipe_status}) : "
@@ -141,16 +162,20 @@ class TestExecutionWorker(BaseWorker):
             )
 
         schema = await self.depot.schema(execution.schema_id)
-        await self.depot.identifier(execution.id, COMPARATEUR_VERSION, empreinte_schema(schema))
+        empreinte = empreinte_schema(schema)
+        await self.depot.identifier(execution.id, COMPARATEUR_VERSION, empreinte)
         modele = ModeleDocument.depuis_schema(schema)
         documents = await self.depot.documents(execution.document_ids)
         if not documents:
             raise EchecExecution(f"recette {execution.recipe_id} sans document existant")
+        absents = sorted(set(execution.document_ids) - {d for d, _ in documents})
 
         histogramme: Dict[str, Dict[str, List[int]]] = {}
         agregats: Dict[int, Agregat] = {}
         non_conformes: List[int] = []
         sans_images: List[int] = []
+        #: Empreinte de la verite de chaque document juge.
+        verites: Dict[int, str] = {}
 
         for document_id, file_id in documents:
             images = self._images(file_id)
@@ -160,9 +185,9 @@ class TestExecutionWorker(BaseWorker):
                 # erreur qui n'est pas la sienne.
                 sans_images.append(document_id)
                 continue
-            appels_avant = int(getattr(self.connector, "appels", 0))
+            appels_avant = int(getattr(connecteur, "appels", 0))
             try:
-                ocr = await self.connector.extract(images, modele)
+                ocr = await connecteur.extract(images, modele)
             except DocumentNonConforme:
                 # Le moteur n'a pas su lire ce document comme le formulaire :
                 # c'est une lecture ratee, mesuree comme telle.
@@ -172,11 +197,13 @@ class TestExecutionWorker(BaseWorker):
                 raise EchecExecution(
                     f"moteur OCR en echec sur le document {document_id} : {exc}"
                 ) from exc
-            appels = int(getattr(self.connector, "appels", 0)) - appels_avant
+            appels = int(getattr(connecteur, "appels", 0)) - appels_avant
 
-            resultat = evaluer_document(
-                await self.depot.verite(document_id), ocr, execution.id, self.cle_hmac
+            verite = await self.depot.verite(document_id)
+            verites[document_id] = empreinte_document(
+                (c.field_spec_id, c.group_id, c.attendu) for c in verite if c.verifie
             )
+            resultat = evaluer_document(verite, ocr, execution.id, self.cle_hmac)
             await self.depot.enregistrer_document(
                 execution.id,
                 resultat.ecarts,
@@ -205,6 +232,22 @@ class TestExecutionWorker(BaseWorker):
             )
 
         constats = []
+        if absents:
+            # Supprimes depuis l'export (droit a l'effacement...) : le passage
+            # porte sur moins de documents que la recette, et doit le dire.
+            constats.append(f"documents de la recette absents de la base : {absents}")
+        if execution.schema_hash_export and execution.schema_hash_export != empreinte:
+            # Le schema a change depuis l'export : la verite et la lecture ne
+            # portent plus tout a fait sur les memes champs qu'a l'export.
+            constats.append("schema du dataset modifie depuis l'export")
+        if execution.verite_export is not None:
+            # Une valeur corrigee depuis l'export : le score de ce passage ne
+            # se compare plus a celui d'un passage d'avant la correction.
+            modifies = sorted(
+                d for d, e in verites.items() if execution.verite_export.get(str(d)) != e
+            )
+            if modifies:
+                constats.append(f"verite humaine modifiee depuis l'export : documents {modifies}")
         if non_conformes:
             constats.append(f"documents juges non conformes par le moteur : {non_conformes}")
         if sans_images:
@@ -216,6 +259,7 @@ class TestExecutionWorker(BaseWorker):
             histogramme=histogramme,
             agregats=agregats,
             message=message,
+            verite_hash=empreinte_verite(verites),
         )
         self.logger.info("execution de test terminee [execution_id=%s]", execution.id)
 
@@ -225,26 +269,14 @@ class TestExecutionWorker(BaseWorker):
         return sorted(dossier.glob("*.png")) if dossier.is_dir() else []
 
 
-def empreinte_schema(schema: Mapping[str, Any]) -> str:
-    """Empreinte du schema tel qu'il pilote l'extraction et la comparaison.
-
-    Faite du contenu, pas des ids : le meme schema en base de dev et en base de
-    recette a la meme empreinte, et un champ ajoute, retype ou redecrit la
-    change. Les polygones, qui ne jouent ni sur la lecture ni sur le verdict,
-    n'y entrent pas.
-    """
-    contenu = {
-        "pages": sorted((p["page_number"], p["description"]) for p in schema.get("pages") or []),
-        "champs": sorted(
-            (
-                s["page"],
-                s.get("section_id") or "",
-                s["field_key"],
-                s.get("group_id") or "",
-                s.get("value_type") or "",
-                s.get("description") or s.get("display_label") or "",
-            )
-            for s in schema.get("field_specs") or []
-        ),
-    }
-    return hashlib.sha256(json.dumps(contenu, ensure_ascii=False).encode()).hexdigest()[:16]
+def _modele_ocr(connecteur: BaseOcrConnector) -> Optional[str]:
+    """Identifiant du moteur, copie sur l'execution : modele OCR et, pour
+    Mistral, modele d'annotation — les deux font la lecture."""
+    modeles = [getattr(connecteur, attribut, None) for attribut in ("model", "annotation_model")]
+    noms = [str(m) for m in modeles if m]
+    consigne = getattr(connecteur, "consigne", None)
+    if consigne:
+        # La consigne change la lecture : son empreinte dit si deux executions
+        # aux scores differents ont lu avec le meme prompt.
+        noms.append("consigne " + hashlib.sha256(str(consigne).encode()).hexdigest()[:8])
+    return " + ".join(noms) or None

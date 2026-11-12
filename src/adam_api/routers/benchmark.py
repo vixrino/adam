@@ -2,7 +2,11 @@
 
 Le parcours d'un test, tel que l'IHM le deroule :
 
-    POST /test-recipes                     figer un lot de documents de reference
+    POST /dataset-exports                  figer un lot de documents d'un dataset
+    POST /test-recipes                     une recette sur cet export : documents,
+                                           moteur OCR (fournisseur, modeles,
+                                           consigne), seuils
+    POST /test-recipes/{id}/versions       la version suivante d'une recette
     POST /test-executions                  lancer un passage (PENDING)
     GET  /test-executions/{id}             suivre l'avancement (RUNNING...)
     GET  /test-executions/{id}/metriques   score, justes / fausses / manquees...,
@@ -28,19 +32,25 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from adam_api.core.config import settings
 from adam_api.dependencies.auth import UserCaller, require_user
 from adam_api.dependencies.db import get_db
 from adam_api.services import rapport_metriques_pdf
 from adam_core.benchmark.metriques import FiltresChamps, calculer, comparer
+from adam_core.benchmark.recette import ConfigRecette, config_ocr
+from adam_core.benchmark.schema import empreinte_schema, schema_en_dict
+from adam_core.benchmark.verite import empreintes_documents
 from adam_core.enums.roles import PlatformRole
 from adam_core.enums.status import ComparisonVerdict, TestExecutionStatus, TestRecipeStatus
 from adam_core.models import (
     ComparisonResult,
     Dataset,
+    DatasetExport,
     Document,
     DocumentField,
     EvaluationReport,
@@ -64,45 +74,90 @@ async def require_benchmark(caller: UserCaller = Depends(require_user)) -> UserC
     return caller
 
 
+def _consigne_autorisee(caller: UserCaller, config: Optional[ConfigRecette]) -> None:
+    """La consigne libre est envoyee telle quelle au modele et change ce qu'il
+    lit : un superviseur pourrait fausser un benchmark sans que cela se voie.
+    Reservee aux administrateurs NOTA."""
+    if (
+        config is not None
+        and config.ocr.prompt
+        and caller.platform_role != PlatformRole.NOTA_ADMIN.value
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="consigne OCR (config.ocr.prompt) reservee aux administrateurs NOTA",
+        )
+
+
 # -- Schemas ---------------------------------------------------------------------
 
 
-class ConfigTest(BaseModel):
-    """Configuration du test, figee avec la recette."""
-
-    #: Score global minimal (0 a 1) pour que le passage soit « reussi ».
-    score_minimal: Optional[float] = Field(default=None, ge=0, le=1)
-    #: Taux d'erreur maximal par champ (cle exacte ou prefixe), pour les champs
-    #: critiques : {"gestion_budget.iban": 0.0}.
-    seuils_par_champ: Dict[str, float] = Field(default_factory=dict)
-    #: Prefixes de cle ignores par les metriques : ["certification."].
-    champs_exclus: List[str] = Field(default_factory=list)
-
-
-class RecetteIn(BaseModel):
+class ExportIn(BaseModel):
     dataset_id: int
     name: str = Field(min_length=1)
     description: Optional[str] = None
-    #: Documents de reference. Vide : ceux du dataset qui portent au moins une
+    #: Documents a figer. Vide : ceux du dataset qui portent au moins une
     #: proposition humaine, seuls a avoir une verite terrain.
     document_ids: List[int] = Field(default_factory=list)
-    config: ConfigTest = Field(default_factory=ConfigTest)
+
+
+class ExportOut(BaseModel):
+    id: int
+    dataset_id: int
+    schema_id: int
+    schema_hash: str
+    name: str
+    description: Optional[str] = None
+    document_ids: List[int]
+    created_at: Optional[datetime] = None
+
+
+class RecetteIn(BaseModel):
+    dataset_export_id: int
+    name: str = Field(min_length=1)
+    description: Optional[str] = None
+    #: Vrai : tous les documents de l'export. Faux : la liste document_ids,
+    #: prise dans l'export.
+    tout_l_export: bool = False
+    document_ids: List[int] = Field(default_factory=list)
+    config: ConfigRecette = Field(default_factory=ConfigRecette)
     #: Figer tout de suite (une execution exige une recette figee).
     verrouiller: bool = True
 
 
 class RecettePatch(BaseModel):
-    name: Optional[str] = None
+    """Modifier un brouillon, ou decrire ce qui change dans une nouvelle version.
+
+    Un champ absent ne change pas ; ``null`` n'est pas une valeur : il est
+    refuse plutot que pris pour « faux » ou « vide ».
+    """
+
     description: Optional[str] = None
+    tout_l_export: Optional[bool] = None
     document_ids: Optional[List[int]] = None
-    config: Optional[ConfigTest] = None
+    config: Optional[ConfigRecette] = None
+
+    @field_validator("tout_l_export", "document_ids", "config")
+    @classmethod
+    def _pas_de_null(cls, valeur: Any) -> Any:
+        if valeur is None:
+            raise ValueError("null refuse : omettre le champ pour ne pas le changer")
+        return valeur
+
+
+class VersionIn(RecettePatch):
+    verrouiller: bool = True
 
 
 class RecetteOut(BaseModel):
     id: int
     dataset_id: int
+    dataset_export_id: Optional[int] = None
     name: str
+    version: int
+    recette_racine_id: Optional[int] = None
     description: Optional[str] = None
+    tout_l_export: bool
     document_ids: List[int]
     status: str
     config: Dict[str, Any]
@@ -122,6 +177,7 @@ class ExecutionOut(BaseModel):
     ocr_model_id: Optional[str] = None
     comparateur_version: Optional[str] = None
     schema_hash: Optional[str] = None
+    verite_hash: Optional[str] = None
     error_message: Optional[str] = None
     documents_compared: int
     fields_compared: int
@@ -162,8 +218,12 @@ def _recette_out(r: TestRecipe) -> RecetteOut:
     return RecetteOut(
         id=r.id,
         dataset_id=r.dataset_id,
+        dataset_export_id=r.dataset_export_id,
         name=r.name,
+        version=r.version or 1,
+        recette_racine_id=r.recette_racine_id,
         description=r.description,
+        tout_l_export=bool(r.tout_l_export),
         document_ids=list(r.document_ids or []),
         status=r.status,
         config=dict(r.config or {}),
@@ -208,18 +268,201 @@ async def _documents_verifies(db: AsyncSession, dataset_id: int) -> List[int]:
     )
 
 
+# -- Exports ------------------------------------------------------------------------
+
+
+def _export_out(e: DatasetExport) -> ExportOut:
+    return ExportOut.model_validate(e, from_attributes=True)
+
+
+@router.post("/dataset-exports", response_model=ExportOut, status_code=201)
+async def creer_export(
+    body: ExportIn,
+    caller: UserCaller = Depends(require_benchmark),
+    db: AsyncSession = Depends(get_db),
+) -> ExportOut:
+    """Fige les documents d'un dataset et l'empreinte de son schema. Les
+    recettes de benchmark partent d'un export, jamais du dataset vivant."""
+    dataset = await db.get(Dataset, body.dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset introuvable")
+    if body.document_ids:
+        presents = set(
+            (
+                await db.execute(
+                    select(Document.id)
+                    .where(Document.dataset_id == body.dataset_id)
+                    .where(Document.id.in_(body.document_ids))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        etrangers = sorted(set(body.document_ids) - presents)
+        if etrangers:
+            raise HTTPException(
+                status_code=422, detail=f"documents absents du dataset : {etrangers}"
+            )
+        documents = sorted(set(body.document_ids))
+    else:
+        documents = await _documents_verifies(db, body.dataset_id)
+    if not documents:
+        raise HTTPException(
+            status_code=422,
+            detail="aucun document avec une proposition humaine : sans verite terrain, "
+            "il n'y a rien a mesurer",
+        )
+    deja = (
+        await db.execute(
+            select(DatasetExport.id)
+            .where(DatasetExport.dataset_id == dataset.id)
+            .where(DatasetExport.name == body.name)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if deja is not None:
+        raise HTTPException(
+            status_code=409, detail=f"export « {body.name} » deja present (id {deja})"
+        )
+    export = DatasetExport(
+        dataset_id=dataset.id,
+        schema_id=dataset.schema_id,
+        schema_hash=empreinte_schema(await schema_en_dict(db, dataset.schema_id)),
+        verite_empreintes={
+            str(d): e for d, e in (await empreintes_documents(db, documents)).items()
+        },
+        name=body.name,
+        description=body.description,
+        document_ids=documents,
+        created_by_user_id=await _createur(db, caller),
+    )
+    await _inserer(db, export, f"export « {body.name} » deja present")
+    return _export_out(export)
+
+
+@router.get("/dataset-exports", response_model=List[ExportOut])
+async def lister_exports(
+    dataset_id: Optional[int] = None,
+    _: UserCaller = Depends(require_benchmark),
+    db: AsyncSession = Depends(get_db),
+) -> List[ExportOut]:
+    requete = select(DatasetExport).order_by(DatasetExport.created_at.desc())
+    if dataset_id is not None:
+        requete = requete.where(DatasetExport.dataset_id == dataset_id)
+    return [_export_out(e) for e in (await db.execute(requete)).scalars().all()]
+
+
+@router.get("/dataset-exports/{export_id}", response_model=ExportOut)
+async def lire_export(
+    export_id: int,
+    _: UserCaller = Depends(require_benchmark),
+    db: AsyncSession = Depends(get_db),
+) -> ExportOut:
+    export = await db.get(DatasetExport, export_id)
+    if export is None:
+        raise HTTPException(status_code=404, detail="Export introuvable")
+    return _export_out(export)
+
+
 # -- Recettes ------------------------------------------------------------------------
+
+
+def _perimetre(export: DatasetExport, tout_l_export: bool, document_ids: List[int]) -> List[int]:
+    """Les documents d'une recette : tout l'export, ou une liste prise dedans."""
+    if tout_l_export:
+        if document_ids:
+            raise HTTPException(
+                status_code=422, detail="tout_l_export et document_ids : choisir l'un ou l'autre"
+            )
+        return list(export.document_ids)
+    if not document_ids:
+        raise HTTPException(
+            status_code=422, detail="document_ids vide : donner des documents ou tout_l_export"
+        )
+    hors_export = sorted(set(document_ids) - set(export.document_ids))
+    if hors_export:
+        raise HTTPException(
+            status_code=422,
+            detail=f"documents absents de l'export {export.id} : {hors_export}",
+        )
+    return sorted(set(document_ids))
+
+
+def _nouveau_perimetre(
+    champs: Dict[str, Any], tout_actuel: bool, liste_actuelle: List[int]
+) -> Tuple[bool, List[int]]:
+    """(tout_l_export, document_ids) apres un PATCH ou pour une nouvelle version.
+
+    Meme regle des deux cotes : passer tout_l_export a faux sans liste garde
+    les documents actuels (tout l'export, s'il etait pris en entier).
+    """
+    tout = bool(champs.get("tout_l_export", tout_actuel))
+    if "document_ids" in champs:
+        return tout, list(champs["document_ids"] or [])
+    return tout, [] if tout else list(liste_actuelle)
+
+
+def _config_resolue(config: ConfigRecette) -> Dict[str, Any]:
+    """La config a figer : le moteur y est ecrit en entier.
+
+    Les champs moteur laisses vides prennent la valeur du .env au moment de la
+    creation, pas a chaque execution : une recette figee lit toujours avec le
+    meme fournisseur et les memes modeles, meme si le .env change ensuite.
+    La consigne vide reste vide : c'est celle du code, dont le worker note
+    l'empreinte sur chaque execution.
+    """
+    ocr = config.ocr
+    fournisseur = ocr.provider or ("MOCK" if settings.ocr_mock_enabled else "MISTRAL")
+    resolu = ocr.model_copy(update={"provider": fournisseur})
+    if fournisseur == "MISTRAL":
+        resolu = resolu.model_copy(
+            update={
+                "model": ocr.model or settings.mistral_ocr_model,
+                "annotation_model": ocr.annotation_model or settings.mistral_annotation_model,
+            }
+        )
+    return config.model_copy(update={"ocr": resolu}).model_dump(exclude_none=True)
+
+
+async def _inserer(db: AsyncSession, objet: Any, conflit: str) -> None:
+    """Ajoute et ecrit ; un conflit d'unicite (deux creations simultanees,
+    nom deja pris) rend 409 au lieu d'une erreur 500."""
+    db.add(objet)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail=conflit) from exc
+
+
+def _exige_un_export(recette: TestRecipe) -> None:
+    """Les documents d'un benchmark viennent d'un export, jamais du dataset vivant."""
+    if recette.dataset_export_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"recette {recette.id} anterieure aux exports, sur le dataset vivant : "
+            "creer un export (POST /dataset-exports) puis une recette dessus",
+        )
+
+
+async def _export_de(db: AsyncSession, export_id: Optional[int]) -> DatasetExport:
+    export = await db.get(DatasetExport, export_id) if export_id is not None else None
+    if export is None:
+        raise HTTPException(status_code=404, detail="Export introuvable")
+    return export
 
 
 @router.get("/test-recipes", response_model=List[RecetteOut])
 async def lister_recettes(
     dataset_id: Optional[int] = None,
+    dataset_export_id: Optional[int] = None,
     _: UserCaller = Depends(require_benchmark),
     db: AsyncSession = Depends(get_db),
 ) -> List[RecetteOut]:
     requete = select(TestRecipe).order_by(TestRecipe.created_at.desc())
     if dataset_id is not None:
         requete = requete.where(TestRecipe.dataset_id == dataset_id)
+    if dataset_export_id is not None:
+        requete = requete.where(TestRecipe.dataset_export_id == dataset_export_id)
     return [_recette_out(r) for r in (await db.execute(requete)).scalars().all()]
 
 
@@ -241,28 +484,40 @@ async def creer_recette(
     caller: UserCaller = Depends(require_benchmark),
     db: AsyncSession = Depends(get_db),
 ) -> RecetteOut:
-    if await db.get(Dataset, body.dataset_id) is None:
-        raise HTTPException(status_code=404, detail="Dataset introuvable")
-    documents = body.document_ids or await _documents_verifies(db, body.dataset_id)
-    if not documents:
+    """Version 1 d'une recette, sur un export. Un nom deja pris dans le
+    dataset : creer une version de la recette existante."""
+    _consigne_autorisee(caller, body.config)
+    export = await _export_de(db, body.dataset_export_id)
+    documents = _perimetre(export, body.tout_l_export, body.document_ids)
+    deja = (
+        await db.execute(
+            select(TestRecipe.id)
+            .where(TestRecipe.dataset_id == export.dataset_id)
+            .where(TestRecipe.name == body.name)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if deja is not None:
         raise HTTPException(
-            status_code=422,
-            detail="aucun document avec une proposition humaine : sans verite terrain, "
-            "il n'y a rien a mesurer",
+            status_code=409,
+            detail=f"recette « {body.name} » deja presente (id {deja}) : "
+            f"POST /test-recipes/{deja}/versions pour la faire evoluer",
         )
     maintenant = datetime.now(timezone.utc)
     recette = TestRecipe(
-        dataset_id=body.dataset_id,
+        dataset_id=export.dataset_id,
+        dataset_export_id=export.id,
+        tout_l_export=body.tout_l_export,
         name=body.name,
+        version=1,
         description=body.description,
         document_ids=documents,
-        config=body.config.model_dump(),
+        config=_config_resolue(body.config),
         status=(TestRecipeStatus.LOCKED if body.verrouiller else TestRecipeStatus.DRAFT).value,
         locked_at=maintenant if body.verrouiller else None,
         created_by_user_id=await _createur(db, caller),
     )
-    db.add(recette)
-    await db.flush()
+    await _inserer(db, recette, f"recette « {body.name} » creee entre-temps : creer une version")
     return _recette_out(recette)
 
 
@@ -270,19 +525,33 @@ async def creer_recette(
 async def modifier_recette(
     recipe_id: int,
     body: RecettePatch,
-    _: UserCaller = Depends(require_benchmark),
+    caller: UserCaller = Depends(require_benchmark),
     db: AsyncSession = Depends(get_db),
 ) -> RecetteOut:
     """Modifiable tant que la recette est un brouillon : une fois figee, deux
-    passages ne seraient plus comparables."""
+    passages ne seraient plus comparables ; en creer une version."""
+    _consigne_autorisee(caller, body.config)
     recette = await db.get(TestRecipe, recipe_id)
     if recette is None:
         raise HTTPException(status_code=404, detail="Recette introuvable")
     if recette.status != TestRecipeStatus.DRAFT.value:
-        raise HTTPException(status_code=409, detail="recette figee : en creer une nouvelle")
+        raise HTTPException(
+            status_code=409,
+            detail=f"recette figee : POST /test-recipes/{recipe_id}/versions pour la modifier",
+        )
+    _exige_un_export(recette)
     champs = body.model_dump(exclude_unset=True)
-    for cle, valeur in champs.items():
-        setattr(recette, cle, valeur)
+    if "tout_l_export" in champs or "document_ids" in champs:
+        tout, liste = _nouveau_perimetre(
+            champs, bool(recette.tout_l_export), list(recette.document_ids or [])
+        )
+        export = await _export_de(db, recette.dataset_export_id)
+        recette.document_ids = _perimetre(export, tout, liste)
+        recette.tout_l_export = tout
+    if "description" in champs:
+        recette.description = champs["description"]
+    if body.config is not None:
+        recette.config = _config_resolue(body.config)
     await db.flush()
     return _recette_out(recette)
 
@@ -306,6 +575,90 @@ async def verrouiller_recette(
     return _recette_out(recette)
 
 
+async def _famille(db: AsyncSession, recette: TestRecipe) -> List[TestRecipe]:
+    racine = recette.recette_racine_id or recette.id
+    return list(
+        (
+            await db.execute(
+                select(TestRecipe)
+                .where((TestRecipe.id == racine) | (TestRecipe.recette_racine_id == racine))
+                .order_by(TestRecipe.version)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+@router.post("/test-recipes/{recipe_id}/versions", response_model=RecetteOut, status_code=201)
+async def nouvelle_version(
+    recipe_id: int,
+    body: VersionIn,
+    caller: UserCaller = Depends(require_benchmark),
+    db: AsyncSession = Depends(get_db),
+) -> RecetteOut:
+    """La version suivante d'une recette : meme nom, meme export, et ce que le
+    corps change (documents, moteur, seuils). La recette d'origine ne bouge
+    pas : ses executions restent lisibles et comparables."""
+    _consigne_autorisee(caller, body.config)
+    source = await db.get(TestRecipe, recipe_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Recette introuvable")
+    _exige_un_export(source)
+    if source.status == TestRecipeStatus.DRAFT.value:
+        raise HTTPException(
+            status_code=409,
+            detail=f"recette {recipe_id} en brouillon : la modifier (PATCH) au lieu d'en "
+            "creer une version",
+        )
+    famille = await _famille(db, source)
+    derniere = max(famille, key=lambda r: r.version or 1)
+    if derniere.id != source.id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"la derniere version est la v{derniere.version} (id {derniere.id}) : "
+            f"partir d'elle, POST /test-recipes/{derniere.id}/versions",
+        )
+    champs = body.model_dump(exclude_unset=True)
+    tout, liste = _nouveau_perimetre(
+        champs, bool(source.tout_l_export), list(source.document_ids or [])
+    )
+    documents = _perimetre(await _export_de(db, source.dataset_export_id), tout, liste)
+    config = _config_resolue(body.config) if body.config is not None else dict(source.config or {})
+    maintenant = datetime.now(timezone.utc)
+    version = TestRecipe(
+        dataset_id=source.dataset_id,
+        dataset_export_id=source.dataset_export_id,
+        tout_l_export=tout,
+        name=source.name,
+        version=(derniere.version or 1) + 1,
+        recette_racine_id=source.recette_racine_id or source.id,
+        description=champs.get("description", source.description),
+        document_ids=documents,
+        config=config,
+        status=(TestRecipeStatus.LOCKED if body.verrouiller else TestRecipeStatus.DRAFT).value,
+        locked_at=maintenant if body.verrouiller else None,
+        created_by_user_id=await _createur(db, caller),
+    )
+    await _inserer(
+        db, version, f"une version de « {source.name} » a ete creee entre-temps : reessayer"
+    )
+    return _recette_out(version)
+
+
+@router.get("/test-recipes/{recipe_id}/versions", response_model=List[RecetteOut])
+async def lister_versions(
+    recipe_id: int,
+    _: UserCaller = Depends(require_benchmark),
+    db: AsyncSession = Depends(get_db),
+) -> List[RecetteOut]:
+    """Toutes les versions de la recette, de la premiere a la derniere."""
+    recette = await db.get(TestRecipe, recipe_id)
+    if recette is None:
+        raise HTTPException(status_code=404, detail="Recette introuvable")
+    return [_recette_out(r) for r in await _famille(db, recette)]
+
+
 # -- Executions ----------------------------------------------------------------------
 
 
@@ -323,13 +676,14 @@ async def lancer_execution(
         raise HTTPException(
             status_code=409, detail="recette non figee : la verrouiller avant de la lancer"
         )
-    dataset = await db.get(Dataset, recette.dataset_id)
+    _exige_un_export(recette)
+    moteur = config_ocr(recette.config)
     execution = TestExecution(
         recipe_id=recette.id,
         status=TestExecutionStatus.PENDING.value,
         # Provisoire : le worker y recopie le moteur reellement utilise.
-        ocr_provider=dataset.ocr_provider if dataset else "inconnu",
-        ocr_model_id=dataset.ocr_model_id if dataset else None,
+        ocr_provider=moteur.provider or "EN_ATTENTE",
+        ocr_model_id=moteur.model,
         created_by_user_id=await _createur(db, caller),
     )
     db.add(execution)
