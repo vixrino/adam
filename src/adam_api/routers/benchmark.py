@@ -40,17 +40,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from adam_api.core.config import settings
 from adam_api.dependencies.auth import UserCaller, require_user
 from adam_api.dependencies.db import get_db
-from adam_api.services import rapport_metriques_pdf
-from adam_core.benchmark.metriques import FiltresChamps, calculer, comparer
-from adam_core.benchmark.recette import ConfigRecette, config_ocr
-from adam_core.benchmark.schema import empreinte_schema, schema_en_dict
-from adam_core.benchmark.verite import empreintes_documents
 from adam_api.schemas.benchmark import (
     ComparaisonOut,
     ExecutionDeLExport,
     MetriquesOut,
     ProgressionOut,
 )
+from adam_api.services import rapport_metriques_pdf
+from adam_core.benchmark.metriques import FiltresChamps, calculer, comparer
+from adam_core.benchmark.recette import ConfigRecette, config_ocr
+from adam_core.benchmark.schema import empreinte_schema, schema_en_dict
+from adam_core.benchmark.verite import empreintes_documents
 from adam_core.enums.roles import PlatformRole
 from adam_core.enums.status import ComparisonVerdict, TestExecutionStatus, TestRecipeStatus
 from adam_core.models import (

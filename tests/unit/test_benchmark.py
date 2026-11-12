@@ -16,6 +16,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from adam_core.benchmark.verite import empreinte_document, empreinte_verite
+from adam_core.db.base import Base
 from adam_core.enums.status import (
     ComparisonDiffKind,
     ComparisonVerdict,
@@ -37,8 +39,6 @@ from adam_worker.benchmark.comparateur import (
     empreinte,
     normaliser,
 )
-from adam_core.db.base import Base
-from adam_core.benchmark.verite import empreinte_document, empreinte_verite
 from adam_worker.benchmark.depot import DepotBenchmark, ExecutionReservee
 from adam_worker.benchmark.evaluation import Agregat, ChampVerite, evaluer_document
 from adam_worker.benchmark.worker import TestExecutionWorker
