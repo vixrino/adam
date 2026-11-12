@@ -468,25 +468,69 @@ def _points(x: Optional[float], y: Optional[float]) -> Optional[float]:
     return round((y - x) * 100, 1) if x is not None and y is not None else None
 
 
+def _raisons_perimetre(
+    ea: Mapping[str, Any], eb: Mapping[str, Any], ra: Mapping[str, Any], rb: Mapping[str, Any]
+) -> List[str]:
+    """Ce qui empeche de dire que a et b ont lu les memes documents."""
+    export_a, export_b = ra.get("dataset_export_id"), rb.get("dataset_export_id")
+    if export_a is None or export_b is None:
+        # Recette d'avant les exports : son perimetre n'est sur que pour
+        # elle-meme.
+        if ea.get("recipe_id") is None or ea.get("recipe_id") != eb.get("recipe_id"):
+            return ["recette differente, sans export commun"]
+        return []
+    if export_a != export_b:
+        return ["export de dataset different"]
+    if sorted(ra.get("document_ids") or []) != sorted(rb.get("document_ids") or []):
+        return ["documents differents dans le meme export"]
+    return []
+
+
+def _moteurs(ea: Mapping[str, Any], eb: Mapping[str, Any]) -> Dict[str, Any]:
+    """Le moteur de chaque cote et ce qui change : ce que la comparaison mesure."""
+    changements = [
+        libelle
+        for cle, libelle in (("ocr_provider", "fournisseur"), ("ocr_model_id", "modele"))
+        if (ea.get(cle) or "").lower() != (eb.get(cle) or "").lower()
+    ]
+    return {
+        "a": {"fournisseur": ea.get("ocr_provider"), "modele": ea.get("ocr_model_id")},
+        "b": {"fournisseur": eb.get("ocr_provider"), "modele": eb.get("ocr_model_id")},
+        "identique": not changements,
+        "changements": changements,
+    }
+
+
 def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
     """Compare deux resultats de calculer(tous_les_champs=True) : b par rapport a a.
 
     a est la reference (colonne « Ref. » de la page), b le passage analyse.
-    La comparaison est toujours rendue, mais signalee non comparable si la
-    recette, la version du comparateur, l'empreinte du schema, la verite humaine
-    ou le nombre de documents different : un ecart n'y mesurerait pas le moteur.
+
+    Comparer deux moteurs OCR est le but : deux recettes differentes (autre
+    fournisseur, autre modele, autre consigne) se comparent des qu'elles ont
+    lu les memes documents. Le perimetre se juge sur la recette jointe par
+    l'API (``recette`` : dataset_export_id et document_ids) :
+
+    - meme export et memes documents : comparable, quelle que soit la recette ;
+    - recette d'avant les exports : il faut la meme recette.
+
+    La comparaison est toujours rendue, mais signalee non comparable si le
+    perimetre, la version du comparateur, l'empreinte du schema, la verite
+    humaine ou le nombre de documents juges different : un ecart n'y mesurerait
+    pas le moteur. ``moteur`` dit ce qui change de a a b.
 
     ``par_champ`` liste tous les champs, presents d'un cote ou des deux, avec
     leur reussite de chaque cote et l'ecart en points : le front joint sur
     ``champ`` sans deviner si un champ absent est inchange. Les regressions
     d'abord.
     """
-    ea = {**a["execution"], "documents": a["echantillon"]["documents"]}
-    eb = {**b["execution"], "documents": b["echantillon"]["documents"]}
-    raisons = [
+    ra, rb = a.get("recette") or {}, b.get("recette") or {}
+    ea = {**a["execution"], "documents": a["echantillon"]["documents"], "recette": ra}
+    eb = {**b["execution"], "documents": b["echantillon"]["documents"], "recette": rb}
+    raisons = _raisons_perimetre(ea, eb, ra, rb)
+    raisons += [
         f"{libelle} differente"
         for cle, libelle in (
-            ("recipe_id", "recette"),
             ("comparateur_version", "version du comparateur"),
             ("schema_hash", "empreinte du schema"),
         )
@@ -560,6 +604,7 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
         "b": eb,
         "comparable": not raisons,
         "raisons": raisons,
+        "moteur": _moteurs(ea, eb),
         "global": {
             nom: {
                 "a": a["global"][nom],

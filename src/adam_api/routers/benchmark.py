@@ -45,6 +45,7 @@ from adam_core.benchmark.metriques import FiltresChamps, calculer, comparer
 from adam_core.benchmark.recette import ConfigRecette, config_ocr
 from adam_core.benchmark.schema import empreinte_schema, schema_en_dict
 from adam_core.benchmark.verite import empreintes_documents
+from adam_api.schemas.benchmark import ComparaisonOut, ExecutionDeLExport, MetriquesOut
 from adam_core.enums.roles import PlatformRole
 from adam_core.enums.status import ComparisonVerdict, TestExecutionStatus, TestRecipeStatus
 from adam_core.models import (
@@ -365,6 +366,52 @@ async def lire_export(
 
 
 # -- Recettes ------------------------------------------------------------------------
+
+
+@router.get("/dataset-exports/{export_id}/executions", response_model=List[ExecutionDeLExport])
+async def executions_de_l_export(
+    export_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    _: UserCaller = Depends(require_benchmark),
+    db: AsyncSession = Depends(get_db),
+) -> List[ExecutionDeLExport]:
+    """Les passages termines de toutes les recettes de l'export, les plus
+    recents d'abord : l'ecran de comparaison y choisit deux executions a
+    passer a /test-executions/comparaison."""
+    await _export_de(db, export_id)
+    ids = (
+        (
+            await db.execute(
+                select(TestExecution.id)
+                .join(TestRecipe, TestRecipe.id == TestExecution.recipe_id)
+                .where(TestRecipe.dataset_export_id == export_id)
+                .where(TestExecution.status == TestExecutionStatus.COMPLETED.value)
+                .order_by(TestExecution.finished_at.desc(), TestExecution.id.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    lignes = []
+    for execution_id in ids:
+        m = await _metriques(db, execution_id)
+        lignes.append(
+            ExecutionDeLExport(
+                execution_id=execution_id,
+                recette=m["recette"],
+                ocr_provider=m["execution"]["ocr_provider"],
+                ocr_model_id=m["execution"]["ocr_model_id"],
+                finished_at=m["execution"]["finished_at"],
+                documents=m["echantillon"]["documents"],
+                score=m["global"]["score"],
+                taux_lectures_justes=m["global"]["taux_lectures_justes"],
+                taux_valeurs_trouvees=m["global"]["taux_valeurs_trouvees"],
+                taux_erreur=m["global"]["taux_erreur"],
+                reussi=m["verdict"]["reussi"],
+            )
+        )
+    return lignes
 
 
 def _perimetre(export: DatasetExport, tout_l_export: bool, document_ids: List[int]) -> List[int]:
@@ -774,7 +821,15 @@ async def _metriques(
     )
     # Pour l'en-tete « Dataset X · recette #3 », sans deux appels de plus.
     dataset = await db.get(Dataset, recette.dataset_id) if recette else None
-    metriques["recette"] = {"id": execution.recipe_id, "name": getattr(recette, "name", None)}
+    # Le perimetre de la recette : comparer() en deduit si deux executions de
+    # recettes differentes ont lu les memes documents.
+    metriques["recette"] = {
+        "id": execution.recipe_id,
+        "name": getattr(recette, "name", None),
+        "version": getattr(recette, "version", None) or 1,
+        "dataset_export_id": getattr(recette, "dataset_export_id", None),
+        "document_ids": sorted(getattr(recette, "document_ids", None) or []),
+    }
     metriques["dataset"] = {
         "id": getattr(recette, "dataset_id", None),
         "name": getattr(dataset, "name", None),
@@ -782,15 +837,17 @@ async def _metriques(
     return metriques
 
 
-@router.get("/test-executions/comparaison")
+@router.get("/test-executions/comparaison", response_model=ComparaisonOut)
 async def comparer_executions(
     a: int = Query(..., description="Execution de reference"),
     b: int = Query(..., description="Execution comparee a la reference"),
     _: UserCaller = Depends(require_benchmark),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Deux passages cote a cote ; « comparable » faux si la recette, la version
-    du comparateur ou le schema different."""
+    """Deux passages cote a cote, de la meme recette ou de deux recettes sur le
+    meme export (deux moteurs OCR). « comparable » faux si les documents, la
+    version du comparateur, le schema ou la verite humaine different ;
+    ``moteur`` dit ce qui change entre a et b."""
     return comparer(await _metriques(db, a, True), await _metriques(db, b, True))
 
 
@@ -806,7 +863,7 @@ async def lire_execution(
     return _execution_out(execution)
 
 
-@router.get("/test-executions/{execution_id}/metriques")
+@router.get("/test-executions/{execution_id}/metriques", response_model=MetriquesOut)
 async def metriques_execution(
     execution_id: int,
     tous_les_champs: bool = Query(

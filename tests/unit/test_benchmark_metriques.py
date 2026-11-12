@@ -202,6 +202,61 @@ class TestComparer:
         assert comparer(a, b)["comparable"] is True
 
 
+class TestComparerDeuxRecettes:
+    """Le but du benchmark : deux moteurs sur les memes documents d'un export."""
+
+    def _cote(self, recette: Dict[str, Any], **execution: Any) -> Dict[str, Any]:
+        m = calculer([_ligne("a.b", vp=6)], dict(EXECUTION, **execution), tous_les_champs=True)
+        m["recette"] = recette
+        return m
+
+    def test_deux_moteurs_sur_le_meme_export_se_comparent(self) -> None:
+        a = self._cote(
+            {"id": 3, "dataset_export_id": 8, "document_ids": [14, 15]},
+            ocr_provider="MISTRAL",
+            ocr_model_id="ocr-1",
+        )
+        b = self._cote(
+            {"id": 4, "dataset_export_id": 8, "document_ids": [15, 14]},
+            id=2,
+            recipe_id=4,
+            ocr_provider="MISTRAL",
+            ocr_model_id="ocr-2",
+        )
+        c = comparer(a, b)
+        assert c["comparable"] is True, c["raisons"]
+        assert c["moteur"]["changements"] == ["modele"] and c["moteur"]["identique"] is False
+        assert c["b"]["recette"]["id"] == 4
+
+    def test_autre_export_non_comparable(self) -> None:
+        a = self._cote({"id": 3, "dataset_export_id": 8, "document_ids": [14]})
+        b = self._cote({"id": 4, "dataset_export_id": 9, "document_ids": [14]}, id=2)
+        assert comparer(a, b)["raisons"] == ["export de dataset different"]
+
+    def test_meme_export_autres_documents_non_comparable(self) -> None:
+        a = self._cote({"id": 3, "dataset_export_id": 8, "document_ids": [14, 15]})
+        b = self._cote({"id": 4, "dataset_export_id": 8, "document_ids": [14]}, id=2)
+        assert comparer(a, b)["raisons"] == ["documents differents dans le meme export"]
+
+    def test_recettes_sans_export_differentes_non_comparables(self) -> None:
+        a = self._cote({"id": 3})
+        b = self._cote({"id": 4}, id=2, recipe_id=4)
+        assert comparer(a, b)["raisons"] == ["recette differente, sans export commun"]
+
+    def test_meme_moteur_identique(self) -> None:
+        moteur = {"ocr_provider": "MISTRAL", "ocr_model_id": "ocr-1 + annot-1"}
+        recette = {"id": 3, "dataset_export_id": 8, "document_ids": [14]}
+        a = self._cote(recette, **moteur)
+        # La casse du fournisseur (mistral / MISTRAL) n'est pas un changement.
+        b = self._cote(recette, id=2, ocr_provider="mistral", ocr_model_id="ocr-1 + annot-1")
+        assert comparer(a, b)["moteur"] == {
+            "a": {"fournisseur": "MISTRAL", "modele": "ocr-1 + annot-1"},
+            "b": {"fournisseur": "mistral", "modele": "ocr-1 + annot-1"},
+            "identique": True,
+            "changements": [],
+        }
+
+
 class TestGardeFousLecture:
     def test_execution_anterieure_aux_metriques_signalee(self) -> None:
         """Lignes ecrites avant la matrice : compared > 0, vp/fp/fn/vn a 0."""

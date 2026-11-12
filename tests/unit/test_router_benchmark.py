@@ -496,6 +496,24 @@ class TestExecutions:
         assert m["verdict"]["reussi"] is True
         assert m["execution"]["schema_hash"] == "abc"
 
+    def test_executions_de_l_export(self) -> None:
+        db = _db(
+            {"DatasetExport": _export(), "TestExecution": _execution(), "TestRecipe": _recette()},
+            _resultat(scalars=[1]),  # executions terminees de l'export
+            _rapports([_rapport("a.b", vp=4, fn=1)]),
+            _resultat(),  # categories d'erreurs
+        )
+        r = _client(SUPERVISEUR, db).get("/dataset-exports/8/executions")
+        assert r.status_code == 200, r.text
+        (ligne,) = r.json()
+        assert ligne["execution_id"] == 1 and ligne["recette"]["dataset_export_id"] == 8
+        assert ligne["ocr_model_id"] == "ocr + annot"
+        assert ligne["taux_valeurs_trouvees"] == 0.8
+
+    def test_executions_d_un_export_inconnu_404(self) -> None:
+        r = _client(SUPERVISEUR, _db({})).get("/dataset-exports/99/executions")
+        assert r.status_code == 404
+
     def test_comparaison_n_est_pas_prise_pour_un_id(self) -> None:
         execution = _execution()
         db = _db(
@@ -603,7 +621,13 @@ class TestExecutions:
             "champs_verifies": 2,
         }
         assert m["global"]["justes"] == 9  # le score reste celui de tout le test
-        assert m["recette"] == {"id": 3, "name": "r"}
+        assert m["recette"] == {
+            "id": 3,
+            "name": "r",
+            "version": 1,
+            "dataset_export_id": 8,
+            "document_ids": [14],
+        }
         assert m["dataset"]["id"] == 4
 
 
