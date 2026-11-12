@@ -44,6 +44,8 @@ class ExecutionReservee:
     config: Dict[str, Any] = field(default_factory=dict)
     #: Empreinte du schema a la creation de l'export, si la recette en vient.
     schema_hash_export: Optional[str] = None
+    #: Empreinte de la verite de chaque document a l'export (cles en texte).
+    verite_export: Optional[Dict[str, str]] = None
 
 
 class DepotBenchmark:
@@ -101,6 +103,7 @@ class DepotBenchmark:
                             "schema_id"
                         ),
                         DatasetExport.schema_hash,
+                        DatasetExport.verite_empreintes,
                     )
                     .join(Dataset, Dataset.id == TestRecipe.dataset_id)
                     .outerjoin(DatasetExport, DatasetExport.id == TestRecipe.dataset_export_id)
@@ -118,6 +121,7 @@ class DepotBenchmark:
                 schema_id=int(ligne.schema_id),
                 config=dict(ligne.config or {}),
                 schema_hash_export=ligne.schema_hash,
+                verite_export=ligne.verite_empreintes,
             )
 
     async def noter_moteur(
@@ -221,6 +225,7 @@ class DepotBenchmark:
         histogramme: Optional[Dict[str, Any]] = None,
         agregats: Optional[Dict[int, Agregat]] = None,
         message: Optional[str] = None,
+        verite_hash: Optional[str] = None,
     ) -> None:
         """Clot l'execution, et ecrit ses agregats par champ s'il y en a."""
         async with get_async_session() as db:
@@ -254,5 +259,6 @@ class DepotBenchmark:
                     finished_at=datetime.now(timezone.utc),
                     confidence_histogram=histogramme,
                     error_message=message,
+                    verite_hash=verite_hash,
                 )
             )

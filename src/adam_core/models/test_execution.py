@@ -78,6 +78,10 @@ class TestExecution(OrganisationScoped, ProjectScoped, Base):
     #: descriptions de pages). Ecrits par le worker au lancement.
     comparateur_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     schema_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    #: Empreinte de la verite humaine jugee (benchmark/verite.py) : deux
+    #: executions qui ne l'ont pas en commun n'ont pas mesure la meme chose.
+    #: Ecrite par le worker en fin de passage.
+    verite_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # -- Totaux du passage ---------------------------------------------------
     documents_compared: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -37,6 +37,7 @@ from adam_worker.benchmark.comparateur import (
     empreinte,
     normaliser,
 )
+from adam_core.benchmark.verite import empreinte_document, empreinte_verite
 from adam_worker.benchmark.depot import DepotBenchmark, ExecutionReservee
 from adam_worker.benchmark.evaluation import Agregat, ChampVerite, evaluer_document
 from adam_worker.benchmark.worker import TestExecutionWorker
@@ -494,7 +495,12 @@ class _ConnecteurFermable(_FauxConnecteur):
 
 
 class TestMoteurDeLaRecette:
-    def _execution(self, config: Dict[str, Any], hash_export: Optional[str] = None) -> Any:
+    def _execution(
+        self,
+        config: Dict[str, Any],
+        hash_export: Optional[str] = None,
+        verite_export: Optional[Dict[str, str]] = None,
+    ) -> Any:
         return ExecutionReservee(
             id=7,
             recipe_id=3,
@@ -503,6 +509,7 @@ class TestMoteurDeLaRecette:
             schema_id=5,
             config=config,
             schema_hash_export=hash_export,
+            verite_export=verite_export,
         )
 
     def test_recette_avec_moteur_construit_et_ferme(self) -> None:
@@ -557,6 +564,29 @@ class TestMoteurDeLaRecette:
         asyncio.run(_worker(depot, connecteur).poll())
         assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
         assert "schema du dataset modifie depuis l'export" in depot.fin["message"]
+
+    def _passer(self, verite_export: Optional[Dict[str, str]], verite: List[Any]) -> Any:
+        depot = _FauxDepot(self._execution({}, verite_export=verite_export), verite)
+        connecteur = _FauxConnecteur([_ocr(_kv("deposant.nom", "DUPONT"))])
+        asyncio.run(_worker(depot, connecteur).poll())
+        assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
+        return depot.fin
+
+    def test_verite_corrigee_depuis_l_export_signalee(self) -> None:
+        a_l_export = {"1": empreinte_document([(1, None, "DUPONT")])}
+        fin = self._passer(a_l_export, [_champ(1, "DUPOND")])
+        assert "verite humaine modifiee depuis l'export : documents [1]" in fin["message"]
+
+    def test_verite_inchangee_rien_a_signaler(self) -> None:
+        a_l_export = {"1": empreinte_document([(1, None, "DUPONT")])}
+        # Un champ jamais relu n'entre pas dans l'empreinte.
+        fin = self._passer(a_l_export, [_champ(1, "DUPONT"), _champ(2, "x", verifie=False)])
+        assert fin["message"] is None
+
+    def test_empreinte_de_la_verite_notee_sur_l_execution(self) -> None:
+        fin = self._passer(None, [_champ(1, "DUPONT")])
+        attendue = empreinte_verite({1: empreinte_document([(1, None, "DUPONT")])})
+        assert fin["verite_hash"] == attendue
 
 
 class TestFabriqueDeMoteur:

@@ -17,6 +17,7 @@ from adam_api.routers.benchmark import router
 
 SUPERVISEUR = UserCaller(matricule="V1", organisation_id=1, platform_role="NOTA_SUPERVISOR")
 OPERATEUR = UserCaller(matricule="I1", organisation_id=1)
+ADMIN = UserCaller(matricule="V2", organisation_id=1, platform_role="NOTA_ADMIN")
 _NOW = datetime(2026, 10, 13, tzinfo=timezone.utc)
 
 
@@ -107,6 +108,7 @@ def _execution(status: str = "COMPLETED") -> Any:
         ocr_model_id="ocr + annot",
         comparateur_version="1",
         schema_hash="abc",
+        verite_hash="v1",
         error_message=None,
         documents_compared=1,
         fields_compared=41,
@@ -167,6 +169,7 @@ class TestExports:
             _resultat(scalar="CERFA"),  # schema : nom
             _resultat(all_=[(1, "Deposant")]),  # schema : pages
             _resultat(scalars=[]),  # schema : champs
+            _resultat(all_=[(14, 1, None, "DUPONT")]),  # verite : champs verifies
             _resultat(scalar=1),  # createur
         )
         r = _client(SUPERVISEUR, db).post(
@@ -176,6 +179,9 @@ class TestExports:
         corps = r.json()
         assert corps["document_ids"] == [14, 15] and corps["schema_id"] == 9
         assert len(corps["schema_hash"]) == 16
+        # Une empreinte par document, meme sans champ verifie (le 15).
+        empreintes = db.ajoutes[0].verite_empreintes
+        assert set(empreintes) == {"14", "15"} and empreintes["14"] != empreintes["15"]
 
     def test_document_hors_du_dataset_422(self) -> None:
         db = _db({"Dataset": SimpleNamespace(id=4, schema_id=9)}, _resultat(scalars=[14]))
@@ -196,9 +202,37 @@ class TestExports:
 
 
 class TestRecettes:
-    def _creer(self, corps: Dict[str, Any], *resultats: MagicMock) -> Any:
+    def _creer(
+        self, corps: Dict[str, Any], *resultats: MagicMock, caller: UserCaller = ADMIN
+    ) -> Any:
         db = _db({"DatasetExport": _export()}, *resultats)
-        return _client(SUPERVISEUR, db).post("/test-recipes", json=corps)
+        return _client(caller, db).post("/test-recipes", json=corps)
+
+    def test_consigne_reservee_aux_administrateurs(self) -> None:
+        corps = {
+            "dataset_export_id": 8,
+            "name": "c",
+            "tout_l_export": True,
+            "config": {"ocr": {"prompt": "Lis."}},
+        }
+        r = self._creer(corps, caller=SUPERVISEUR)
+        assert r.status_code == 403 and "administrateurs" in r.text
+
+    def test_superviseur_sans_consigne_accepte(self) -> None:
+        r = self._creer(
+            {"dataset_export_id": 8, "name": "c", "tout_l_export": True},
+            _resultat(scalar=None),
+            _resultat(scalar=1),
+            caller=SUPERVISEUR,
+        )
+        assert r.status_code == 201, r.text
+
+    def test_consigne_refusee_au_superviseur_en_patch_et_en_version(self) -> None:
+        db = _db({"TestRecipe": _recette("DRAFT")})
+        corps = {"config": {"ocr": {"prompt": "Lis."}}}
+        client = _client(SUPERVISEUR, db)
+        assert client.patch("/test-recipes/3", json=corps).status_code == 403
+        assert client.post("/test-recipes/3/versions", json=corps).status_code == 403
 
     def test_creation_sur_tout_l_export_avec_moteur(self) -> None:
         r = self._creer(

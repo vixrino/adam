@@ -44,6 +44,7 @@ from adam_api.services import rapport_metriques_pdf
 from adam_core.benchmark.metriques import FiltresChamps, calculer, comparer
 from adam_core.benchmark.recette import ConfigRecette, config_ocr
 from adam_core.benchmark.schema import empreinte_schema, schema_en_dict
+from adam_core.benchmark.verite import empreintes_documents
 from adam_core.enums.roles import PlatformRole
 from adam_core.enums.status import ComparisonVerdict, TestExecutionStatus, TestRecipeStatus
 from adam_core.models import (
@@ -71,6 +72,21 @@ async def require_benchmark(caller: UserCaller = Depends(require_user)) -> UserC
             status_code=403, detail="Reserve aux superviseurs et administrateurs NOTA"
         )
     return caller
+
+
+def _consigne_autorisee(caller: UserCaller, config: Optional[ConfigRecette]) -> None:
+    """La consigne libre est envoyee telle quelle au modele et change ce qu'il
+    lit : un superviseur pourrait fausser un benchmark sans que cela se voie.
+    Reservee aux administrateurs NOTA."""
+    if (
+        config is not None
+        and config.ocr.prompt
+        and caller.platform_role != PlatformRole.NOTA_ADMIN.value
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="consigne OCR (config.ocr.prompt) reservee aux administrateurs NOTA",
+        )
 
 
 # -- Schemas ---------------------------------------------------------------------
@@ -161,6 +177,7 @@ class ExecutionOut(BaseModel):
     ocr_model_id: Optional[str] = None
     comparateur_version: Optional[str] = None
     schema_hash: Optional[str] = None
+    verite_hash: Optional[str] = None
     error_message: Optional[str] = None
     documents_compared: int
     fields_compared: int
@@ -311,6 +328,9 @@ async def creer_export(
         dataset_id=dataset.id,
         schema_id=dataset.schema_id,
         schema_hash=empreinte_schema(await schema_en_dict(db, dataset.schema_id)),
+        verite_empreintes={
+            str(d): e for d, e in (await empreintes_documents(db, documents)).items()
+        },
         name=body.name,
         description=body.description,
         document_ids=documents,
@@ -466,6 +486,7 @@ async def creer_recette(
 ) -> RecetteOut:
     """Version 1 d'une recette, sur un export. Un nom deja pris dans le
     dataset : creer une version de la recette existante."""
+    _consigne_autorisee(caller, body.config)
     export = await _export_de(db, body.dataset_export_id)
     documents = _perimetre(export, body.tout_l_export, body.document_ids)
     deja = (
@@ -504,11 +525,12 @@ async def creer_recette(
 async def modifier_recette(
     recipe_id: int,
     body: RecettePatch,
-    _: UserCaller = Depends(require_benchmark),
+    caller: UserCaller = Depends(require_benchmark),
     db: AsyncSession = Depends(get_db),
 ) -> RecetteOut:
     """Modifiable tant que la recette est un brouillon : une fois figee, deux
     passages ne seraient plus comparables ; en creer une version."""
+    _consigne_autorisee(caller, body.config)
     recette = await db.get(TestRecipe, recipe_id)
     if recette is None:
         raise HTTPException(status_code=404, detail="Recette introuvable")
@@ -578,6 +600,7 @@ async def nouvelle_version(
     """La version suivante d'une recette : meme nom, meme export, et ce que le
     corps change (documents, moteur, seuils). La recette d'origine ne bouge
     pas : ses executions restent lisibles et comparables."""
+    _consigne_autorisee(caller, body.config)
     source = await db.get(TestRecipe, recipe_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Recette introuvable")

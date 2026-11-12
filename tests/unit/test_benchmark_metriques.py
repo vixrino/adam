@@ -190,6 +190,17 @@ class TestComparer:
         assert c["comparable"] is False
         assert c["raisons"] == ["empreinte du schema differente"]
 
+    def test_verite_differente_signalee(self) -> None:
+        a = calculer([_ligne("a.b", vp=6)], dict(EXECUTION, verite_hash="v1"))
+        b = calculer([_ligne("a.b", vp=6)], dict(EXECUTION, id=2, verite_hash="v2"))
+        assert comparer(a, b)["raisons"] == ["verite humaine differente"]
+
+    def test_verite_absente_d_un_cote_non_signalee(self) -> None:
+        """Execution d'avant l'empreinte : rien a comparer, pas une raison."""
+        a = calculer([_ligne("a.b", vp=6)], EXECUTION)
+        b = calculer([_ligne("a.b", vp=6)], dict(EXECUTION, id=2, verite_hash="v2"))
+        assert comparer(a, b)["comparable"] is True
+
 
 class TestGardeFousLecture:
     def test_execution_anterieure_aux_metriques_signalee(self) -> None:

@@ -331,6 +331,7 @@ def calculer(
             "ocr_model_id": execution.get("ocr_model_id"),
             "comparateur_version": execution.get("comparateur_version"),
             "schema_hash": execution.get("schema_hash"),
+            "verite_hash": execution.get("verite_hash"),
             "started_at": execution.get("started_at"),
             "finished_at": execution.get("finished_at"),
         },
@@ -472,8 +473,8 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
 
     a est la reference (colonne « Ref. » de la page), b le passage analyse.
     La comparaison est toujours rendue, mais signalee non comparable si la
-    recette, la version du comparateur, l'empreinte du schema ou le nombre de
-    documents different : un ecart n'y mesurerait pas le moteur.
+    recette, la version du comparateur, l'empreinte du schema, la verite humaine
+    ou le nombre de documents different : un ecart n'y mesurerait pas le moteur.
 
     ``par_champ`` liste tous les champs, presents d'un cote ou des deux, avec
     leur reussite de chaque cote et l'ecart en points : le front joint sur
@@ -491,6 +492,10 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
         )
         if ea.get(cle) != eb.get(cle) or ea.get(cle) is None
     ]
+    # Absente des executions d'avant l'empreinte : on ne signale qu'un
+    # desaccord avere, pas une empreinte manquante.
+    if ea.get("verite_hash") and eb.get("verite_hash") and ea["verite_hash"] != eb["verite_hash"]:
+        raisons.append("verite humaine differente")
     if ea["documents"] != eb["documents"]:
         raisons.append("nombre de documents different")
     indicateurs = (

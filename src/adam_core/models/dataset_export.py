@@ -12,14 +12,16 @@ les valeurs.
 
 ``schema_hash`` est l'empreinte du schema au moment de l'export, calculee comme
 celle du worker (benchmark/schema.py) : une execution dont le schema a change
-depuis le signale.
+depuis le signale. ``verite_empreintes`` fait de meme pour la verite humaine,
+document par document (benchmark/verite.py) : les valeurs ne sont pas copiees,
+mais une correction faite depuis l'export se voit.
 """
 
 from datetime import datetime
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from adam_core.db.base import Base
@@ -54,6 +56,9 @@ class DatasetExport(OrganisationScoped, ProjectScoped, Base):
     #: Les documents figes, comme test_recipe.document_ids : un ARRAY plutot
     #: qu'une table de liaison.
     document_ids: Mapped[List[int]] = mapped_column(ARRAY(Integer), nullable=False)
+    #: {document_id (en texte, cle JSON): empreinte de sa verite a l'export}.
+    #: Nul pour un export cree avant que l'empreinte existe.
+    verite_empreintes: Mapped[Optional[Dict[str, str]]] = mapped_column(JSONB, nullable=True)
     created_by_user_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("user.id", ondelete="RESTRICT"), nullable=False
     )

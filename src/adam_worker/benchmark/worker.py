@@ -42,6 +42,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from adam_api.core.config import settings
 from adam_core.benchmark.recette import ConfigOcr, config_ocr
 from adam_core.benchmark.schema import empreinte_schema  # reexporte : tests, scripts
+from adam_core.benchmark.verite import empreinte_document, empreinte_verite
 from adam_core.enums.status import TestExecutionStatus, TestRecipeStatus
 from adam_worker.base_worker import BaseWorker
 from adam_worker.benchmark.comparateur import COMPARATEUR_VERSION
@@ -173,6 +174,8 @@ class TestExecutionWorker(BaseWorker):
         agregats: Dict[int, Agregat] = {}
         non_conformes: List[int] = []
         sans_images: List[int] = []
+        #: Empreinte de la verite de chaque document juge.
+        verites: Dict[int, str] = {}
 
         for document_id, file_id in documents:
             images = self._images(file_id)
@@ -196,9 +199,11 @@ class TestExecutionWorker(BaseWorker):
                 ) from exc
             appels = int(getattr(connecteur, "appels", 0)) - appels_avant
 
-            resultat = evaluer_document(
-                await self.depot.verite(document_id), ocr, execution.id, self.cle_hmac
+            verite = await self.depot.verite(document_id)
+            verites[document_id] = empreinte_document(
+                (c.field_spec_id, c.group_id, c.attendu) for c in verite if c.verifie
             )
+            resultat = evaluer_document(verite, ocr, execution.id, self.cle_hmac)
             await self.depot.enregistrer_document(
                 execution.id,
                 resultat.ecarts,
@@ -235,6 +240,14 @@ class TestExecutionWorker(BaseWorker):
             # Le schema a change depuis l'export : la verite et la lecture ne
             # portent plus tout a fait sur les memes champs qu'a l'export.
             constats.append("schema du dataset modifie depuis l'export")
+        if execution.verite_export is not None:
+            # Une valeur corrigee depuis l'export : le score de ce passage ne
+            # se compare plus a celui d'un passage d'avant la correction.
+            modifies = sorted(
+                d for d, e in verites.items() if execution.verite_export.get(str(d)) != e
+            )
+            if modifies:
+                constats.append(f"verite humaine modifiee depuis l'export : documents {modifies}")
         if non_conformes:
             constats.append(f"documents juges non conformes par le moteur : {non_conformes}")
         if sans_images:
@@ -246,6 +259,7 @@ class TestExecutionWorker(BaseWorker):
             histogramme=histogramme,
             agregats=agregats,
             message=message,
+            verite_hash=empreinte_verite(verites),
         )
         self.logger.info("execution de test terminee [execution_id=%s]", execution.id)
 

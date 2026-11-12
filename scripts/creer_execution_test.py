@@ -61,6 +61,7 @@ async def creer(
 
     modeles = importlib.import_module(f"{core}.models")
     schema_benchmark = importlib.import_module(f"{core}.benchmark.schema")
+    verite_benchmark = importlib.import_module(f"{core}.benchmark.verite")
     statuts = importlib.import_module(f"{core}.enums.status")
     session_mod = importlib.import_module(f"{core}.db.session")
     settings = importlib.import_module(f"{api}.core.config").settings
@@ -156,6 +157,10 @@ async def creer(
                 dataset_id=dataset_id,
                 schema_id=dataset.schema_id,
                 schema_hash=schema_benchmark.empreinte_schema(schema),
+                verite_empreintes={
+                    str(d): e
+                    for d, e in (await verite_benchmark.empreintes_documents(db, documents)).items()
+                },
                 name=f"export pour {nom_recette}",
                 document_ids=documents,
                 created_by_user_id=createur,
