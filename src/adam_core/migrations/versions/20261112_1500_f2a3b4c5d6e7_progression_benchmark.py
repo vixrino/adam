@@ -30,8 +30,15 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
     # Les passages deja termines ont traite tous leurs documents compares.
-    table = f'"{SCHEMA}".test_execution' if SCHEMA else "test_execution"
-    op.execute(f"UPDATE {table} SET documents_traites = documents_compared")
+    # Construite par SQLAlchemy, pas par f-string : le schema est cite
+    # proprement, et bandit (B608) n'y voit pas d'injection.
+    table = sa.table(
+        "test_execution",
+        sa.column("documents_traites", sa.Integer()),
+        sa.column("documents_compared", sa.Integer()),
+        schema=SCHEMA,
+    )
+    op.execute(table.update().values(documents_traites=table.c.documents_compared))
     op.alter_column(
         "test_execution",
         "status",
