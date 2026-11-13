@@ -238,6 +238,16 @@ class TestComparerDeuxRecettes:
         b = self._cote({"id": 4, "dataset_export_id": 8, "document_ids": [14]}, id=2)
         assert comparer(a, b)["raisons"] == ["documents differents dans le meme export"]
 
+    def test_champs_exclus_differents_non_comparable(self) -> None:
+        """Une exclusion retire des champs des indicateurs : meme export, memes
+        documents, mais pas le meme ensemble mesure."""
+        a = self._cote({"id": 3, "dataset_export_id": 8, "document_ids": [14]})
+        b = self._cote(
+            {"id": 4, "dataset_export_id": 8, "document_ids": [14], "champs_exclus": ["c."]},
+            id=2,
+        )
+        assert comparer(a, b)["raisons"] == ["champs exclus differents"]
+
     def test_recettes_sans_export_differentes_non_comparables(self) -> None:
         a = self._cote({"id": 3})
         b = self._cote({"id": 4}, id=2, recipe_id=4)

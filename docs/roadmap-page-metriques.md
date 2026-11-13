@@ -48,6 +48,8 @@ férié). Si la date glisse, la tâche 7 passe en version 2.
 | Documents en erreur d'un champ, « Document i sur N » | `/ecarts?champ=<par_champ[].champ>` ; N dans l'en-tête `X-Total-Count` |
 | Choisir deux passages à comparer (même export) | `/dataset-exports/{id}/executions` → une ligne par passage terminé : recette, moteur, taux |
 | Comparaison par champ et par section | `/test-executions/comparaison?a=<référence>&b=<analysée>` → `par_champ[]` (`reussite_a`, `reussite_b`, `ecart_pts`), `par_section`, `comparable`, `raisons`, `moteur.changements` |
+| Barre de progression d'un passage | `/test-executions/{id}/progression` → `pourcentage`, `documents_traites`/`documents_total`, `secondes_restantes_estimees`, `termine` (arrêter le polling) |
+| Bouton « Arrêter » | `POST /test-executions/{id}/cancel` (si `annulable`) ; 409 si déjà terminé |
 | Contrat exact des réponses | modèles Pydantic de `adam_api/schemas/benchmark.py`, visibles dans `/docs` (OpenAPI) |
 | Bouton PDF | `/test-executions/{id}/metriques.pdf`, mêmes filtres que la page |
 

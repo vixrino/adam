@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.dialects import postgresql
 
 from adam_api.core.config import settings
 from adam_api.dependencies.auth import UserCaller, require_user
@@ -48,6 +49,7 @@ def _db(objets: Dict[str, Any], *resultats: MagicMock) -> AsyncMock:
         objet.id = 50
         objet.created_at = _NOW
         for nom, defaut in (
+            ("documents_traites", 0),
             ("documents_compared", 0),
             ("fields_compared", 0),
             ("fields_human_verified", 0),
@@ -110,6 +112,7 @@ def _execution(status: str = "COMPLETED") -> Any:
         schema_hash="abc",
         verite_hash="v1",
         error_message=None,
+        documents_traites=1,
         documents_compared=1,
         fields_compared=41,
         fields_human_verified=41,
@@ -440,6 +443,53 @@ class TestVersions:
         assert (corps["version"], corps["recette_racine_id"]) == (3, 3)
         assert corps["document_ids"] == [14]
 
+    def test_config_partielle_fusionnee_avec_la_source(self) -> None:
+        """Le corps dit ce qui change : le reste de la config est garde."""
+        source = _recette(
+            "LOCKED",
+            config={
+                "champs_exclus": ["certification."],
+                "seuils_par_categorie": {"sensible": 0.0},
+                "ocr": {"provider": "MISTRAL", "model": "ocr-fige", "prompt": "lire"},
+            },
+        )
+        db = _db(
+            {"TestRecipe": source, "DatasetExport": _export()},
+            _resultat(scalars=[source]),
+            _resultat(scalar=1),
+        )
+        r = _client(SUPERVISEUR, db).post(
+            "/test-recipes/3/versions", json={"config": {"score_minimal": 0.9}}
+        )
+        assert r.status_code == 201, r.text
+        config = r.json()["config"]
+        assert config["score_minimal"] == 0.9
+        assert config["champs_exclus"] == ["certification."]
+        assert config["seuils_par_categorie"] == {"sensible": 0.0}
+        assert config["ocr"]["model"] == "ocr-fige" and config["ocr"]["prompt"] == "lire"
+
+    def test_autre_fournisseur_repart_d_un_moteur_vide(self) -> None:
+        brouillon = _recette(
+            "DRAFT", config={"ocr": {"provider": "MISTRAL", "model": "ocr-fige", "prompt": "x"}}
+        )
+        db = _db({"TestRecipe": brouillon})
+        r = _client(ADMIN, db).patch(
+            "/test-recipes/3", json={"config": {"ocr": {"provider": "MOCK"}}}
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["config"]["ocr"] == {"provider": "MOCK"}
+
+    def test_patch_liste_seule_quitte_tout_l_export(self) -> None:
+        db = _db(
+            {
+                "TestRecipe": _recette("DRAFT", tout_l_export=True, document_ids=[14, 15]),
+                "DatasetExport": _export(),
+            }
+        )
+        r = _client(SUPERVISEUR, db).patch("/test-recipes/3", json={"document_ids": [14]})
+        assert r.status_code == 200, r.text
+        assert r.json()["document_ids"] == [14] and r.json()["tout_l_export"] is False
+
     def test_lister_les_versions(self) -> None:
         source = _recette("LOCKED")
         v2 = _recette("LOCKED", id=5, version=2, recette_racine_id=3)
@@ -495,6 +545,51 @@ class TestExecutions:
         assert m["categories_erreurs"] == {"DIGIT": 1, "MISSING": 2}
         assert m["verdict"]["reussi"] is True
         assert m["execution"]["schema_hash"] == "abc"
+
+    def test_progression_en_cours(self) -> None:
+        execution = _execution("RUNNING")
+        execution.started_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+        execution.finished_at = None
+        db = _db({"TestExecution": execution, "TestRecipe": _recette(document_ids=[1, 2, 3, 4])})
+        r = _client(SUPERVISEUR, db).get("/test-executions/1/progression")
+        assert r.status_code == 200, r.text
+        p = r.json()
+        assert (p["documents_traites"], p["documents_total"], p["pourcentage"]) == (1, 4, 25.0)
+        assert p["termine"] is False and p["annulable"] is True
+        # 1 document en ~60 s, 3 restants : ~180 s.
+        assert 170 < p["secondes_restantes_estimees"] < 200
+
+    def test_progression_terminee_a_100(self) -> None:
+        db = _db({"TestExecution": _execution(), "TestRecipe": _recette(document_ids=[1, 2])})
+        p = _client(SUPERVISEUR, db).get("/test-executions/1/progression").json()
+        assert p["pourcentage"] == 100.0 and p["termine"] is True
+        assert p["annulable"] is False and p["secondes_restantes_estimees"] is None
+
+    def test_progression_execution_inconnue_404(self) -> None:
+        r = _client(SUPERVISEUR, _db({})).get("/test-executions/9/progression")
+        assert r.status_code == 404
+
+    def test_annulation(self) -> None:
+        execution = _execution("RUNNING")
+        db = _db({"TestExecution": execution}, _resultat(scalar=1))
+        r = _client(SUPERVISEUR, db).post("/test-executions/1/cancel")
+        assert r.status_code == 200, r.text
+        sql = str(db.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+        # Conditionnelle : un passage termine entre-temps n'est pas ecrase.
+        assert "test_execution.status IN" in sql and "RETURNING" in sql
+
+    def test_annulation_d_un_passage_termine_409(self) -> None:
+        db = _db({"TestExecution": _execution("COMPLETED")}, _resultat(scalar=None))
+        r = _client(SUPERVISEUR, db).post("/test-executions/1/cancel")
+        assert r.status_code == 409 and "COMPLETED" in r.text
+
+    def test_annulation_execution_inconnue_404(self) -> None:
+        db = _db({}, _resultat(scalar=None))
+        assert _client(SUPERVISEUR, db).post("/test-executions/9/cancel").status_code == 404
+
+    def test_annulation_reservee_au_benchmark(self) -> None:
+        r = _client(OPERATEUR, _db({})).post("/test-executions/1/cancel")
+        assert r.status_code == 403
 
     def test_executions_de_l_export(self) -> None:
         db = _db(
@@ -627,6 +722,7 @@ class TestExecutions:
             "version": 1,
             "dataset_export_id": 8,
             "document_ids": [14],
+            "champs_exclus": [],
         }
         assert m["dataset"]["id"] == 4
 

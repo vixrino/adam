@@ -16,6 +16,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from adam_core.benchmark.verite import empreinte_document, empreinte_verite
+from adam_core.db.base import Base
 from adam_core.enums.status import (
     ComparisonDiffKind,
     ComparisonVerdict,
@@ -37,7 +39,6 @@ from adam_worker.benchmark.comparateur import (
     empreinte,
     normaliser,
 )
-from adam_core.benchmark.verite import empreinte_document, empreinte_verite
 from adam_worker.benchmark.depot import DepotBenchmark, ExecutionReservee
 from adam_worker.benchmark.evaluation import Agregat, ChampVerite, evaluer_document
 from adam_worker.benchmark.worker import TestExecutionWorker
@@ -206,6 +207,13 @@ class _FauxDepot:
         self.enregistrements: List[Dict[str, Any]] = []
         self.fin: Dict[str, Any] = {}
         self.reservations: List[Any] = []
+        #: Annulee depuis l'API apres ce nombre de documents (None : jamais).
+        self.annuler_apres: Optional[int] = None
+        self.verifications = 0
+
+    async def interrompue(self, execution_id: int) -> bool:
+        self.verifications += 1
+        return self.annuler_apres is not None and self.verifications > self.annuler_apres
 
     async def echouer_bloquees(self, delai: timedelta) -> int:
         return 0
@@ -336,12 +344,16 @@ class TestWorker:
 
 
 class _SessionEnregistreuse:
-    def __init__(self) -> None:
+    def __init__(self, cloture: Optional[int] = 7) -> None:
         self.instructions: List[Any] = []
+        #: Ce que rend l'UPDATE ... RETURNING de terminer() : None, l'execution
+        #: n'etait plus RUNNING.
+        self.cloture = cloture
 
     async def execute(self, instruction: Any) -> Any:
         self.instructions.append(instruction)
-        return type("R", (), {"rowcount": 0})()
+        cloture = self.cloture
+        return type("R", (), {"rowcount": 0, "scalar_one_or_none": lambda _: cloture})()
 
 
 class TestDepotSql:
@@ -358,7 +370,11 @@ class TestDepotSql:
 
     @staticmethod
     def _sql(instruction: Any) -> str:
-        return str(instruction.compile(dialect=postgresql.dialect()))
+        """Le SQL compile, sans le prefixe de schema (« nota. » dans nota,
+        aucun dans adam) : les memes assertions valent des deux cotes."""
+        sql = str(instruction.compile(dialect=postgresql.dialect()))
+        schema = Base.metadata.schema
+        return sql.replace(f"{schema}.", "") if schema else sql
 
     def test_enregistrer_document(self, session: _SessionEnregistreuse) -> None:
         ecart = {
@@ -392,17 +408,64 @@ class TestDepotSql:
                 agregats={1: Agregat("deposant.nom", 2, 1)},
             )
         )
-        rapports, fin = (self._sql(i) for i in session.instructions)
+        fin, rapports = (self._sql(i) for i in session.instructions)
         assert (
             "ON CONFLICT ON CONSTRAINT uq_evaluation_report_execution_field_spec DO UPDATE"
             in rapports
         )
         assert "UPDATE test_execution SET status=" in fin
+        # Ne clot qu'une execution encore en cours : une annulation gagne.
+        assert "WHERE test_execution.id = " in fin and "AND test_execution.status = " in fin
+
+    def test_terminer_une_execution_annulee_n_ecrit_rien_de_plus(
+        self, session: _SessionEnregistreuse
+    ) -> None:
+        session.cloture = None
+        asyncio.run(
+            DepotBenchmark().terminer(
+                7, TestExecutionStatus.COMPLETED, agregats={1: Agregat("deposant.nom", 2, 1)}
+            )
+        )
+        assert len(session.instructions) == 1  # la cloture tentee, pas d'agregats
 
     def test_echouer_bloquees(self, session: _SessionEnregistreuse) -> None:
         asyncio.run(DepotBenchmark().echouer_bloquees(timedelta(minutes=30)))
         sql = self._sql(session.instructions[0])
         assert "WHERE test_execution.status = " in sql and "test_execution.updated_at <" in sql
+
+
+class TestAnnulation:
+    def test_annulee_entre_deux_documents_s_arrete_sans_clore(self) -> None:
+        depot = _FauxDepot(_execution(docs=[1, 2]), [_champ(1, "DUPONT")])
+        depot.annuler_apres = 1  # annulee pendant le premier document
+        connecteur = _FauxConnecteur([_ocr(_kv("deposant.nom", "DUPONT"))])
+        asyncio.run(_worker(depot, connecteur).poll())
+        assert len(depot.enregistrements) == 1  # le second n'est pas lu
+        assert connecteur.appels == 3
+        assert depot.fin == {}  # deja CANCELLED : le worker ne la clot pas
+
+    def test_annulee_avant_le_premier_document(self) -> None:
+        depot = _FauxDepot(_execution(), [_champ(1, "DUPONT")])
+        depot.annuler_apres = 0
+        connecteur = _FauxConnecteur([])
+        asyncio.run(_worker(depot, connecteur).poll())
+        assert depot.enregistrements == [] and connecteur.appels == 0 and depot.fin == {}
+
+
+class TestDocumentsAbsents:
+    def test_comptes_traites_pour_que_la_progression_aboutisse(self) -> None:
+        """Supprimes depuis l'export : comptes traites des le depart."""
+
+        class _Depot(_FauxDepot):
+            async def documents(self, ids: List[int]) -> List[Any]:
+                return [(1, 101)]
+
+        depot = _Depot(_execution(docs=[1, 2, 3]), [_champ(1, "DUPONT")])
+        connecteur = _FauxConnecteur([_ocr(_kv("deposant.nom", "DUPONT"))])
+        asyncio.run(_worker(depot, connecteur).poll())
+        traites = sum(e["compteurs"].get("documents_traites", 0) for e in depot.enregistrements)
+        assert traites == 3
+        assert "absents de la base : [2, 3]" in depot.fin["message"]
 
 
 class TestDocumentSansImages:
@@ -411,7 +474,10 @@ class TestDocumentSansImages:
         connecteur = _FauxConnecteur([_ocr(_kv("deposant.nom", "DUPONT"))])
         asyncio.run(_worker(depot, connecteur, sans_images=(1,)).poll())
 
-        assert len(depot.enregistrements) == 1
+        # Le document ecarte avance la progression, sans autre compteur.
+        ecarte, compare = depot.enregistrements
+        assert ecarte == {"ecarts": [], "compteurs": {"documents_traites": 1}}
+        assert compare["compteurs"]["documents_compared"] == 1
         assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
         assert "images de page absentes : [1]" in depot.fin["message"]
         assert depot.fin["agregats"][1].compared == 1

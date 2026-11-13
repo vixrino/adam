@@ -191,6 +191,19 @@ class DepotBenchmark:
             for df, fs, est_verifie in lignes
         ]
 
+    async def interrompue(self, execution_id: int) -> bool:
+        """Vrai si l'execution n'est plus en cours : annulee depuis l'API, ou
+        passee FAILED par echouer_bloquees alors que ce worker lisait encore
+        (un document plus long que STALE_AFTER). Continuer paierait des appels
+        OCR pour une execution deja close."""
+        async with get_async_session() as db:
+            statut = (
+                await db.execute(
+                    select(TestExecution.status).where(TestExecution.id == execution_id)
+                )
+            ).scalar_one_or_none()
+        return statut != TestExecutionStatus.RUNNING.value
+
     async def enregistrer_document(
         self, execution_id: int, ecarts: List[Dict[str, Any]], compteurs: Dict[str, int]
     ) -> None:
@@ -227,9 +240,28 @@ class DepotBenchmark:
         message: Optional[str] = None,
         verite_hash: Optional[str] = None,
     ) -> None:
-        """Clot l'execution, et ecrit ses agregats par champ s'il y en a."""
+        """Clot l'execution, et ecrit ses agregats par champ s'il y en a.
+
+        Ne clot qu'une execution encore RUNNING : annulee entre-temps depuis
+        l'API, elle reste CANCELLED, sans agregats.
+        """
         async with get_async_session() as db:
-            if agregats:
+            close = (
+                await db.execute(
+                    update(TestExecution)
+                    .where(TestExecution.id == execution_id)
+                    .where(TestExecution.status == TestExecutionStatus.RUNNING.value)
+                    .values(
+                        status=statut.value,
+                        finished_at=datetime.now(timezone.utc),
+                        confidence_histogram=histogramme,
+                        error_message=message,
+                        verite_hash=verite_hash,
+                    )
+                    .returning(TestExecution.id)
+                )
+            ).scalar_one_or_none()
+            if close is not None and agregats:
                 instruction = pg_insert(EvaluationReport).values(
                     [
                         {
@@ -251,14 +283,3 @@ class DepotBenchmark:
                         set_={nom: getattr(instruction.excluded, nom) for nom in COMPTES},
                     )
                 )
-            await db.execute(
-                update(TestExecution)
-                .where(TestExecution.id == execution_id)
-                .values(
-                    status=statut.value,
-                    finished_at=datetime.now(timezone.utc),
-                    confidence_histogram=histogramme,
-                    error_message=message,
-                    verite_hash=verite_hash,
-                )
-            )

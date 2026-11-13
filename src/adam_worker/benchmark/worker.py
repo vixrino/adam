@@ -67,6 +67,11 @@ class EchecExecution(Exception):
     """Echec qui met l'execution en FAILED, avec un message lisible."""
 
 
+class ExecutionInterrompue(Exception):
+    """L'execution n'est plus RUNNING (annulee depuis l'API, ou passee FAILED
+    par echouer_bloquees) : on s'arrete sans la clore, elle l'est deja."""
+
+
 class TestExecutionWorker(BaseWorker):
     """Execute les recettes de test OCR en attente."""
 
@@ -134,6 +139,8 @@ class TestExecutionWorker(BaseWorker):
                 execution.id, connecteur.name.upper(), _modele_ocr(connecteur)
             )
             await self._executer(execution, connecteur)
+        except ExecutionInterrompue:
+            self.logger.info("execution de test interrompue [execution_id=%s]", execution.id)
         except EchecExecution as exc:
             self.logger.error("execution %s en FAILED : %s", execution.id, exc)
             await self.depot.terminer(execution.id, TestExecutionStatus.FAILED, message=str(exc))
@@ -169,6 +176,12 @@ class TestExecutionWorker(BaseWorker):
         if not documents:
             raise EchecExecution(f"recette {execution.recipe_id} sans document existant")
         absents = sorted(set(execution.document_ids) - {d for d, _ in documents})
+        if absents:
+            # Comptes traites d'emblee : sans cela la progression, rapportee
+            # aux documents de la recette, n'atteindrait jamais le total.
+            await self.depot.enregistrer_document(
+                execution.id, [], {"documents_traites": len(absents)}
+            )
 
         histogramme: Dict[str, Dict[str, List[int]]] = {}
         agregats: Dict[int, Agregat] = {}
@@ -178,12 +191,17 @@ class TestExecutionWorker(BaseWorker):
         verites: Dict[int, str] = {}
 
         for document_id, file_id in documents:
+            # Entre deux documents : un document entame va au bout, ses appels
+            # OCR sont deja payes.
+            if await self.depot.interrompue(execution.id):
+                raise ExecutionInterrompue()
             images = self._images(file_id)
             if not images:
                 # Pages jamais rendues : c'est un defaut d'ingestion, pas une
                 # lecture ratee. Le compter MISSING imputerait au moteur une
                 # erreur qui n'est pas la sienne.
                 sans_images.append(document_id)
+                await self.depot.enregistrer_document(execution.id, [], {"documents_traites": 1})
                 continue
             appels_avant = int(getattr(connecteur, "appels", 0))
             try:
@@ -208,6 +226,7 @@ class TestExecutionWorker(BaseWorker):
                 execution.id,
                 resultat.ecarts,
                 {
+                    "documents_traites": 1,
                     "documents_compared": 1,
                     "fields_compared": resultat.fields_compared,
                     "fields_human_verified": resultat.fields_human_verified,
