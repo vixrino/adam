@@ -191,15 +191,18 @@ class DepotBenchmark:
             for df, fs, est_verifie in lignes
         ]
 
-    async def annulee(self, execution_id: int) -> bool:
-        """Vrai si l'execution a ete annulee depuis l'API pendant le passage."""
+    async def interrompue(self, execution_id: int) -> bool:
+        """Vrai si l'execution n'est plus en cours : annulee depuis l'API, ou
+        passee FAILED par echouer_bloquees alors que ce worker lisait encore
+        (un document plus long que STALE_AFTER). Continuer paierait des appels
+        OCR pour une execution deja close."""
         async with get_async_session() as db:
             statut = (
                 await db.execute(
                     select(TestExecution.status).where(TestExecution.id == execution_id)
                 )
             ).scalar_one_or_none()
-        return statut == TestExecutionStatus.CANCELLED.value
+        return statut != TestExecutionStatus.RUNNING.value
 
     async def enregistrer_document(
         self, execution_id: int, ecarts: List[Dict[str, Any]], compteurs: Dict[str, int]

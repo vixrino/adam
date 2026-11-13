@@ -447,12 +447,36 @@ def _nouveau_perimetre(
     """(tout_l_export, document_ids) apres un PATCH ou pour une nouvelle version.
 
     Meme regle des deux cotes : passer tout_l_export a faux sans liste garde
-    les documents actuels (tout l'export, s'il etait pris en entier).
+    les documents actuels (tout l'export, s'il etait pris en entier) ; donner
+    une liste seule quitte « tout l'export ».
     """
-    tout = bool(champs.get("tout_l_export", tout_actuel))
     if "document_ids" in champs:
+        tout = bool(champs.get("tout_l_export", False))
         return tout, list(champs["document_ids"] or [])
+    tout = bool(champs.get("tout_l_export", tout_actuel))
     return tout, [] if tout else list(liste_actuelle)
+
+
+def _config_fusionnee(actuelle: Optional[Dict[str, Any]], modif: ConfigRecette) -> ConfigRecette:
+    """La config d'un PATCH ou d'une nouvelle version : celle en place, avec
+    ce que le corps change.
+
+    Comme pour le reste du corps, une cle absente ne change pas : envoyer
+    {"score_minimal": 0.9} ne doit pas effacer les seuils, les exclusions, la
+    consigne ni le modele fige. Un null explicite remet la valeur par defaut.
+    Changer de fournisseur repart d'un moteur vide : les modeles de l'ancien
+    n'ont pas de sens chez le nouveau.
+    """
+    fusion = dict(actuelle or {})
+    changes = modif.model_dump(exclude_unset=True)
+    ocr = changes.pop("ocr", None)
+    fusion.update(changes)
+    if ocr is not None:
+        ancien = dict(fusion.get("ocr") or {})
+        if ocr.get("provider") and ocr["provider"] != ancien.get("provider"):
+            ancien = {}
+        fusion["ocr"] = {**ancien, **ocr}
+    return ConfigRecette.model_validate(fusion)
 
 
 def _config_resolue(config: ConfigRecette) -> Dict[str, Any]:
@@ -604,7 +628,7 @@ async def modifier_recette(
     if "description" in champs:
         recette.description = champs["description"]
     if body.config is not None:
-        recette.config = _config_resolue(body.config)
+        recette.config = _config_resolue(_config_fusionnee(recette.config, body.config))
     await db.flush()
     return _recette_out(recette)
 
@@ -677,7 +701,11 @@ async def nouvelle_version(
         champs, bool(source.tout_l_export), list(source.document_ids or [])
     )
     documents = _perimetre(await _export_de(db, source.dataset_export_id), tout, liste)
-    config = _config_resolue(body.config) if body.config is not None else dict(source.config or {})
+    config = (
+        _config_resolue(_config_fusionnee(source.config, body.config))
+        if body.config is not None
+        else dict(source.config or {})
+    )
     maintenant = datetime.now(timezone.utc)
     version = TestRecipe(
         dataset_id=source.dataset_id,
@@ -923,6 +951,9 @@ async def _metriques(
         "version": getattr(recette, "version", None) or 1,
         "dataset_export_id": getattr(recette, "dataset_export_id", None),
         "document_ids": sorted(getattr(recette, "document_ids", None) or []),
+        "champs_exclus": sorted(
+            (getattr(recette, "config", None) or {}).get("champs_exclus") or []
+        ),
     }
     metriques["dataset"] = {
         "id": getattr(recette, "dataset_id", None),

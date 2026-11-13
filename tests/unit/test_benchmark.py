@@ -211,7 +211,7 @@ class _FauxDepot:
         self.annuler_apres: Optional[int] = None
         self.verifications = 0
 
-    async def annulee(self, execution_id: int) -> bool:
+    async def interrompue(self, execution_id: int) -> bool:
         self.verifications += 1
         return self.annuler_apres is not None and self.verifications > self.annuler_apres
 
@@ -450,6 +450,22 @@ class TestAnnulation:
         connecteur = _FauxConnecteur([])
         asyncio.run(_worker(depot, connecteur).poll())
         assert depot.enregistrements == [] and connecteur.appels == 0 and depot.fin == {}
+
+
+class TestDocumentsAbsents:
+    def test_comptes_traites_pour_que_la_progression_aboutisse(self) -> None:
+        """Supprimes depuis l'export : comptes traites des le depart."""
+
+        class _Depot(_FauxDepot):
+            async def documents(self, ids: List[int]) -> List[Any]:
+                return [(1, 101)]
+
+        depot = _Depot(_execution(docs=[1, 2, 3]), [_champ(1, "DUPONT")])
+        connecteur = _FauxConnecteur([_ocr(_kv("deposant.nom", "DUPONT"))])
+        asyncio.run(_worker(depot, connecteur).poll())
+        traites = sum(e["compteurs"].get("documents_traites", 0) for e in depot.enregistrements)
+        assert traites == 3
+        assert "absents de la base : [2, 3]" in depot.fin["message"]
 
 
 class TestDocumentSansImages:

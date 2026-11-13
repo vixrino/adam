@@ -67,9 +67,9 @@ class EchecExecution(Exception):
     """Echec qui met l'execution en FAILED, avec un message lisible."""
 
 
-class ExecutionAnnulee(Exception):
-    """L'execution a ete annulee depuis l'API : on s'arrete sans la clore,
-    elle est deja CANCELLED."""
+class ExecutionInterrompue(Exception):
+    """L'execution n'est plus RUNNING (annulee depuis l'API, ou passee FAILED
+    par echouer_bloquees) : on s'arrete sans la clore, elle l'est deja."""
 
 
 class TestExecutionWorker(BaseWorker):
@@ -139,8 +139,8 @@ class TestExecutionWorker(BaseWorker):
                 execution.id, connecteur.name.upper(), _modele_ocr(connecteur)
             )
             await self._executer(execution, connecteur)
-        except ExecutionAnnulee:
-            self.logger.info("execution de test annulee [execution_id=%s]", execution.id)
+        except ExecutionInterrompue:
+            self.logger.info("execution de test interrompue [execution_id=%s]", execution.id)
         except EchecExecution as exc:
             self.logger.error("execution %s en FAILED : %s", execution.id, exc)
             await self.depot.terminer(execution.id, TestExecutionStatus.FAILED, message=str(exc))
@@ -176,6 +176,12 @@ class TestExecutionWorker(BaseWorker):
         if not documents:
             raise EchecExecution(f"recette {execution.recipe_id} sans document existant")
         absents = sorted(set(execution.document_ids) - {d for d, _ in documents})
+        if absents:
+            # Comptes traites d'emblee : sans cela la progression, rapportee
+            # aux documents de la recette, n'atteindrait jamais le total.
+            await self.depot.enregistrer_document(
+                execution.id, [], {"documents_traites": len(absents)}
+            )
 
         histogramme: Dict[str, Dict[str, List[int]]] = {}
         agregats: Dict[int, Agregat] = {}
@@ -187,8 +193,8 @@ class TestExecutionWorker(BaseWorker):
         for document_id, file_id in documents:
             # Entre deux documents : un document entame va au bout, ses appels
             # OCR sont deja payes.
-            if await self.depot.annulee(execution.id):
-                raise ExecutionAnnulee()
+            if await self.depot.interrompue(execution.id):
+                raise ExecutionInterrompue()
             images = self._images(file_id)
             if not images:
                 # Pages jamais rendues : c'est un defaut d'ingestion, pas une

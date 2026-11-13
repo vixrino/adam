@@ -125,6 +125,9 @@ class RecetteResume(_Strict):
         default=None, description="Nul pour une recette d'avant les exports"
     )
     document_ids: List[int] = Field(default_factory=list)
+    champs_exclus: List[str] = Field(
+        default_factory=list, description="Prefixes de cle ignores par les metriques"
+    )
 
 
 class DatasetResume(_Strict):

@@ -443,6 +443,53 @@ class TestVersions:
         assert (corps["version"], corps["recette_racine_id"]) == (3, 3)
         assert corps["document_ids"] == [14]
 
+    def test_config_partielle_fusionnee_avec_la_source(self) -> None:
+        """Le corps dit ce qui change : le reste de la config est garde."""
+        source = _recette(
+            "LOCKED",
+            config={
+                "champs_exclus": ["certification."],
+                "seuils_par_categorie": {"sensible": 0.0},
+                "ocr": {"provider": "MISTRAL", "model": "ocr-fige", "prompt": "lire"},
+            },
+        )
+        db = _db(
+            {"TestRecipe": source, "DatasetExport": _export()},
+            _resultat(scalars=[source]),
+            _resultat(scalar=1),
+        )
+        r = _client(SUPERVISEUR, db).post(
+            "/test-recipes/3/versions", json={"config": {"score_minimal": 0.9}}
+        )
+        assert r.status_code == 201, r.text
+        config = r.json()["config"]
+        assert config["score_minimal"] == 0.9
+        assert config["champs_exclus"] == ["certification."]
+        assert config["seuils_par_categorie"] == {"sensible": 0.0}
+        assert config["ocr"]["model"] == "ocr-fige" and config["ocr"]["prompt"] == "lire"
+
+    def test_autre_fournisseur_repart_d_un_moteur_vide(self) -> None:
+        brouillon = _recette(
+            "DRAFT", config={"ocr": {"provider": "MISTRAL", "model": "ocr-fige", "prompt": "x"}}
+        )
+        db = _db({"TestRecipe": brouillon})
+        r = _client(ADMIN, db).patch(
+            "/test-recipes/3", json={"config": {"ocr": {"provider": "MOCK"}}}
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["config"]["ocr"] == {"provider": "MOCK"}
+
+    def test_patch_liste_seule_quitte_tout_l_export(self) -> None:
+        db = _db(
+            {
+                "TestRecipe": _recette("DRAFT", tout_l_export=True, document_ids=[14, 15]),
+                "DatasetExport": _export(),
+            }
+        )
+        r = _client(SUPERVISEUR, db).patch("/test-recipes/3", json={"document_ids": [14]})
+        assert r.status_code == 200, r.text
+        assert r.json()["document_ids"] == [14] and r.json()["tout_l_export"] is False
+
     def test_lister_les_versions(self) -> None:
         source = _recette("LOCKED")
         v2 = _recette("LOCKED", id=5, version=2, recette_racine_id=3)
@@ -675,6 +722,7 @@ class TestExecutions:
             "version": 1,
             "dataset_export_id": 8,
             "document_ids": [14],
+            "champs_exclus": [],
         }
         assert m["dataset"]["id"] == 4
 

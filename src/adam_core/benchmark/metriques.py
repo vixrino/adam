@@ -486,6 +486,18 @@ def _raisons_perimetre(
     return []
 
 
+def _raisons_config(ra: Mapping[str, Any], rb: Mapping[str, Any]) -> List[str]:
+    """Ce qui, dans la config des recettes, change les indicateurs eux-memes.
+
+    calculer() retire les champs exclus avant tout calcul : deux recettes qui
+    n'excluent pas les memes champs ne mesurent pas le meme ensemble. Les
+    seuils ne changent que le verdict, pas les indicateurs compares.
+    """
+    if sorted(ra.get("champs_exclus") or []) != sorted(rb.get("champs_exclus") or []):
+        return ["champs exclus differents"]
+    return []
+
+
 def _moteurs(ea: Mapping[str, Any], eb: Mapping[str, Any]) -> Dict[str, Any]:
     """Le moteur de chaque cote et ce qui change : ce que la comparaison mesure."""
     changements = [
@@ -515,7 +527,7 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
     - recette d'avant les exports : il faut la meme recette.
 
     La comparaison est toujours rendue, mais signalee non comparable si le
-    perimetre, la version du comparateur, l'empreinte du schema, la verite
+    perimetre, les champs exclus par la recette, la version du comparateur, l'empreinte du schema, la verite
     humaine ou le nombre de documents juges different : un ecart n'y mesurerait
     pas le moteur. ``moteur`` dit ce qui change de a a b.
 
@@ -527,7 +539,7 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
     ra, rb = a.get("recette") or {}, b.get("recette") or {}
     ea = {**a["execution"], "documents": a["echantillon"]["documents"], "recette": ra}
     eb = {**b["execution"], "documents": b["echantillon"]["documents"], "recette": rb}
-    raisons = _raisons_perimetre(ea, eb, ra, rb)
+    raisons = _raisons_perimetre(ea, eb, ra, rb) + _raisons_config(ra, rb)
     raisons += [
         f"{libelle} differente"
         for cle, libelle in (
