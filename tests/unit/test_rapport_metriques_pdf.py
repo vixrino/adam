@@ -214,3 +214,42 @@ def test_ligne_des_filtres_longue_passe_a_la_ligne() -> None:
     # marge, et le contour d'un glyphe Helvetica (polices integrees, sans les
     # fichiers de polices/) la depasse d'une fraction invisible.
     assert all(s["bbox"][2] <= droite + 0.5 for s in spans if s["text"].strip())
+
+
+def test_libelles_de_type_tiennent_dans_leur_colonne() -> None:
+    """« CASE À COCHER » debordait sur la colonne Reussite."""
+    from adam_api.services import rapport_metriques_pdf as r
+
+    place = r._COLONNES[2] - r._COLONNES[1] - 2 * r._PADDING
+    for libelle in r._TYPES.values():
+        assert r._REGULIER.largeur(libelle, 11.5) <= place, libelle
+
+
+def test_extraits_longs_restent_dans_la_carte() -> None:
+    """Attendu et Lu passent a la ligne dans la carte au lieu d'en sortir ;
+    une case a cocher s'y lit Oui / Non."""
+    from adam_api.services import rapport_metriques_pdf as r
+
+    adresse = "Batiment C escalier 2, 145 avenue du General de Gaulle prolongee, 94000 Creteil"
+    lignes = [
+        _ligne("dettes.nom_adresse_creancier", vp=1, fp=3),
+        _ligne("vehicules.loa_lld", vp=1, fp=3, value_type="BOOLEAN"),
+    ]
+    extraits = {
+        "dettes.nom_adresse_creancier": [_ecart(4, adresse, "X" * 120)],
+        "vehicules.loa_lld": [_ecart(4, "true", "false")],
+    }
+    document = pymupdf.open("pdf", _rendre(calculer(lignes, EXECUTION), extraits))
+    page = document[0]
+    cartes = [
+        d["rect"] for d in page.get_drawings() if d.get("items") and d["rect"].width < 200
+    ]
+    texte = page.get_text()
+    assert "Oui" in texte and "Non" in texte and "true" not in texte
+    assert "…" in texte  # 120 caracteres sans espace : coupes, puis tronques
+    for bloc in page.get_text("dict")["blocks"]:
+        for ligne in bloc.get("lines", []):
+            boite = pymupdf.Rect(ligne["bbox"])
+            dans = [c for c in cartes if c.intersects(boite)]
+            for carte in dans:
+                assert boite.x1 <= carte.x1 + 0.5, (ligne["spans"][0]["text"], boite, carte)
