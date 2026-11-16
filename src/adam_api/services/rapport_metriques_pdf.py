@@ -216,8 +216,9 @@ _TYPES = {
     "TEXT": "TEXTE",
     "NUMBER": "NOMBRE",
     "DATE": "DATE",
-    "DATETIME": "DATE ET HEURE",
-    "BOOLEAN": "CASE À COCHER",
+    # Courts : la colonne Type n'a que 88 px de texte (test dedie).
+    "DATETIME": "DATE, HEURE",
+    "BOOLEAN": "OUI / NON",
 }
 
 # -- Geometrie de la maquette (px) -----------------------------------------------------
@@ -571,12 +572,18 @@ def _ligne_tableau(p: _Page, y: float, champ: Champ) -> float:
 # -- Extraits --------------------------------------------------------------------------
 
 
-def _valeur(ecart: Mapping[str, Any], cle: str) -> str:
+#: Valeurs d'une case a cocher, telles que le CERFA les imprime.
+_OUI_NON = {"true": "Oui", "false": "Non"}
+
+
+def _valeur(ecart: Mapping[str, Any], cle: str, booleen: bool = False) -> str:
     if ecart.get("sensitive"):
         return "(masquée)"
     valeur = ecart.get(cle)
     if valeur is None or not str(valeur).strip():
         return "(vide)"
+    if booleen:
+        return _OUI_NON.get(str(valeur).strip().lower(), str(valeur))
     return str(valeur)
 
 
@@ -584,14 +591,65 @@ def _lignes_carte(champ: Champ) -> List[str]:
     return _couper(str(champ["champ"]), _FIXE, 10, _CARTE_LARGEUR - 18)
 
 
-def _hauteur_carte(champ: Champ) -> float:
-    """70 px pour une cle sur une ligne : 9 + 13 (cle) + 5 + 12 (document) + 5 + 12 + 9.
+#: Libelles des valeurs d'une carte ; les valeurs s'alignent apres le plus long.
+_LIBELLES_VALEURS = (("Attendu :", "expected_value"), ("Lu :", "observed_value"))
+#: Lignes au plus par valeur : au-dela, la fin est remplacee par « … ».
+_LIGNES_PAR_VALEUR = 3
+
+
+def _retrait_valeurs() -> float:
+    return max(_REGULIER.largeur(f"{libelle} ", 10) for libelle, _ in _LIBELLES_VALEURS)
+
+
+def _couper_mots(texte: str, police: _Police, taille: float, largeur: float) -> List[str]:
+    """Coupe aux espaces ; un mot plus long que la ligne est coupe au caractere."""
+    lignes: List[str] = []
+    courante = ""
+    for mot in texte.split():
+        essai = f"{courante} {mot}" if courante else mot
+        if police.largeur(essai, taille) <= largeur:
+            courante = essai
+            continue
+        if courante:
+            lignes.append(courante)
+        morceaux = _couper(mot, police, taille, largeur)
+        lignes += morceaux[:-1]
+        courante = morceaux[-1]
+    return lignes + [courante] if courante or not lignes else lignes
+
+
+def _booleen(champ: Mapping[str, Any]) -> bool:
+    return champ.get("type") == "BOOLEAN" or champ.get("value_type") == "BOOLEAN"
+
+
+def _lignes_valeur(ecart: Mapping[str, Any], cle: str, booleen: bool = False) -> List[str]:
+    """La valeur coupee pour tenir dans la carte, apres le libelle."""
+    largeur = _CARTE_LARGEUR - 18 - _retrait_valeurs()
+    lignes = _couper_mots(_valeur(ecart, cle, booleen), _GRAS, 10, largeur)
+    if len(lignes) > _LIGNES_PAR_VALEUR:
+        lignes = lignes[:_LIGNES_PAR_VALEUR]
+        derniere = lignes[-1]
+        while derniere and _GRAS.largeur(f"{derniere}…", 10) > largeur:
+            derniere = derniere[:-1]
+        lignes[-1] = f"{derniere.rstrip()}…"
+    return lignes
+
+
+def _hauteur_carte(champ: Champ, ecart: Optional[Champ] = None) -> float:
+    """9 + 13 par ligne de cle + 5 + 12 (document) + 5 + 13 par ligne de valeur
+    (attendu puis lu, 3 de plus entre eux) + 9 : 73 px quand tout tient sur
+    une ligne.
 
     La maquette placait entre la cle et le document une decoupe de la page
     autour du champ ; elle est abandonnee (le moteur OCR ne rend pas de
     position), la carte se resserre d'autant.
     """
-    return 9 + 13 * len(_lignes_carte(champ)) + 5 + 12 + 5 + 12 + 9
+    valeurs = (
+        sum(len(_lignes_valeur(ecart, cle, _booleen(champ))) for _, cle in _LIBELLES_VALEURS)
+        if ecart is not None
+        else len(_LIBELLES_VALEURS)
+    )
+    return 9 + 13 * len(_lignes_carte(champ)) + 5 + 12 + 5 + 13 * valeurs + 3 + 9
 
 
 def _carte(p: _Page, x: float, y: float, hauteur: float, champ: Champ, ecart: Champ) -> None:
@@ -603,20 +661,16 @@ def _carte(p: _Page, x: float, y: float, hauteur: float, champ: Champ, ecart: Ch
     bas = y + 9 + 13 * len(lignes) + 5
     ligne = f"Doc #{ecart.get('document_id')} · page {ecart.get('page')}"
     p.texte(interieur, bas, ligne, _REGULIER, 10, _GRIS)
-    p.morceaux(
-        interieur,
-        bas + 17,
-        (
-            ("Attendu :", _REGULIER, _GRIS),
-            (" ", _REGULIER, _TEXTE),
-            (_valeur(ecart, "expected_value"), _GRAS, _TEXTE),
-            (" · ", _REGULIER, _TEXTE),
-            ("Lu :", _REGULIER, _GRIS),
-            (" ", _REGULIER, _TEXTE),
-            (_valeur(ecart, "observed_value"), _GRAS, _TEXTE),
-        ),
-        10,
-    )
+    # Attendu puis Lu, chacun sur ses lignes, la valeur alignee apres le
+    # libelle le plus long : sur une seule ligne, une adresse sortait de la carte.
+    y_valeur = bas + 17
+    retrait = interieur + _retrait_valeurs()
+    for libelle, cle in _LIBELLES_VALEURS:
+        p.texte(interieur, y_valeur, libelle, _REGULIER, 10, _GRIS)
+        for morceau in _lignes_valeur(ecart, cle, _booleen(champ)):
+            p.texte(retrait, y_valeur, morceau, _GRAS, 10, _TEXTE)
+            y_valeur += 13
+        y_valeur += 3
 
 
 # -- Mise en pages ---------------------------------------------------------------------
@@ -676,7 +730,7 @@ def _tableau(m: _Mise, champs: Sequence[Champ]) -> None:
 def _extraits(m: _Mise, cartes: Sequence[Tuple[Champ, Champ]]) -> None:
     rangees = [cartes[i : i + 3] for i in range(0, len(cartes), 3)]
     for index, rangee in enumerate(rangees):
-        hauteur = max(_hauteur_carte(champ) for champ, _ in rangee)
+        hauteur = max(_hauteur_carte(champ, ecart) for champ, ecart in rangee)
         avec_titre = index == 0
         if not m.tient((17 + 8 if avec_titre else 0) + hauteur):
             m.nouvelle_page()
