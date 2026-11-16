@@ -28,6 +28,7 @@ Usage :
     python scripts/lancer_benchmark.py --dataset-id 4 --documents 12 15
     python scripts/lancer_benchmark.py --recipe-id 2          # rejouer une recette
     python scripts/lancer_benchmark.py --dry-run
+    python scripts/lancer_benchmark.py --execution-id 1      # reprendre une execution
     python scripts/lancer_benchmark.py --sans-migration   # ne jamais migrer
 """
 
@@ -210,17 +211,20 @@ async def _statut(execution_id: int) -> tuple[str, int, int, Optional[str]]:
     m = _module("core.models")
     session_mod = _module("core.db.session")
     E = m.TestExecution
+    # documents_traites vient du ticket progression : un depot qui ne l'a pas
+    # encore suit les documents compares.
+    traites = getattr(E, "documents_traites", None) or E.documents_compared
     async with session_mod.get_async_session() as db:
         ligne = (
             await db.execute(
-                select(E.status, E.documents_traites, E.recipe_id, E.error_message).where(
+                select(E.status, traites.label("traites"), E.recipe_id, E.error_message).where(
                     E.id == execution_id
                 )
             )
         ).one()
         recette = await db.get(m.TestRecipe, ligne.recipe_id)
     total = len(recette.document_ids or []) if recette else 0
-    return str(ligne.status), int(ligne.documents_traites or 0), total, ligne.error_message
+    return str(ligne.status), int(ligne.traites or 0), total, ligne.error_message
 
 
 async def _anterieures_en_attente(execution_id: int) -> List[int]:
@@ -281,12 +285,25 @@ async def _executer(execution_id: int) -> str:
 async def _resultat(execution_id: int, sortie: Path) -> None:
     router = _module("api.routers.benchmark")
     session_mod = _module("core.db.session")
-    filtres = _module("core.benchmark.metriques").FiltresChamps()
+    # Les filtres et le PDF sont venus apres les metriques : un depot plus
+    # ancien a les metriques sans eux, le resultat s'affiche quand meme.
+    classe_filtres = getattr(_module("core.benchmark.metriques"), "FiltresChamps", None)
+    filtres = classe_filtres() if classe_filtres else None
+    pdf = None
     async with session_mod.get_async_session() as db:
-        metriques = await router._metriques(
-            db, execution_id, False, filtres
-        )  # pylint: disable=protected-access
-        pdf = await router.metriques_pdf(execution_id, filtres, None, db)
+        if filtres is not None:
+            metriques = await router._metriques(  # pylint: disable=protected-access
+                db, execution_id, False, filtres
+            )
+        else:
+            metriques = await router._metriques(  # pylint: disable=protected-access
+                db, execution_id, False
+            )
+        if hasattr(router, "metriques_pdf") and filtres is not None:
+            try:
+                pdf = await router.metriques_pdf(execution_id, filtres, None, db)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                print(f"(PDF non genere : {type(exc).__name__}: {exc})")
 
     g = metriques["global"]
     print("\nRESULTAT")
@@ -323,6 +340,9 @@ async def _resultat(execution_id: int, sortie: Path) -> None:
     for avertissement in metriques.get("avertissements") or []:
         print(f"  ! {avertissement}")
 
+    if pdf is None:
+        print("\nPas de rapport PDF dans ce depot : resultat affiche ci-dessus seulement.")
+        return
     sortie.write_bytes(pdf.body)
     print(f"\nPDF ecrit : {sortie.resolve()}")
 
@@ -340,16 +360,28 @@ async def lancer(args: argparse.Namespace) -> None:
         raise SystemExit("COMPARISON_HMAC_KEY absente du .env : l'execution echouerait.")
     await _verifier_base(migrer=not args.sans_migration, dry_run=args.dry_run)
 
-    dataset_id = args.dataset_id
-    if dataset_id is None and args.recipe_id is None:
-        dataset_id = await _choisir_dataset()
-
-    creation = _script_voisin("creer_execution_test")
-    execution_id = await creation.creer(
-        dataset_id, args.documents, args.recipe_id, args.nom, args.matricule, args.dry_run
-    )
+    execution_id = args.execution_id
+    if execution_id is None and not args.nouvelle and not args.dry_run:
+        # Un lancement precedent interrompu laisse son execution en PENDING :
+        # la reprendre, plutot que d'en creer une autre et payer l'OCR deux fois.
+        en_attente = await _anterieures_en_attente(2**31 - 1)
+        if en_attente:
+            execution_id = en_attente[-1]
+            print(
+                f"Execution {execution_id} deja en attente : reprise "
+                "(--nouvelle pour en creer une autre)\n"
+            )
     if execution_id is None:
-        return
+        dataset_id = args.dataset_id
+        if dataset_id is None and args.recipe_id is None:
+            dataset_id = await _choisir_dataset()
+
+        creation = _script_voisin("creer_execution_test")
+        execution_id = await creation.creer(
+            dataset_id, args.documents, args.recipe_id, args.nom, args.matricule, args.dry_run
+        )
+        if execution_id is None:
+            return
 
     statut = await _executer(execution_id)
     if statut != "COMPLETED":
@@ -365,6 +397,10 @@ def main() -> None:
     parser.add_argument("--recipe-id", type=int, help="Rejouer une recette deja figee")
     parser.add_argument("--nom", help="Nom de la recette")
     parser.add_argument("--matricule", help="Createur (defaut : API_DEV_MATRICULE)")
+    parser.add_argument("--execution-id", type=int, help="Reprendre cette execution")
+    parser.add_argument(
+        "--nouvelle", action="store_true", help="Ne pas reprendre une execution en attente"
+    )
     parser.add_argument("--sortie", type=Path, help="PDF (defaut rapport_test_<id>.pdf)")
     parser.add_argument("--dry-run", action="store_true", help="Rien n'est ecrit ni migre")
     parser.add_argument("--sans-migration", action="store_true", help="Ne jamais migrer")
