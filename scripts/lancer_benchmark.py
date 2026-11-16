@@ -3,6 +3,9 @@ scripts/lancer_benchmark.py
 ---------------------------
 Lance un banc d'essai OCR de bout en bout, en une commande :
 
+0. prepare la base : ignore un POSTGRES_DB reste pose dans le terminal (la
+   base est celle du .env), verifie que les tables du benchmark ont toutes
+   leurs colonnes et, sinon, applique les migrations (alembic upgrade heads) ;
 1. choisit le dataset (celui qui a le plus de documents a verite humaine, ou
    --dataset-id) ;
 2. fige ses documents verifies dans un export, cree la recette et l'execution
@@ -25,6 +28,7 @@ Usage :
     python scripts/lancer_benchmark.py --dataset-id 4 --documents 12 15
     python scripts/lancer_benchmark.py --recipe-id 2          # rejouer une recette
     python scripts/lancer_benchmark.py --dry-run
+    python scripts/lancer_benchmark.py --sans-migration   # ne jamais migrer
 """
 
 from __future__ import annotations
@@ -34,6 +38,8 @@ import asyncio
 import importlib
 import importlib.util
 import logging
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -69,6 +75,97 @@ def _script_voisin(nom: str) -> Any:
 
 def _pct(valeur: Any) -> str:
     return "-" if valeur is None else f"{float(valeur) * 100:.1f} %"
+
+
+# -- 0. Base a jour -----------------------------------------------------------
+
+#: Tables que le benchmark lit ou ecrit : une colonne du modele absente de la
+#: base veut dire une migration non appliquee.
+TABLES_BENCHMARK = (
+    "DatasetExport",
+    "TestRecipe",
+    "TestExecution",
+    "ComparisonResult",
+    "EvaluationReport",
+)
+
+
+async def _colonnes_manquantes() -> List[str]:
+    """Colonnes des modeles du benchmark absentes de la base ("table.colonne")."""
+    from sqlalchemy import text
+
+    m = _module("core.models")
+    session_mod = _module("core.db.session")
+    manquantes: List[str] = []
+    async with session_mod.get_async_session() as db:
+        for nom in TABLES_BENCHMARK:
+            table = getattr(m, nom).__table__
+            schema = table.schema or (await db.execute(text("SELECT current_schema()"))).scalar()
+            presentes = set(
+                (
+                    await db.execute(
+                        text(
+                            "SELECT column_name FROM information_schema.columns "
+                            "WHERE table_schema = :schema AND table_name = :table"
+                        ),
+                        {"schema": schema, "table": table.name},
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not presentes:
+                manquantes.append(f"{table.name} (table absente)")
+                continue
+            manquantes += [
+                f"{table.name}.{c.name}" for c in table.columns if c.name not in presentes
+            ]
+    return manquantes
+
+
+def _migrer() -> None:
+    """alembic upgrade heads, depuis la racine du depot (.env)."""
+    ini = SRC / f"{_prefixe()}_core" / "alembic.ini"
+    commande = [sys.executable, "-m", "alembic", "-c", str(ini), "upgrade", "heads"]
+    print(f"Migrations : {' '.join(commande[1:])}")
+    resultat = subprocess.run(
+        commande, cwd=ROOT, env=os.environ.copy(), capture_output=True, text=True, check=False
+    )
+    lignes = (resultat.stdout + resultat.stderr).strip().splitlines()
+    for ligne in lignes:
+        if "Running upgrade" in ligne:
+            print(f"  {ligne.strip()}")
+    if resultat.returncode != 0:
+        print("\n".join(f"  {ligne}" for ligne in lignes[-15:]))
+        raise SystemExit(
+            "Echec des migrations : rien n'a ete lance. Collez la sortie ci-dessus, avec "
+            f"celle de : uv run --all-extras alembic -c {ini.relative_to(ROOT)} heads"
+        )
+
+
+async def _verifier_base(migrer: bool, dry_run: bool) -> None:
+    manquantes = await _colonnes_manquantes()
+    if not manquantes:
+        print("Base a jour pour le benchmark.\n")
+        return
+    print(f"Base en retard sur le code : {len(manquantes)} colonne(s) manquante(s)")
+    for colonne in manquantes[:10]:
+        print(f"  - {colonne}")
+    if dry_run:
+        print("(dry-run) les migrations seraient appliquees au vrai lancement : arret ici.")
+        raise SystemExit(0)
+    if not migrer:
+        raise SystemExit("--sans-migration : appliquez les migrations, puis relancez.")
+    # alembic ouvre sa propre boucle asyncio : il tourne dans un processus a part.
+    await asyncio.to_thread(_migrer)
+    restantes = await _colonnes_manquantes()
+    if restantes:
+        raise SystemExit(
+            "Migrations appliquees, mais il manque encore : "
+            + ", ".join(restantes[:10])
+            + ". La migration correspondante n'est pas dans ce depot."
+        )
+    print("Base migree et a jour.\n")
 
 
 # -- 1. Choix du dataset ------------------------------------------------------
@@ -241,6 +338,7 @@ async def lancer(args: argparse.Namespace) -> None:
     )
     if not api_settings.comparison_hmac_key:
         raise SystemExit("COMPARISON_HMAC_KEY absente du .env : l'execution echouerait.")
+    await _verifier_base(migrer=not args.sans_migration, dry_run=args.dry_run)
 
     dataset_id = args.dataset_id
     if dataset_id is None and args.recipe_id is None:
@@ -268,8 +366,22 @@ def main() -> None:
     parser.add_argument("--nom", help="Nom de la recette")
     parser.add_argument("--matricule", help="Createur (defaut : API_DEV_MATRICULE)")
     parser.add_argument("--sortie", type=Path, help="PDF (defaut rapport_test_<id>.pdf)")
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="Rien n'est ecrit ni migre")
+    parser.add_argument("--sans-migration", action="store_true", help="Ne jamais migrer")
+    parser.add_argument(
+        "--garder-postgres-db",
+        action="store_true",
+        help="Utiliser POSTGRES_DB du terminal au lieu de celui du .env",
+    )
     args = parser.parse_args()
+
+    # Les variables d'environnement priment sur le .env : un POSTGRES_DB reste
+    # pose apres une demo ferait viser (et migrer) la base de demo.
+    if os.environ.get("POSTGRES_DB") and not args.garder_postgres_db:
+        print(
+            f"POSTGRES_DB={os.environ.pop('POSTGRES_DB')} du terminal ignore : base du .env "
+            "(--garder-postgres-db pour le garder)"
+        )
 
     core = _module("core.core.config").get_core_settings()
     try:
