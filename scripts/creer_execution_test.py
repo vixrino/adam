@@ -55,7 +55,8 @@ async def creer(
     nom: Optional[str],
     matricule: Optional[str],
     dry_run: bool,
-) -> None:
+) -> Optional[int]:
+    """Cree l'execution et rend son id (None en dry-run)."""
     core, api = _paquets()
     from sqlalchemy import func, select
 
@@ -196,10 +197,11 @@ async def creer(
         if dry_run:
             print(" (dry-run) rien n'est ecrit")
             await db.rollback()
-            return
+            return None
         db.add(execution)
         await db.flush()
         print(f" execution id={execution.id} creee en PENDING : le worker la prendra")
+        return int(execution.id)
 
 
 def main() -> None:
