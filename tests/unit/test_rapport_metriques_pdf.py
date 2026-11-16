@@ -253,3 +253,16 @@ def test_extraits_longs_restent_dans_la_carte() -> None:
             dans = [c for c in cartes if c.intersects(boite)]
             for carte in dans:
                 assert boite.x1 <= carte.x1 + 0.5, (ligne["spans"][0]["text"], boite, carte)
+
+
+def test_cle_coupee_a_ses_separateurs() -> None:
+    """Une cle trop longue se coupe avant « [ » ou apres « . », pas en plein mot."""
+    from adam_api.services import rapport_metriques_pdf as r
+
+    largeur = r._CARTE_LARGEUR - 18
+    assert r._couper_cle("autres_prets.date_octroi[autre_pret_1]", r._FIXE, 10, largeur) == [
+        "autres_prets.date_octroi",
+        "[autre_pret_1]",
+    ]
+    # Sans separateur, on retombe sur la coupe au caractere, sans rien perdre.
+    assert "".join(r._couper_cle("a" * 80, r._FIXE, 10, largeur)) == "a" * 80

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import html
 import math
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
@@ -362,6 +363,33 @@ def _couper(texte: str, police: _Police, taille: float, largeur: float) -> List[
     return lignes + [courante] if courante or not lignes else lignes
 
 
+#: Coupures d'une cle de champ, par preference : apres « . » ou avant « [ »,
+#: puis apres « _ », puis au caractere.
+_COUPURES_CLE = (re.compile(r"(?<=\.)|(?=\[)"), re.compile(r"(?<=_)"))
+
+
+def _couper_cle(
+    texte: str, police: _Police, taille: float, largeur: float, niveau: int = 0
+) -> List[str]:
+    """Coupe une cle de champ a ses separateurs plutot qu'au milieu d'un mot :
+    « autres_prets.date_octroi[autre_pret_1] » se coupe avant le « [ », plus en
+    « ...[autre_pre » / « t_1] »."""
+    if niveau >= len(_COUPURES_CLE):
+        return _couper(texte, police, taille, largeur)
+    lignes: List[str] = []
+    courante = ""
+    for morceau in (m for m in _COUPURES_CLE[niveau].split(texte) if m):
+        if police.largeur(courante + morceau, taille) <= largeur:
+            courante += morceau
+            continue
+        if courante:
+            lignes.append(courante)
+        coupes = _couper_cle(morceau, police, taille, largeur, niveau + 1)
+        lignes += coupes[:-1]
+        courante = coupes[-1]
+    return lignes + [courante] if courante or not lignes else lignes
+
+
 def _nombre(n: Any) -> str:
     return f"{int(n or 0):,}".replace(",", " ")
 
@@ -523,7 +551,7 @@ def _entete_tableau(p: _Page, y: float) -> float:
 
 def _lignes_cle(champ: Champ) -> List[str]:
     largeur = _COLONNES[1] - _COLONNES[0] - 2 * _PADDING
-    return _couper(str(champ["champ"]), _FIXE, 10.5, largeur)
+    return _couper_cle(str(champ["champ"]), _FIXE, 10.5, largeur)
 
 
 def _hauteur_ligne(champ: Champ) -> float:
@@ -588,7 +616,7 @@ def _valeur(ecart: Mapping[str, Any], cle: str, booleen: bool = False) -> str:
 
 
 def _lignes_carte(champ: Champ) -> List[str]:
-    return _couper(str(champ["champ"]), _FIXE, 10, _CARTE_LARGEUR - 18)
+    return _couper_cle(str(champ["champ"]), _FIXE, 10, _CARTE_LARGEUR - 18)
 
 
 #: Libelles des valeurs d'une carte ; les valeurs s'alignent apres le plus long.
