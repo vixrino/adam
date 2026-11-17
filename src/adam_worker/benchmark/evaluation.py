@@ -115,7 +115,15 @@ def _classer(agregat: Agregat, attendu: Any, lu: Any, ecart: Any) -> None:
     texte_attendu = _texte(str(attendu)) if attendu is not None else ""
     texte_lu = _texte(str(lu)) if lu is not None else ""
     agregat.somme_longueur_attendue += len(texte_attendu)
-    if attendu is None and lu is None:
+    if ecart is None:
+        # Le comparateur fait foi : une case vide contre « false », ou « ORCHIE. »
+        # contre « ORCHIE », concordent. Classer sur les valeurs brutes comptait
+        # ces champs en valeurs inventees ou manquees sans ecart enregistre.
+        if attendu is None or not texte_attendu:
+            agregat.vn += 1
+        else:
+            agregat.vp += 1
+    elif attendu is None and lu is None:
         agregat.vn += 1
     elif attendu is None:
         agregat.fp += 1
@@ -123,8 +131,6 @@ def _classer(agregat: Agregat, attendu: Any, lu: Any, ecart: Any) -> None:
     elif lu is None:
         agregat.fn += 1
         agregat.somme_distance += len(texte_attendu)
-    elif ecart is None:
-        agregat.vp += 1
     else:
         agregat.fp += 1
         agregat.fn += 1

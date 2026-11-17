@@ -43,10 +43,12 @@ from adam_core.utils.field_parser import parse_field_value
 #: Version de la regle de comparaison (normalisation, verdicts, matrice). A
 #: incrementer a chaque changement : deux executions dont la version differe ne
 #: se comparent pas, un meme moteur pouvant y gagner ou perdre des points.
-COMPARATEUR_VERSION = "2"
+COMPARATEUR_VERSION = "3"
 # 2 : ponctuation et espaces ignores dans un texte, false = vide pour un
 #     booleen. Les ecarts de forme (virgule ajoutee par la fusion nom/adresse,
 #     point final, telephone espace) comptaient comme des lectures fausses.
+# 3 : la matrice (justes, fausses, manquees, inventees) suit le comparateur ;
+#     en version 2, un champ concordant pouvait y compter comme une erreur.
 
 #: Tolerance sur les nombres : deux montants lus « 1738.26 » et « 1738.2600001 »
 #: sont la meme lecture.

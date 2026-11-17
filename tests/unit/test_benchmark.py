@@ -765,3 +765,16 @@ class TestComparateurV2:
         assert comparer("true", None, "BOOLEAN") is not None
         assert comparer(None, "true", "BOOLEAN") is not None
         assert comparer("true", "false", "BOOLEAN") is not None
+
+    def test_matrice_suit_le_comparateur(self) -> None:
+        """Execution 7 : 51 ecarts enregistres, mais 102 erreurs dans les taux."""
+        verite = [
+            _champ(1, None, cle="locataire", value_type="BOOLEAN"),
+            _champ(2, "ORCHIE.", cle="localite"),
+        ]
+        ocr = _ocr(_kv("deposant.locataire", "false"), _kv("deposant.localite", "ORCHIE"))
+        resultat = evaluer_document(verite, ocr, 9, CLE)
+        assert resultat.ecarts == []
+        case, ville = resultat.agregats[1], resultat.agregats[2]
+        assert (case.vp, case.fp, case.fn, case.vn) == (0, 0, 0, 1)
+        assert (ville.vp, ville.fp, ville.fn, ville.vn) == (1, 0, 0, 0)
