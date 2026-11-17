@@ -33,6 +33,7 @@ from adam_core.schemas.interface_contract import (
 )
 from adam_worker.benchmark import depot as depot_module
 from adam_worker.benchmark.comparateur import (
+    COMPARATEUR_VERSION,
     categorie,
     comparer,
     distance_edition,
@@ -302,7 +303,7 @@ class TestWorker:
         assert depot.fin["agregats"][1].compared == 2
         assert depot.fin["agregats"][1].diff_count == 1
         assert depot.fin["message"] is None
-        assert depot.identite[0] == "1" and len(depot.identite[1]) == 16
+        assert depot.identite[0] == COMPARATEUR_VERSION and len(depot.identite[1]) == 16
 
     def test_rien_en_attente(self) -> None:
         depot = _FauxDepot(None, [])
@@ -732,3 +733,35 @@ def test_documents_absents_signales() -> None:
     asyncio.run(_worker(depot, connecteur).poll())
     assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
     assert "documents de la recette absents de la base : [2]" in depot.fin["message"]
+
+
+class TestComparateurV2:
+    """Retours du passage sur 10 CERFA : des ecarts de forme comptaient comme fautes."""
+
+    def test_ponctuation_et_espaces_ignores(self) -> None:
+        from adam_worker.benchmark.comparateur import comparer
+
+        for attendu, lu in [
+            ("3F SUD, 112 BD des Dames 13002 MARSEILLE", "3F SUD 112 BD des Dames 13002 MARSEILLE"),
+            ("ORCHIE.", "ORCHIE"),
+            ("0624 02 84 85", "0624028485"),
+            ("000122026725 R", "000122026725R"),
+            ("Problèmes de santé importants", "Problèmes de santé importants-"),
+        ]:
+            assert comparer(attendu, lu, "TEXT") is None, (attendu, lu)
+
+    def test_vraie_erreur_toujours_vue(self) -> None:
+        from adam_worker.benchmark.comparateur import comparer
+
+        assert comparer("061189449", "061184490", "TEXT") is not None
+        assert comparer(None, "boyj@gmail.com", "TEXT") is not None
+        assert comparer(".", None, "TEXT") is None
+
+    def test_case_vide_vaut_non(self) -> None:
+        from adam_worker.benchmark.comparateur import comparer
+
+        assert comparer(None, "false", "BOOLEAN") is None
+        assert comparer("false", None, "BOOLEAN") is None
+        assert comparer("true", None, "BOOLEAN") is not None
+        assert comparer(None, "true", "BOOLEAN") is not None
+        assert comparer("true", "false", "BOOLEAN") is not None

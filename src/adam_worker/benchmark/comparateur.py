@@ -6,10 +6,13 @@ champ par champ, et seuls les ecarts qu'elles signalent sont ecrits.
 Comparaison normalisee
 ----------------------
 Un ecart doit mesurer une erreur de lecture, pas une difference de forme :
-    TEXT      casse, accents et espaces ignores (« Mme  THÉRY » = « mme thery »)
+    TEXT      casse, accents, espaces et ponctuation ignores : seules les
+              lettres et les chiffres comptent (« Mme  THÉRY. » = « mme thery »,
+              « 06 28 96 » = « 062896 », « 3F SUD, 112 BD » = « 3F SUD 112 BD »)
     NUMBER    par valeur (« 1 738,26 » = « 1738.26 »)
     DATE      par date (« 17/09/1969 » = « 17/09/69 » = « 1969-09-17 »)
-    BOOLEAN   par valeur (« true » = « oui »)
+    BOOLEAN   par valeur (« true » = « oui ») ; une case vide vaut non : false
+              et une case laissee vide concordent
 
 Verdicts
 --------
@@ -40,7 +43,10 @@ from adam_core.utils.field_parser import parse_field_value
 #: Version de la regle de comparaison (normalisation, verdicts, matrice). A
 #: incrementer a chaque changement : deux executions dont la version differe ne
 #: se comparent pas, un meme moteur pouvant y gagner ou perdre des points.
-COMPARATEUR_VERSION = "1"
+COMPARATEUR_VERSION = "2"
+# 2 : ponctuation et espaces ignores dans un texte, false = vide pour un
+#     booleen. Les ecarts de forme (virgule ajoutee par la fusion nom/adresse,
+#     point final, telephone espace) comptaient comme des lectures fausses.
 
 #: Tolerance sur les nombres : deux montants lus « 1738.26 » et « 1738.2600001 »
 #: sont la meme lecture.
@@ -80,6 +86,11 @@ def _date(valeur: str) -> Any:
     return _texte(valeur)
 
 
+def _lettres_chiffres(valeur: str) -> str:
+    """Forme d'un texte compare : lettres et chiffres seuls, sans accents."""
+    return "".join(c for c in _texte(valeur) if c.isalnum())
+
+
 def normaliser(valeur: Optional[str], value_type: Optional[str]) -> Any:
     """Forme comparable d'une valeur ; None pour une valeur absente ou vide."""
     if valeur is None or not str(valeur).strip():
@@ -91,7 +102,7 @@ def normaliser(valeur: Optional[str], value_type: Optional[str]) -> Any:
     if type_ in (FieldValueType.NUMBER.value, FieldValueType.BOOLEAN.value):
         parsee = parse_field_value(brut, type_)
         return parsee if parsee != brut else _texte(brut)
-    return _texte(brut)
+    return _lettres_chiffres(brut) or None
 
 
 def _egaux(attendu: Any, lu: Any) -> bool:
@@ -142,6 +153,12 @@ def comparer(
     """L'ecart entre la verite et la lecture, ou None si elles concordent."""
     forme_attendue = normaliser(attendu, value_type)
     forme_lue = normaliser(lu, value_type)
+    if (value_type or "").upper() == FieldValueType.BOOLEAN.value and {
+        forme_attendue,
+        forme_lue,
+    } <= {None, False}:
+        # Case non cochee : « non » et « rien » sont la meme lecture.
+        return None
     if forme_attendue is None and forme_lue is None:
         return None
     if forme_attendue is not None and forme_lue is None:
