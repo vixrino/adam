@@ -260,11 +260,17 @@ _PAGE_1: Dict[str, FieldDef] = {
         "format": "date",
     },
     "certification.signature_deposant": {
-        "description": "Signature du deposant",
+        "description": (
+            "Signature du deposant : true si une signature figure a son emplacement, "
+            "false si l'emplacement est vide"
+        ),
         "type": "boolean",
     },
     "certification.signature_codeposant": {
-        "description": "Signature du co-deposant",
+        "description": (
+            "Signature du co-deposant : true si une signature figure a son emplacement, "
+            "false si l'emplacement est vide, meme sans co-deposant"
+        ),
         "type": "boolean",
     },
 }
@@ -543,8 +549,9 @@ _EPARGNE = {
     "parts_sci": "Parts de SCI",
 }
 
-#: Page 3, situation professionnelle et ressources mensuelles. Une seule case
-#: de statut est cochee par colonne : sa date « depuis le » est relevee seule.
+#: Page 3, situation professionnelle et ressources mensuelles. Chaque case de
+#: statut a sa date « depuis le » sur sa ligne, et plusieurs cases peuvent etre
+#: cochees (salarie en CDD et etudiant) : chaque date suit sa case.
 _PAGE_3: Dict[str, FieldDef] = {
     **_colonnes(
         "situation_professionnelle",
@@ -555,17 +562,23 @@ _PAGE_3: Dict[str, FieldDef] = {
             },
             "qualification": {"description": "Qualification", "type": "string"},
             **{
-                f"statut_{cle}": {"description": f"Case {libelle}", "type": "boolean"}
+                champ: spec
                 for cle, libelle in _STATUTS.items()
+                for champ, spec in (
+                    (f"statut_{cle}", {"description": f"Case {libelle}", "type": "boolean"}),
+                    (
+                        f"statut_{cle}_depuis",
+                        {
+                            "description": f"{libelle} depuis le",
+                            "type": "string",
+                            "format": "date",
+                        },
+                    ),
+                )
             },
             "statut_autre_precision": {
                 "description": "Precision ecrite a cote de la case Autre",
                 "type": "string",
-            },
-            "depuis": {
-                "description": "Date « depuis le » en face de la case de statut cochee",
-                "type": "string",
-                "format": "date",
             },
         },
     ),
@@ -580,11 +593,16 @@ _PAGE_3: Dict[str, FieldDef] = {
     ),
 }
 
-#: Page 4, charges, vehicules et gestion du budget.
+#: Page 4, dans l'ordre du CERFA : charges, gestion du budget, vehicules.
 _PAGE_4: Dict[str, FieldDef] = {
     **_colonnes(
         "charges_mensuelles", {cle: _montant(libelle) for cle, libelle in _CHARGES.items()}
     ),
+    **_oui_non("gestion_budget.compte_bancaire", "Avez-vous au moins un compte bancaire"),
+    "gestion_budget.iban": {
+        "description": "IBAN des comptes declares, tels qu'ecrits",
+        "type": "string",
+    },
     "vehicules.type": {"description": "Type de vehicule", "type": "string"},
     **_oui_non(
         "vehicules.loa_lld",
@@ -593,11 +611,6 @@ _PAGE_4: Dict[str, FieldDef] = {
     "vehicules.valeur_estimee": {
         "description": "Valeur estimee en euros, si la case LOA/LLD non est cochee",
         "type": "number",
-    },
-    **_oui_non("gestion_budget.compte_bancaire", "Avez-vous au moins un compte bancaire"),
-    "gestion_budget.iban": {
-        "description": "IBAN des comptes declares, tels qu'ecrits",
-        "type": "string",
     },
 }
 
@@ -691,17 +704,20 @@ _PAGE_8: Dict[str, FieldDef] = {
     **_poursuites("locations_diverses", "location"),
 }
 
-#: Page 11, dans l'ordre de lecture : cause du surendettement, fin du tableau
-#: des credits a la consommation (prets n° 7 et 8, memes cles que la page 10,
-#: lignes distinctes par group_id), autres prets, cautionnement.
+#: Page 11, dans l'ordre du CERFA : fin du tableau des credits a la
+#: consommation (prets n° 7 et 8, memes cles que la page 10, lignes distinctes
+#: par group_id), autres prets, cautionnement, puis cause du surendettement.
 _PAGE_11: Dict[str, FieldDef] = {
-    "cause_surendettement.texte": {
-        "description": "Cause principale du depot du dossier, telle qu'ecrite",
-        "type": "string",
-    },
     **_CREDITS_CONSOMMATION,
     **_credit("autres_prets", "autre pret (pret familial, employeur, CAF...)"),
-    **_nom_adresse("cautionnement", "dette cautionnee"),
+    "cautionnement.nom_adresse_creancier": {
+        "description": (
+            "Nom et adresse du creancier, dette cautionnee. La mention imprimee "
+            "« Joindre un justificatif avec adresse » n'est pas une valeur : "
+            "case vide si rien n'est ecrit a la main"
+        ),
+        "type": "string",
+    },
     "cautionnement.reference": {
         "description": "Reference de la dette cautionnee",
         "type": "string",
@@ -712,6 +728,10 @@ _PAGE_11: Dict[str, FieldDef] = {
     },
     "cautionnement.personne_cautionnee": {
         "description": "Nom de la personne ou de la societe cautionnee",
+        "type": "string",
+    },
+    "cause_surendettement.texte": {
+        "description": "Cause principale du depot du dossier, telle qu'ecrite",
         "type": "string",
     },
 }
@@ -736,8 +756,8 @@ CERFA_V2_PAGE_FIELDS: Dict[int, Dict[str, FieldDef]] = {
 #: et non a son rang : un CERFA reel est arrive pages 9 et 10 inversees.
 #: Releves sur le CERFA vierge de la Banque de France, qui imprime aussi
 #: « page N/12 » en tete de chaque page. Les pages 10 et 11 portent toutes deux
-#: les credits a la consommation ; la page 11 s'ouvre sur la cause du
-#: surendettement et porte ensuite autres prets et cautionnement. Les pages sans
+#: les credits a la consommation ; la page 11 porte aussi autres prets et
+#: cautionnement, et se termine par la cause du surendettement. Les pages sans
 #: champs y figurent aussi : les reconnaitre permet de distinguer une page
 #: deplacee d'une page etrangere au formulaire.
 CERFA_V2_PAGE_TITLES: Dict[int, str] = {
@@ -776,9 +796,9 @@ CERFA_V2_PAGE_TITLES: Dict[int, str] = {
         "prets ou le cautionnement est la page 11, pas celle-ci"
     ),
     11: (
-        "Cause de votre situation de surendettement ; Credits a la consommation, "
-        "prets n° 7 et 8 ; Autres prets (prets familiaux, pret employeur, pret "
-        "CAF...) ; Cautionnement"
+        "Credits a la consommation, prets n° 7 et 8 ; Autres prets (prets "
+        "familiaux, pret employeur, pret CAF...) ; Cautionnement ; Cause de votre "
+        "situation de surendettement"
     ),
     12: "Avertissement : adresse a laquelle renvoyer le dossier",
 }
