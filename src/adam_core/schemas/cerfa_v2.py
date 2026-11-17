@@ -710,7 +710,14 @@ _PAGE_8: Dict[str, FieldDef] = {
 _PAGE_11: Dict[str, FieldDef] = {
     **_CREDITS_CONSOMMATION,
     **_credit("autres_prets", "autre pret (pret familial, employeur, CAF...)"),
-    **_nom_adresse("cautionnement", "dette cautionnee"),
+    "cautionnement.nom_adresse_creancier": {
+        "description": (
+            "Nom et adresse du creancier, dette cautionnee. La mention imprimee "
+            "« Joindre un justificatif avec adresse » n'est pas une valeur : "
+            "case vide si rien n'est ecrit a la main"
+        ),
+        "type": "string",
+    },
     "cautionnement.reference": {
         "description": "Reference de la dette cautionnee",
         "type": "string",
