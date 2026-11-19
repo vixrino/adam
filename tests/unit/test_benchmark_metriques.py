@@ -53,7 +53,7 @@ class TestFormules:
             50,
         )
         assert b["valeurs_jugees"] == 11  # chaque valeur dans une seule case
-        assert b["taux_erreur"] == round(3 / 11, 4)
+        assert b["taux_erreur"] == round(3 / 11, 6)
 
     def test_pas_de_fourchette_par_champ(self) -> None:
         assert "fourchette_lectures_justes" in bloc([_ligne("a.b", vp=8)])
@@ -371,3 +371,10 @@ class TestLibellesEtEchantillon:
         assert m["echantillon"]["champs_par_document"] == 642
         vide = calculer([_ligne("a.b", vp=1)], dict(EXECUTION, documents_compared=0))
         assert vide["echantillon"]["champs_par_document"] is None
+
+
+def test_pas_de_double_arrondi() -> None:
+    """Execution 9 : F1 = 1622/1694 = 95,7497 %, affiche 95,8 % apres deux arrondis."""
+    from adam_core.benchmark.metriques import _arrondi
+
+    assert round(_arrondi(1622 / 1694) * 100, 1) == 95.7

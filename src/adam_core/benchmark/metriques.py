@@ -146,7 +146,7 @@ def bloc(lignes: Iterable[Mapping[str, Any]], fourchettes: bool = True) -> Dict[
 
 
 def _arrondi(valeur: Optional[float]) -> Optional[float]:
-    return round(valeur, 4) if valeur is not None else None
+    return round(valeur, 6) if valeur is not None else None
 
 
 def _criticite(ligne: Mapping[str, Any]) -> str:
