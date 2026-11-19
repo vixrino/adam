@@ -30,6 +30,9 @@ Usage :
     python scripts/lancer_benchmark.py --dry-run
     python scripts/lancer_benchmark.py --execution-id 1      # reprendre une execution
     python scripts/lancer_benchmark.py --sans-migration   # ne jamais migrer
+    python scripts/lancer_benchmark.py --contre 9 --consigne scripts/consignes/consigne_v2.txt
+                                          # meme export que l'execution 9, autre consigne,
+                                          # puis comparaison des deux
 """
 
 from __future__ import annotations
@@ -44,7 +47,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -350,6 +353,56 @@ async def _resultat(execution_id: int, sortie: Path) -> None:
 # -- Orchestration ------------------------------------------------------------
 
 
+async def _reference(execution_id: int) -> Tuple[int, int]:
+    """(dataset, export) de l'execution de reference, pour rejouer le meme export."""
+    m = _module("core.models")
+    async with _module("core.db.session").get_async_session() as db:
+        execution = await db.get(m.TestExecution, execution_id)
+        if execution is None:
+            raise SystemExit(f"execution {execution_id} introuvable (--contre)")
+        recette = await db.get(m.TestRecipe, execution.recipe_id)
+    if recette is None or recette.dataset_export_id is None:
+        raise SystemExit(f"execution {execution_id} : recette sans export, --contre impossible")
+    return int(recette.dataset_id), int(recette.dataset_export_id)
+
+
+def _config(consigne: Optional[Path]) -> Optional[Dict[str, Any]]:
+    """Config de la nouvelle recette : la consigne du fichier, validee comme par l'API."""
+    if consigne is None:
+        return None
+    texte = consigne.read_text(encoding="utf-8").strip()
+    ocr = _module("core.benchmark.recette").ConfigOcr(prompt=texte)
+    print(f"Consigne : {consigne} ({len(texte)} caracteres)")
+    return {"ocr": ocr.model_dump(exclude_none=True)}
+
+
+async def _comparer(a: int, b: int) -> None:
+    """Le verdict de la comparaison a -> b, comme la page de comparaison."""
+    router = _module("api.routers.benchmark")
+    metriques = _module("core.benchmark.metriques")
+    async with _module("core.db.session").get_async_session() as db:
+        resultat = metriques.comparer(
+            await router._metriques(db, a, True),  # pylint: disable=protected-access
+            await router._metriques(db, b, True),  # pylint: disable=protected-access
+        )
+    print(f"\nCOMPARAISON {a} -> {b}")
+    print(f"  comparable : {'oui' if resultat['comparable'] else 'NON'}")
+    for raison in resultat["raisons"]:
+        print(f"    - {raison}")
+    for nom, valeurs in resultat["global"].items():
+        if isinstance(valeurs.get("a"), (int, float)) and isinstance(
+            valeurs.get("b"), (int, float)
+        ):
+            print(f"  {nom:<26} {valeurs['a']:>8} -> {valeurs['b']:<8}")
+    champs = [c for c in resultat["par_champ"] if c["ecart_pts"]]
+    pertes = [c for c in champs if c["ecart_pts"] < 0][:8]
+    gains = sorted((c for c in champs if c["ecart_pts"] > 0), key=lambda c: -c["ecart_pts"])[:8]
+    for titre, liste in (("regressions", pertes), ("gains", gains)):
+        print(f"  {titre} :" + ("" if liste else " aucune"))
+        for c in liste:
+            print(f"    {c['champ']:<52} {c['ecart_pts']:+.1f} pts")
+
+
 async def lancer(args: argparse.Namespace) -> None:
     api_settings = _module("api.core.config").settings
     base = _module("core.core.config").get_core_settings().postgres_db
@@ -361,6 +414,12 @@ async def lancer(args: argparse.Namespace) -> None:
     await _verifier_base(migrer=not args.sans_migration, dry_run=args.dry_run)
 
     execution_id = args.execution_id
+    config = _config(args.consigne)
+    export_id = None
+    if args.contre is not None:
+        args.dataset_id, export_id = await _reference(args.contre)
+        print(f"Reference : execution {args.contre}, meme export ({export_id})\n")
+        args.nouvelle = True
     if execution_id is None and not args.nouvelle and not args.dry_run:
         # Un lancement precedent interrompu laisse son execution en PENDING :
         # la reprendre, plutot que d'en creer une autre et payer l'OCR deux fois.
@@ -378,7 +437,14 @@ async def lancer(args: argparse.Namespace) -> None:
 
         creation = _script_voisin("creer_execution_test")
         execution_id = await creation.creer(
-            dataset_id, args.documents, args.recipe_id, args.nom, args.matricule, args.dry_run
+            dataset_id,
+            args.documents,
+            args.recipe_id,
+            args.nom,
+            args.matricule,
+            args.dry_run,
+            config=config,
+            export_id=export_id,
         )
         if execution_id is None:
             return
@@ -387,6 +453,8 @@ async def lancer(args: argparse.Namespace) -> None:
     if statut != "COMPLETED":
         raise SystemExit(1)
     await _resultat(execution_id, args.sortie or Path(f"rapport_test_{execution_id}.pdf"))
+    if args.contre is not None:
+        await _comparer(args.contre, execution_id)
 
 
 def main() -> None:
@@ -402,6 +470,15 @@ def main() -> None:
         "--nouvelle", action="store_true", help="Ne pas reprendre une execution en attente"
     )
     parser.add_argument("--sortie", type=Path, help="PDF (defaut rapport_test_<id>.pdf)")
+    parser.add_argument(
+        "--consigne", type=Path, help="Fichier texte : consigne du modele pour cette recette"
+    )
+    parser.add_argument(
+        "--contre",
+        type=int,
+        metavar="EXECUTION_ID",
+        help="Rejouer l'export de cette execution, puis comparer les deux",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Rien n'est ecrit ni migre")
     parser.add_argument("--sans-migration", action="store_true", help="Ne jamais migrer")
     parser.add_argument(

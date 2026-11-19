@@ -32,7 +32,7 @@ import importlib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -55,8 +55,15 @@ async def creer(
     nom: Optional[str],
     matricule: Optional[str],
     dry_run: bool,
+    config: Optional[Dict[str, Any]] = None,
+    export_id: Optional[int] = None,
 ) -> Optional[int]:
-    """Cree l'execution et rend son id (None en dry-run)."""
+    """Cree l'execution et rend son id (None en dry-run).
+
+    config : configuration de la nouvelle recette (moteur, consigne...).
+    export_id : partir de cet export plutot que d'en figer un nouveau ; deux
+    recettes sur le meme export donnent des executions comparables.
+    """
     core, api = _paquets()
     from sqlalchemy import func, select
 
@@ -109,7 +116,13 @@ async def creer(
             dataset = await db.get(Dataset, dataset_id)
             if dataset is None:
                 raise SystemExit(f"dataset {dataset_id} introuvable")
-            if documents:
+            export_existant = None
+            if export_id is not None:
+                export_existant = await db.get(modeles.DatasetExport, export_id)
+                if export_existant is None or export_existant.dataset_id != dataset_id:
+                    raise SystemExit(f"export {export_id} absent du dataset {dataset_id}")
+                documents = list(export_existant.document_ids)
+            elif documents:
                 # Memes controles que l'API : des documents de ce dataset.
                 presents = set(
                     (
@@ -154,7 +167,7 @@ async def creer(
             # pas sur l'unicite des noms.
             nom_recette = nom or f"recette {maintenant:%Y-%m-%d %H:%M:%S}"
             schema = await schema_benchmark.schema_en_dict(db, dataset.schema_id)
-            export = modeles.DatasetExport(
+            export = export_existant or modeles.DatasetExport(
                 dataset_id=dataset_id,
                 schema_id=dataset.schema_id,
                 schema_hash=schema_benchmark.empreinte_schema(schema),
@@ -166,8 +179,11 @@ async def creer(
                 document_ids=documents,
                 created_by_user_id=createur,
             )
-            print(f" export : {export.name} — documents {documents}")
-            if not dry_run:
+            print(
+                f" export{' existant' if export_existant else ''} : {export.name} "
+                f"— documents {documents}"
+            )
+            if not dry_run and export_existant is None:
                 db.add(export)
                 await db.flush()
             recette = TestRecipe(
@@ -180,8 +196,11 @@ async def creer(
                 status=statuts.TestRecipeStatus.LOCKED.value,
                 locked_at=maintenant,
                 created_by_user_id=createur,
+                **({"config": config} if config else {}),
             )
             print(f" recette : {recette.name} — tout l'export")
+            if config:
+                print(f" configuration : {sorted((config.get('ocr') or {}).keys()) or config}")
             if not dry_run:
                 db.add(recette)
                 await db.flush()
