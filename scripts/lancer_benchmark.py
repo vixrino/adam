@@ -30,7 +30,9 @@ Usage :
     python scripts/lancer_benchmark.py --dry-run
     python scripts/lancer_benchmark.py --execution-id 1      # reprendre une execution
     python scripts/lancer_benchmark.py --sans-migration   # ne jamais migrer
-    python scripts/lancer_benchmark.py --contre 9 --consigne scripts/consignes/consigne_v2.txt
+    python scripts/lancer_benchmark.py --contre 9   # meme export et meme consigne que la 9 :
+                                                    # mesure le bruit d'une execution a l'autre
+    python scripts/lancer_benchmark.py --contre 9 --consigne ma_consigne.txt
                                           # meme export que l'execution 9, autre consigne,
                                           # puis comparaison des deux
 """
