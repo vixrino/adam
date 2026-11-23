@@ -1,175 +1,132 @@
-# README - Backend NOTA
+# NOTA - AnNotation et Tests Automatisés (backend)
 
-Le backend de NOTA reçoit les formulaires, les fait lire par l'IA, gère la vérification par les opérateurs et mesure la qualité de la lecture. Il expose une API REST utilisée par le frontend.
+API et traitements automatiques de NOTA : réception des formulaires, lecture par l'IA, vérification par les opérateurs et consensus, mesure de la qualité de la lecture.
 
-**Sommaire**
+> La branche `main` ne contient pas encore de release stable. Le développement actif se trouve sur la branche **`develop`**.
 
-* Ce que fait le backend
-* Organisation du code
-* Installer le projet
-* Lancer le projet
-* Base de données et migrations
-* Vérifier le code avant de pousser
-* Scripts utiles
-* Configuration
-* Pour aller plus loin
+## Accéder au code
 
----
-
-## Ce que fait le backend
-
-1. **Réception :** un PDF déposé est contrôlé (PDF valide, bon nombre de pages, pas déjà reçu), puis stocké sur le PVC.
-2. **Images :** chaque page est transformée en image PNG à 300 DPI, pour l'affichage.
-3. **Préremplissage :** l'IA (Mistral) reconnaît chaque page, remet le document dans l'ordre et propose une valeur pour chaque champ.
-4. **Vérification :** les opérateurs valident ou corrigent les valeurs ; le consensus retient la valeur finale.
-5. **Tests de qualité :** l'IA relit des documents déjà vérifiés et l'outil compare les deux réponses (métriques, rapport PDF).
-
----
-
-## Organisation du code
-
-| Dossier | Contenu |
-| --- | --- |
-| `src/nota_core/` | Partagé par l'API et les workers : modèles de base de données, migrations Alembic, schémas Pydantic, configuration, calcul des métriques |
-| `src/nota_api/` | API FastAPI : routes (`routers/`), services, dépendances (authentification, droits) |
-| `src/nota_worker/` | Traitements automatiques : images des pages, préremplissage, suivi de l'avancement, consensus, tests de qualité ; connecteurs OCR (`connectors/`) |
-| `scripts/` | Seed, diagnostics, migrations de données, banc d'essai |
-| `tests/` | Tests automatiques (pytest) |
-| `conf/` | Configuration exa-pie : `pie.yaml` (DEV), `pie.prod.yaml` (PROD) |
-| `docs/` | Documentation : sécurité, schéma de base (`schema.dbml`), roadmap |
-| `launcher.py` | Point d'entrée unique : API, workers ou les deux |
-
----
-
-## Installer le projet
-
-**Prérequis :** Python 3.12, [uv](https://docs.astral.sh/uv/), PostgreSQL, accès au registre interne (paquets `exa-pie` et `exa-logger`).
-
-```powershell
-cd C:\DEV\nota-back
-uv sync --all-extras
-copy .env.template .env
+```bash
+git clone https://scm.sofact.banque-france.fr/smartdoc/nota/nota-back.git
+cd nota-back
+git checkout develop
 ```
 
-Ensuite, remplir `.env` (voir **Configuration**). Pour un premier lancement en DEV, les valeurs du modèle suffisent, sauf `POSTGRES_PASSWORD`.
+## Branches
 
-> Le projet s'installe uniquement avec **uv**, jamais avec pip. Les outils de développement (pytest, black, mypy…) et les paquets internes sont des extras : d'où `--all-extras`.
+| Branche | Rôle |
+| :--- | :--- |
+| `main` | Releases stables uniquement |
+| `develop` | Développement actif, base de toutes les branches |
+| `feature/*` | Nouvelles fonctionnalités, créées depuis `develop` |
+| `fix/*` | Corrections de bugs, créées depuis `develop` |
 
----
+Toute modification passe par une Merge Request vers `develop`. Convention de commits : `<type>(<scope>): <description>` (voir `CONTRIBUTING.md`).
+
+## Prérequis
+
+* Python 3.12
+* [uv](https://docs.astral.sh/uv/)
+* PostgreSQL
+* Accès au registre interne (paquets `exa-pie` et `exa-logger`)
+
+## Installation
+
+**Développement (uv)**
+
+> Le développement local utilise uv. Voir `env-setup.md` pour la procédure complète : `uv sync`, configuration `.env`, migrations, seed.
+
+```bash
+uv sync --all-extras
+cp .env.template .env      # puis renseigner au moins POSTGRES_PASSWORD
+```
+
+**CI/CD et environnements sans uv (pip uniquement)**
+
+Le projet reste installable avec `pip` seul, sans `uv` ni environnement virtuel, via les métadonnées standard de `pyproject.toml`.
+
+```bash
+# Avec les dépendances de dev (tests, lint), en mode éditable
+pip install --group dev -e .
+
+# Sans les dépendances de dev (image de déploiement / CI)
+pip install .
+```
+
+Le mode éditable (`-e .`) est nécessaire en local pour que la couverture de tests (`pytest --cov`) pointe vers `src/` plutôt que vers une copie installée dans `site-packages`.
+
+## Base de données
+
+```bash
+cd src/nota_core
+uv run --all-extras alembic upgrade head     # appliquer les migrations
+uv run --all-extras alembic heads            # doit afficher une seule tête
+cd ../..
+uv run --all-extras python scripts/seed.py --reset    # schéma CERFA et un lot de documents
+```
+
+Le schéma de la base est géré uniquement par Alembic. En cas de « multiple heads » : `scripts/diag_migrations.ps1`.
 
 ## Lancer le projet
 
-```powershell
-# API + tous les workers, dans une seule fenêtre
-uv run --all-extras python launcher.py
-
-# Ou séparément
-uv run --all-extras python launcher.py api
-uv run --all-extras python launcher.py worker
+```bash
+uv run --all-extras python launcher.py            # API + tous les workers
+uv run --all-extras python launcher.py api        # API seule
+uv run --all-extras python launcher.py worker     # workers seuls
 ```
 
-* API : http://localhost:8000
-* Documentation interactive (Swagger) : http://localhost:8000/docs
+* API : `http://localhost:8000`
+* Swagger : `http://localhost:8000/docs`
 * Sondes : `GET /health` (API démarrée), `GET /db-check` (base joignable)
 
 En mode `all`, chaque ligne du journal commence par `[api]` ou `[worker]`.
 
-**Premier lancement :** créer le schéma CERFA et un lot de documents.
+**En local sans SSO :** dans `.env`, `API_DISABLE_JWT_VALIDATION=true` et `API_DEV_MATRICULE=<un matricule présent dans la table user>`. Pour le frontend, ajouter `https://localhost:4200` à `API_CORS_ORIGINS`.
 
-```powershell
-uv run --all-extras python scripts\seed.py --reset
-# ou, avec un vrai formulaire qui sera lu par l'IA :
-uv run --all-extras python scripts\seed.py --reset --pdf C:\chemin\cerfa.pdf
+> **ATTENTION** : `API_DISABLE_JWT_VALIDATION=true` et `OCR_MOCK_ENABLED=true` sont réservés au développement, jamais en intégration ni en production.
+
+## Tests et qualité
+
+```bash
+uv run --all-extras python -m pytest -q
 ```
 
----
+Avant de pousser, `scripts/run-checks.ps1` enchaîne tous les contrôles :
 
-## Base de données et migrations
+| Outil | Seuil |
+| :--- | :--- |
+| isort, black | Mise en forme respectée (lignes de 100 caractères) |
+| pylint | Note ≥ 9,0 / 10 |
+| mypy | Aucune erreur de typage |
+| bandit | Aucune faille moyenne ou haute |
+| pytest | Tous les tests verts, couverture ≥ 80 % |
 
-Le schéma de la base est géré **uniquement** par Alembic (`src/nota_core/migrations/`).
+## Organisation du code
 
-```powershell
-cd src\nota_core
-uv run --all-extras alembic upgrade head     # appliquer les migrations
-uv run --all-extras alembic heads            # doit afficher une seule tête
-uv run --all-extras alembic revision --autogenerate -m "description"   # nouvelle migration
-```
-
-* Une migration se relit toujours avant d'être poussée : l'autogénération ne voit pas tout (renommages, données).
-* En cas de « multiple heads » : `powershell -ExecutionPolicy Bypass -File scripts\diag_migrations.ps1`.
-* La description complète des tables est dans la page **01 - Documentation BDD**.
-
----
-
-## Vérifier le code avant de pousser
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run-checks.ps1
-```
-
-| Outil | Vérifie | Seuil |
-| --- | --- | --- |
-| isort, black | Mise en forme (lignes de 100 caractères) | Aucun écart |
-| pylint | Qualité du code | Note ≥ 9,0 / 10 |
-| mypy | Typage | Aucune erreur |
-| bandit | Sécurité du code | Aucune faille moyenne ou haute |
-| pytest | Tests et couverture | Tous verts, couverture ≥ 80 % |
-
-Lancer seulement les tests : `uv run --all-extras python -m pytest -q`.
-
-Les mêmes contrôles tournent dans Jenkins, suivis du quality gate SonarQube (voir la page **Déploiement et exploitation**).
-
----
+| Dossier | Rôle |
+| :--- | :--- |
+| `src/nota_core/` | Commun à l'API et aux workers : modèles, migrations Alembic, schémas Pydantic, configuration, métriques |
+| `src/nota_api/` | API FastAPI : routes, services, authentification et droits |
+| `src/nota_worker/` | Workers : images des pages, préremplissage par l'IA, avancement, consensus, tests de qualité ; connecteurs OCR |
+| `scripts/` | Seed, diagnostics, migrations de données, banc d'essai |
+| `tests/` | Tests pytest |
+| `conf/` | Configuration exa-pie : `pie.yaml` (dev), `pie.prod.yaml` (production) |
+| `launcher.py` | Point d'entrée unique : API, workers ou les deux |
 
 ## Scripts utiles
 
-Tous se lancent depuis la racine du dépôt, avec `uv run --all-extras python scripts\<script>`.
-
 | Script | Rôle |
-| --- | --- |
-| `seed.py` | Crée le schéma CERFA et un lot ; `--pdf` ajoute un vrai formulaire |
-| `test_connection.py` | Vérifie la connexion à PostgreSQL |
-| `verifier_schema.py` | Montre ce que l'IA lira d'un schéma (pages et champs) |
-| `diag_prepopulation.py` | Explique le préremplissage d'un document réel |
-| `diag_ocr_mistral.py` | Teste l'accès à Mistral, étape par étape |
-| `lancer_benchmark.py` | Lance un test de qualité complet en une commande (`--contre N` pour rejouer et comparer à l'exécution N) |
-| `exporter_rapport_pdf.py` | Écrit le rapport PDF d'une exécution, sans interface |
-| `diag_ecarts.py` | Détaille les écarts d'une exécution |
-| `corriger_verite.py` | Corrige la vérification humaine d'un champ que l'interface ne rouvre plus |
-| `diag_migrations.ps1` | État des migrations Alembic |
+| :--- | :--- |
+| `scripts/seed.py` | Schéma CERFA et lot de documents ; `--pdf` ajoute un vrai formulaire |
+| `scripts/test_connection.py` | Vérifie la connexion à PostgreSQL |
+| `scripts/lancer_benchmark.py` | Test de qualité de l'OCR en une commande ; `--contre N` rejoue l'exécution N et compare |
+| `scripts/exporter_rapport_pdf.py` | Rapport PDF d'une exécution de test |
+| `scripts/diag_ecarts.py` | Détail des écarts d'une exécution |
+| `scripts/diag_ocr_mistral.py` | Teste l'accès à Mistral, étape par étape |
 
 > `lancer_benchmark.py` appelle vraiment l'IA quand `OCR_MOCK_ENABLED=false` : environ 35 appels par formulaire. `--dry-run` montre ce qui serait lancé, sans rien appeler.
 
----
+## Contact
 
-## Configuration
-
-Tout passe par des variables d'environnement : `.env` en DEV (modèle : `.env.template`), Vault Kubernetes ailleurs. Aucun secret n'est écrit dans le code ni commité.
-
-| Catégorie | Variables principales |
-| --- | --- |
-| Base de données | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` |
-| API | `API_HOST`, `API_PORT`, `API_CORS_ORIGINS` (doit contenir l'adresse du frontend, ex. `https://localhost:4200`) |
-| Authentification | `API_DISABLE_JWT_VALIDATION`, `API_DEV_MATRICULE`, `PIE_CONFIG_FILE`, `INTERNAL_AUTH_ENABLED`, `INTERNAL_API_KEY` |
-| Stockage | `PVC_MOUNT_PATH` |
-| OCR | `OCR_MOCK_ENABLED`, `OCR_TIMEOUT_SECONDS`, `MISTRAL_API_KEY`, `MISTRAL_OCR_ENDPOINT`, `MISTRAL_OCR_MODEL`, `MISTRAL_ANNOTATION_MODEL`, `MISTRAL_CA_BUNDLE` |
-| Annuaire | `AD_ENABLED`, `AD_HOST`, `AD_BIND_DN`, `AD_PASSWORD`, `AD_BASE_DN`… |
-| Tests de qualité | `COMPARISON_HMAC_KEY` |
-| Journaux | `LOG_LEVEL`, `LOG_FORMAT` |
-
-**En DEV, sans authentification :** `API_DISABLE_JWT_VALIDATION=true`, et `API_DEV_MATRICULE` égal au matricule d'un utilisateur qui existe dans la table `user`. Toutes les requêtes sont alors faites en son nom.
-
-> **ATTENTION** : `API_DISABLE_JWT_VALIDATION=true` et `OCR_MOCK_ENABLED=true` sont réservés au DEV, jamais en INTÉGRATION ni en PROD.
-
----
-
-## Pour aller plus loin
-
-| Page | Contenu |
-| --- | --- |
-| C01 - Stack et Environnements | Technologies et environnements |
-| C02 - Déploiement et exploitation | Jenkins, SonarQube, déploiement, incidents |
-| 01 - Documentation BDD | Toutes les tables et colonnes |
-| B02 - Catalogue de scénarios | Comportement attendu dans chaque situation |
-| `docs/securite-exa-pie.md` | Branchement de l'authentification |
-| `CONTRIBUTING.md` | Branches, convention de commits, quality gates |
+* Architecte/Développeur - daniel.ferreiralara@banque-france.fr
+* Développeur - lucas.teyssier@banque-france.fr
