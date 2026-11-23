@@ -1,148 +1,112 @@
-# README - Frontend NOTA
+# NOTA - Notation et Tests Automatisés (frontend)
 
-Le frontend de NOTA est l'interface web utilisée par les agents : gérer les projets et les lots de documents, définir la liste des champs d'un formulaire, et vérifier les valeurs lues par l'IA, page par page.
+Interface web de NOTA : gestion des projets et des lots de documents, édition de la liste des champs d'un formulaire, et vérification par les opérateurs des valeurs lues par l'IA.
 
-**Sommaire**
+> La branche `main` ne contient pas encore de release stable. Le développement actif se trouve sur la branche `develop`.
 
-* Ce que fait le frontend
-* Technologies
-* Organisation du code
-* Installer le projet
-* Lancer le projet en local
-* Authentification et configuration
-* Vérifier le code avant de pousser
-* Modèles de l'API
-* Points ouverts
+## Accéder au code
 
----
+```bash
+git clone https://scm.sofact.banque-france.fr/smartdoc/nota/nota-front.git
+cd nota-front
+git checkout develop
+```
 
-## Ce que fait le frontend
+## Branches
 
-| Écran | Adresse | Rôle |
-| --- | --- | --- |
-| Projets | `/projects` | Liste des projets de l'agent ; création, modification, gestion des membres |
-| Lots de documents | `/projects/:id/datasets` | Lots d'un projet ; création, ajout de documents |
-| Documents | `.../datasets/:id/documents` | Documents d'un lot et leur avancement |
-| Vérification | `.../documents/:id` | Écran principal de l'opérateur (voir ci-dessous) |
-| Éditeur de schéma | `/projects/:id/schemas/new` ou `/:schemaId` | Liste des champs du formulaire : pages, rubriques, types |
-| Pages annexes | `/help`, `/accessibility`, `/sitemap`, `/403`, `/404` | Aide, accessibilité, plan du site, erreurs |
+| Branche | Rôle |
+| :--- | :--- |
+| `main` | Releases stables uniquement |
+| `develop` | Développement actif, base de toutes les branches |
+| `feature/*` | Nouvelles fonctionnalités, créées depuis `develop` |
+| `fix/*` | Corrections de bugs, créées depuis `develop` |
 
-**L'écran de vérification** a trois panneaux :
-
-1. à gauche, les pages et les rubriques du formulaire ;
-2. au centre, l'image de la page, avec la zone de chaque champ ;
-3. à droite, la liste des champs, avec la valeur proposée par l'IA.
-
-L'opérateur valide ou corrige chaque valeur. Ses réponses partent sous forme de **propositions** liées à sa tâche ; c'est le backend qui retient la valeur finale par consensus.
-
----
+Toute modification passe par une Merge Request vers `develop`.
 
 ## Technologies
 
 | Composant | Technologie |
-| --- | --- |
+| :--- | :--- |
 | Framework | Angular 20 (composants *standalone*) |
 | Langage | TypeScript 5.9 |
-| État de l'interface | Signals ; RxJS uniquement pour les appels HTTP |
-| Design system | `@bdf/design-system` (Banque de France) |
-| Authentification | PIE (`pie-core`, `pie-angular`), SSO Banque de France |
-| Modèles de l'API | Générés depuis l'OpenAPI du backend (`ng-openapi-gen`) |
+| État | Signals ; RxJS uniquement pour les appels HTTP |
+| Design system | `@bdf/design-system` |
+| Authentification | PIE (`pie-core`, `pie-angular`) |
 | Tests | Jest 30 |
-| Qualité | ESLint (Angular), Prettier, `npm audit`, SonarQube |
+| Qualité | ESLint, Prettier, `npm audit` |
 
----
+## Prérequis
 
-## Organisation du code
+* Node.js (version à confirmer)
+* npm, avec accès au registre interne (design system et paquets PIE)
+* Le backend NOTA lancé en local (voir le README du backend)
 
-Tous les chemins sont sous `src/app/`.
-
-| Couche | Dossier | Rôle |
-| --- | --- | --- |
-| Pages | `pages/` | Un composant par écran, chargé à la demande ; il porte l'état de l'écran et appelle les services |
-| Fonctionnalités | `features/labelling/`, `features/workspace/`, `features/system/` | Composants d'affichage et services HTTP de chaque domaine |
-| Partagé | `shared/components/` | Blocs réutilisables : mise en page à trois panneaux, visionneuse de page, fenêtres (popins), listes |
-| Cœur | `core/` | Services uniques (HTTP, session, PIE), intercepteurs, modèles générés de l'API (`core/api`) |
-
-Les styles communs sont dans `styles/`, rangés du plus général au plus précis : variables, mixins, reset, balises, mise en page, composants, utilitaires.
-
----
-
-## Installer le projet
-
-**Prérequis :** Node.js et npm, accès au registre npm interne (design system et paquets PIE).
+## Installation
 
 ```bash
 npm install
 cp src/environments/environment.template.ts src/environments/environment.ts
 ```
 
-`environment.ts` n'est pas versionné : chacun garde le sien.
+`environment.ts` n'est pas versionné. Pour travailler en local sans SSO, y mettre :
 
----
+* `auth.enabled: false` ;
+* `devMatricule` : un matricule présent dans la table `user` du backend ;
+* `backUrl` : l'adresse du backend, par exemple `http://localhost:8000`.
 
-## Lancer le projet en local
+Côté backend, le `.env` doit contenir `API_DISABLE_JWT_VALIDATION=true`, le même `API_DEV_MATRICULE`, et `https://localhost:4200` dans `API_CORS_ORIGINS`.
 
-1. **Démarrer le backend** en mode DEV, avec dans son `.env` :
-   * `API_DISABLE_JWT_VALIDATION=true` ;
-   * `API_DEV_MATRICULE=<un matricule présent dans la table user>` ;
-   * `API_CORS_ORIGINS` qui contient `https://localhost:4200`.
-2. **Régler `src/environments/environment.ts`** :
-   * `auth.enabled: false` (PIE désactivé) ;
-   * `devMatricule` : le même matricule que le backend ;
-   * `backUrl` : l'adresse du backend, par exemple `http://localhost:8000`.
-3. **Lancer le frontend :**
+## Lancer le serveur de développement
 
 ```bash
-npm start      # https://localhost:4200
+npm start
 ```
 
-Le projet Angular s'appelle `nota-front` dans `angular.json`. Ce nom ne doit pas changer : les scripts et la configuration SonarQube l'utilisent.
+L'application est accessible sur `https://localhost:4200/` (en HTTPS). Elle se recharge automatiquement à chaque modification des fichiers sources.
 
----
-
-## Authentification et configuration
-
-* **Au démarrage**, l'application initialise PIE, puis appelle `GET /users/me`. Ce premier appel crée l'agent dans le backend s'il n'existe pas encore. C'est pourquoi il passe avant tout le reste : sinon, un nouvel agent recevrait une erreur 403.
-* **En DEV**, avec `auth.enabled: false`, PIE n'est pas appelé. Chaque requête envoie l'en-tête `X-Dev-Matricule`, que le backend n'accepte qu'en DEV.
-* **En INTÉGRATION et en PROD**, une seule version compilée sert tous les environnements. Les réglages sont lus au chargement de la page, dans `src/assets/jack-front.js` (`window.smartdoc`) : `backUrl`, `authServerUrl`, `redirectUri`, `resource`, `scope`… Le fichier du dépôt ne contient que des valeurs d'exemple. Les vraies valeurs sont posées au déploiement.
-
-**Gestion des erreurs :**
-
-* coupure réseau ou erreur serveur (5xx) : un seul message global ;
-* erreur de saisie (4xx) : message à l'endroit concerné ;
-* accès refusé (403) : redirection vers la page `/403`.
-
----
-
-## Vérifier le code avant de pousser
+## Build
 
 ```bash
-npm run verify     # formatage, analyse, tests et audit, à la suite
-npm run build      # compilation
+npm run build
 ```
 
-| Commande | Vérifie |
-| --- | --- |
-| `npm run format` | Mise en forme Prettier (lignes de 120 caractères, guillemets simples) |
-| `npm run lint` | Analyse ESLint |
-| `npm test -- --watch=false` | Tests Jest, avec couverture |
-| `npm run audit` | Aucune vulnérabilité haute dans les dépendances |
-| `npm run build` | L'application compile |
+Les artefacts de build sont générés dans `dist/nota-front`. Une seule version compilée sert tous les environnements : les réglages (`backUrl`, adresses du SSO…) sont lus au chargement dans `src/assets/jack-front.js`, rempli au déploiement.
 
-Sous Windows, `scripts/run_checks.ps1` enchaîne les cinq contrôles. Les tests ont besoin d'un `src/environments/environment.ts` : copier le modèle tel quel suffit.
+## Tests
 
----
+```bash
+npm test -- --watch=false
+```
 
-## Modèles de l'API
+> Lance les tests unitaires via Jest, avec la couverture de code. Les tests ont besoin de `src/environments/environment.ts` : copier le modèle tel quel suffit.
 
-* Les modèles de `core/api/models` sont **générés** à partir de l'OpenAPI du backend (`/openapi.json`, configuration dans `ng-openapi-gen.json`). Ils ne se modifient pas à la main, sauf exception ci-dessous.
-* Les services qui appellent l'API sont écrits à la main et restent simples.
-* Quand le frontend a besoin d'un champ que le backend n'a pas encore, le modèle est complété en avance. Le contrat attendu est alors décrit dans un fichier `*_BACKEND_TODO.md` à la racine.
+## Lint et formatage
 
----
+```bash
+npm run verify
+```
 
-## Points ouverts
+> Enchaîne le formatage (Prettier), l'analyse (ESLint), les tests et l'audit des dépendances. Sous Windows, `scripts/run_checks.ps1` fait la même chose, puis lance le build.
 
-* **Contrats en attente du backend :** les fichiers `*_BACKEND_TODO.md` à la racine (dates des lots, statistiques des documents, `value_type` modifiable sur un champ, `platform_role` dans la liste des utilisateurs).
-* **Écran de vérification :** la suppression d'une zone dessinée n'est pas encore faite.
-* **Mise en production :** la liste de contrôle de l'authentification reste à terminer (`backUrl` vide, valeur par défaut d'`authMock`, `scope` à plusieurs valeurs).
+## Organisation du code
+
+| Dossier (sous `src/app/`) | Rôle |
+| :--- | :--- |
+| `pages/` | Un composant par écran : projets, lots, documents, vérification, éditeur de schéma, erreurs |
+| `features/` | Composants et services par domaine : `labelling`, `workspace`, `system` |
+| `shared/components/` | Blocs réutilisables : mise en page à trois panneaux, visionneuse de page, fenêtres, listes |
+| `core/` | Services uniques (HTTP, session, PIE), intercepteurs, modèles de l'API |
+
+Les modèles de `core/api/models` sont générés depuis l'OpenAPI du backend (`ng-openapi-gen.json`) : ne pas les modifier à la main. Quand le backend n'a pas encore un champ attendu, le contrat est décrit dans un fichier `*_BACKEND_TODO.md` à la racine.
+
+## Génération de code
+
+```bash
+ng generate component nom-du-composant
+```
+
+Autres schématiques disponibles : `directive`, `pipe`, `service`, `guard`, `interface`, `enum`.
+
+## Contact
+
+Développeur - daniel.ferreiralara@banque-france.fr
