@@ -62,7 +62,8 @@
 | --- | --- |
 | Conteneurisation DEV | Docker Compose (cible) |
 | Orchestration STAGING et PROD | Kubernetes, Cloud Catalyse |
-| CI/CD | GitLab CI vers OpenShift (responsabilité DevOps) |
+| Intégration continue | Jenkins (responsabilité DevOps), voir la page Déploiement et exploitation |
+| Contrôle qualité | SonarQube (quality gate obligatoire avant merge) |
 | Secrets | Vault Kubernetes |
 | Analyse des dépendances | Xray (vulnérabilités connues) |
 
@@ -159,6 +160,7 @@ Principes déjà arrêtés pour une future PROD :
 | Analyse de sécurité (bandit, Xray) : 0 vulnérabilité critique | Automatique | OUI |
 | Migrations de base à jour et rejouables (Alembic) | Automatique | OUI |
 | Aucune variable de mock dans la configuration STAGING | Automatique | OUI |
+| Quality gate SonarQube validé | Automatique | OUI |
 | Merge Request approuvée | Manuel | OUI |
 
 ---
@@ -168,6 +170,7 @@ Principes déjà arrêtés pour une future PROD :
 * **Backend.** Ajout des workers et de la commande unique de lancement, de Mistral et de ses deux modèles, de PyMuPDF, de l'annuaire Active Directory, de uv et des outils de qualité. « UFS Middleware » est remplacé par exa-pie, et « EXA Python Logging » par exa-logger.
 * **Traitement des images.** Une colonne « État » est ajoutée. Le rendu des pages et leur remise en ordre sont en place. Le caviardage (DocTR) et le prétraitement (Pillow, OpenCV) ne sont pas encore développés.
 * **Mocks.** La variable OCR s'appelle `OCR_MOCK_ENABLED` dans le code, et non `OCR_MOCK_MODE`. Ajout de `API_DEV_MATRICULE`, `AD_ENABLED` et `INTERNAL_AUTH_ENABLED`.
-* **Passage en STAGING.** Ajout de la mise en forme, de Xray et des migrations.
+* **Passage en STAGING.** Ajout de la mise en forme, de Xray, des migrations et du quality gate SonarQube.
+* **CI/CD.** « GitLab CI vers OpenShift » est remplacé par Jenkins et SonarQube.
 * **Incohérences corrigées.** L'authentification du STAGING était « Désactivée » dans son tableau, mais « FBI test » dans la vue d'ensemble : la vue d'ensemble est retenue. Les données d'intégration étaient « Réelles » dans la vue d'ensemble, mais « anonymisées » dans le tableau STAGING : « anonymisées » est retenu, conformément au principe 3. La date du jalon J5 (15 juillet 2026, dépassée) est retirée.
 * **RECETTE.** Les cases vides sont remplies par « À définir ».
