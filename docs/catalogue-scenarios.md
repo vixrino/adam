@@ -113,3 +113,24 @@ Les numéros d'origine sont conservés, pour ne pas casser les références déj
 * **CAV-07 retiré.** Le formulaire fait 12 pages, et le masquage de toutes les pages est inclus dans CAV-02.
 * **Ajouts.** ING-09, pour un document refusé à la réception (déjà en place dans NOTA). TST-08 et TST-09, pour la comparaison de deux tests et l'annulation d'un test (déjà en place).
 * **TST-03.** Un test arrêté par une panne ne donne jamais de résultat partiel.
+
+### Détails techniques retirés pour simplifier
+
+Ces précisions restent valables. Elles ne sont simplement plus écrites dans le tableau :
+
+* **OCR-02 :** délais entre les tentatives (10 s, 20 s, 40 s).
+* **LAB-01, LAB-02, LAB-03, LAB-05 :** noms des statuts (COMPLETED, VALIDATED, PENDING_REVIEW).
+* **OCR-06 et OCR-08 :** nom de l'indicateur `non_fiable=true`.
+* **TST-07 :** nom de l'indicateur `DERIVE_DETECTED`.
+* **CAV-01 à CAV-06 :** nom de l'outil de détection (DocTR) et traitements d'image (niveaux de gris, rotation, flou gaussien).
+* **OCR-01 :** stockage de la réponse en JSONB.
+* **OCR-05 :** nom du service d'accès (Azure AD).
+* **INF-01 :** mécanisme de coupure automatique (*circuit breaker*).
+* **INF-06 :** causes possibles (contrôle d'intégrité CRC, permission refusée).
+
+### Autres changements
+
+* **Titres des parties :** le mot « Tenant » est retiré (« Tenant Ingestion » devient « Réception des documents »).
+* **TST-02 :** « au prochain accès » est retiré.
+* **Code de ING-09 :** `ING_DOC_NON_CONFORME` est une proposition, il n'existe pas encore dans le code.
+
