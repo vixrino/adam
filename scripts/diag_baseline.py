@@ -32,13 +32,23 @@ def _module(nom: str) -> Any:
     return importlib.import_module(f"{cores[0].removesuffix('_core')}_{nom}")
 
 
+def _charger_modeles() -> None:
+    """Importe chaque fichier de models/, pas seulement ceux que __init__.py cite :
+    un modele absent de __init__ (ex. app_setting) manquerait a Base.metadata."""
+    import pkgutil
+
+    paquet = _module("core.models")
+    for info in pkgutil.iter_modules(paquet.__path__):
+        importlib.import_module(f"{paquet.__name__}.{info.name}")
+
+
 def main() -> None:
     from alembic.autogenerate import compare_metadata
     from alembic.runtime.migration import MigrationContext
     from sqlalchemy import create_engine, text
 
     os.environ.pop("POSTGRES_DB", None)
-    _module("core.models")  # enregistre toutes les tables dans Base.metadata
+    _charger_modeles()
     base = _module("core.db.base").Base
     schema = base.metadata.schema
     core = _module("core.core.config").get_core_settings()

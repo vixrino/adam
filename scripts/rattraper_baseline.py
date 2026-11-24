@@ -23,7 +23,8 @@ Ce que fait le script, dans une seule transaction :
 Une modification refusee par la base (ex. contrainte d'unicite violee par
 des doublons) est annulee seule et listee a la fin ; le reste passe.
 
-Sans --appliquer, tout est joue puis annule (apercu). Lancer d'abord
+Rejouable : sur une base deja rattachee, il ajoute ce qui manque encore
+sans toucher a la version. Sans --appliquer, tout est joue puis annule (apercu). Lancer d'abord
 diag_baseline.py, avec le code a jour.
 
 Usage :
@@ -50,6 +51,16 @@ def _module(nom: str) -> Any:
     if len(cores) != 1:
         raise SystemExit(f"attendu un *_core sous src/, trouve {cores}")
     return importlib.import_module(f"{cores[0].removesuffix('_core')}_{nom}")
+
+
+def _charger_modeles() -> None:
+    """Importe chaque fichier de models/, pas seulement ceux que __init__.py cite :
+    un modele absent de __init__ (ex. app_setting) manquerait a Base.metadata."""
+    import pkgutil
+
+    paquet = _module("core.models")
+    for info in pkgutil.iter_modules(paquet.__path__):
+        importlib.import_module(f"{paquet.__name__}.{info.name}")
 
 
 def _a_plat(operations: Any) -> Iterator[Any]:
@@ -81,7 +92,7 @@ def rattraper(appliquer: bool) -> None:
     from alembic.script import ScriptDirectory
     from sqlalchemy import create_engine, text
 
-    _module("core.models")
+    _charger_modeles()
     base = _module("core.db.base").Base
     schema = base.metadata.schema
     core = _module("core.core.config").get_core_settings()
@@ -113,14 +124,19 @@ def rattraper(appliquer: bool) -> None:
             ),
             {"s": schema},
         ).first()
-        if deja and conn.execute(text(f'SELECT 1 FROM "{schema}".alembic_version')).first():
-            print(f"{schema}.alembic_version est deja rempli : rien a faire, lancez le launcher.")
-            return
+        actuelle = (
+            conn.execute(text(f'SELECT version_num FROM "{schema}".alembic_version')).scalar()
+            if deja
+            else None
+        )
         ancienne = None
         if conn.execute(text("SELECT to_regclass('public.alembic_version')")).scalar():
             ancienne = conn.execute(text("SELECT version_num FROM public.alembic_version")).scalar()
-        version = ancienne if ancienne in revisions else head
-        print(f"public.alembic_version : {ancienne!r}  ->  version retenue : {version}\n")
+        version = actuelle or (ancienne if ancienne in revisions else head)
+        if actuelle:
+            print(f"{schema}.alembic_version deja rattachee ({actuelle}) : on n'y touche pas\n")
+        else:
+            print(f"public.alembic_version : {ancienne!r}  ->  version retenue : {version}\n")
 
         contexte = MigrationContext.configure(
             conn,
@@ -187,10 +203,11 @@ def rattraper(appliquer: bool) -> None:
                 "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
             )
         )
-        conn.execute(
-            text(f'INSERT INTO "{schema}".alembic_version (version_num) VALUES (:v)'),
-            {"v": version},
-        )
+        if not actuelle:
+            conn.execute(
+                text(f'INSERT INTO "{schema}".alembic_version (version_num) VALUES (:v)'),
+                {"v": version},
+            )
         print(f"\n== version : {schema}.alembic_version = {version}")
 
         if not appliquer:
