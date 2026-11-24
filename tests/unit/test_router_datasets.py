@@ -470,6 +470,89 @@ class TestIngestDocuments:
         assert statuses["invalid.pdf"] == "rejected"
 
 
+class TestActivationALIngestion:
+    """Un brouillon qui recoit ses premiers documents passe ACTIVE."""
+
+    def _ingerer(
+        self,
+        client: TestClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        dataset: MagicMock,
+        field_count: int = 3,
+        contenu: Optional[bytes] = None,
+    ) -> MagicMock:
+        monkeypatch.setattr("adam_api.routers.datasets.settings.pvc_mount_path", str(tmp_path))
+        schema = _make_schema()
+        schema.locked = False
+        mock_db.get = AsyncMock(side_effect=_db_get_side_effect(dataset=dataset, schema=schema))
+        mock_db.add = MagicMock(side_effect=_capture_document_id)
+        new_file = MagicMock()
+        new_file.id = 7
+        new_file.file_path = "dires/cerfa/2026_01_15_1321/doc.pdf"
+        mock_db.execute = AsyncMock(
+            side_effect=[
+                _exec_result(scalar_one_or_none=None),  # document deja dans le dataset
+                _exec_result(scalar_one_or_none=None),  # FILE par checksum
+                _exec_result(scalar_one_or_none=new_file),  # INSERT ... RETURNING
+                _exec_result(scalar_one=field_count),  # champs du schema
+            ]
+        )
+        response = client.post(
+            "/datasets/1/documents",
+            files=[("files", ("doc.pdf", contenu or _minimal_valid_pdf(), "application/pdf"))],
+        )
+        assert response.status_code == 200
+        return schema
+
+    def test_brouillon_passe_actif_et_verrouille_le_schema(
+        self,
+        client: TestClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        dataset = _make_dataset(status="DRAFT")
+        schema = self._ingerer(client, mock_db, monkeypatch, tmp_path, dataset)
+        assert dataset.status == "ACTIVE"
+        assert schema.locked is True
+
+    def test_reste_brouillon_si_le_schema_n_a_aucun_champ(
+        self,
+        client: TestClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        dataset = _make_dataset(status="DRAFT")
+        schema = self._ingerer(client, mock_db, monkeypatch, tmp_path, dataset, field_count=0)
+        assert dataset.status == "DRAFT"
+        assert schema.locked is False
+
+    def test_reste_brouillon_si_aucun_document_cree(
+        self,
+        client: TestClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        dataset = _make_dataset(status="DRAFT")
+        self._ingerer(client, mock_db, monkeypatch, tmp_path, dataset, contenu=b"pas un pdf")
+        assert dataset.status == "DRAFT"
+
+    def test_un_dataset_archive_ne_change_pas(
+        self,
+        client: TestClient,
+        mock_db: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        dataset = _make_dataset(status="ARCHIVED")
+        self._ingerer(client, mock_db, monkeypatch, tmp_path, dataset)
+        assert dataset.status == "ARCHIVED"
+
+
 # ---------------------------------------------------------------------------
 # Cycle de vie du dataset
 # ---------------------------------------------------------------------------
