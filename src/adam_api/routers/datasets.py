@@ -251,6 +251,34 @@ async def patch_dataset_status(
     return row
 
 
+async def _activate_after_ingestion(dataset: Dataset, schema: DocSchema, db: AsyncSession) -> None:
+    """Un brouillon qui recoit ses premiers documents passe ACTIVE.
+
+    Des documents a annoter, c'est le lot ouvert aux operateurs : le laisser en
+    DRAFT laisserait son schema modifiable sous des documents deja crees. Memes
+    effets qu'une activation par PATCH /status (schema verrouille).
+
+    Sauf si le schema ne decrit aucun champ : l'activation le figerait sans
+    rien a annoter (voir _check_ready_for_activation). Le dataset reste alors
+    en DRAFT, les documents sont gardes, et l'activation se fera a la main une
+    fois les champs ajoutes.
+    """
+    field_count: int = (
+        await db.execute(select(count(FieldSpec.id)).where(FieldSpec.schema_id == schema.id))
+    ).scalar_one()
+    if field_count == 0:
+        logger.warning(
+            "Dataset laisse en DRAFT apres ingestion : schema sans champ "
+            "[dataset_id=%s schema_id=%s]",
+            dataset.id,
+            schema.id,
+        )
+        return
+    schema.locked = True
+    dataset.status = DatasetStatus.ACTIVE.value
+    await db.flush()
+
+
 @router.post("/{dataset_id}/documents", response_model=IngestionOut)
 async def ingest_documents(
     dataset_id: int,
@@ -319,10 +347,14 @@ async def ingest_documents(
         )
         items.append(FileIngestionItemOut(**raw))
 
+    created = sum(1 for r in items if r.status in ("created", "created_file_reused"))
+    if created and dataset.status == DatasetStatus.DRAFT.value:
+        await _activate_after_ingestion(dataset, schema, db)
+
     return IngestionOut(
         dataset_id=dataset_id,
         received=len(items),
-        created=sum(1 for r in items if r.status in ("created", "created_file_reused")),
+        created=created,
         already_exists=sum(1 for r in items if r.status == "already_exists"),
         rejected=sum(1 for r in items if r.status == "rejected"),
         in_error=sum(1 for r in items if r.status == "error"),
