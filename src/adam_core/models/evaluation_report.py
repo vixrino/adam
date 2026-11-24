@@ -19,9 +19,7 @@ Pas de reference au document, volontairement : la suppression d'un document
 mesures agregees deja publiees.
 """
 
-from typing import TYPE_CHECKING
-
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column

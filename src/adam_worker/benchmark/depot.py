@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from adam_core.benchmark.schema import schema_en_dict
+from adam_core.benchmark.schema import schema_to_dict
 from adam_core.db.session import get_async_session
 from adam_core.enums.status import TestExecutionStatus
 from adam_core.models import (
@@ -51,7 +51,7 @@ class ExecutionReservee:
 class DepotBenchmark:
     """Lectures et ecritures du worker de benchmark, en base directe."""
 
-    async def echouer_bloquees(self, delai: timedelta) -> int:
+    async def fail_stuck(self, delai: timedelta) -> int:
         """Passe en FAILED les executions RUNNING sans signe de vie depuis `delai`.
 
         Un worker arrete en plein run laisse son execution RUNNING pour toujours.
@@ -72,7 +72,7 @@ class DepotBenchmark:
             )
             return int(getattr(resultat, "rowcount", 0) or 0)
 
-    async def reserver_execution(self) -> Optional[ExecutionReservee]:
+    async def claim_execution(self) -> Optional[ExecutionReservee]:
         """Prend la plus ancienne execution PENDING et la passe en RUNNING.
 
         FOR UPDATE SKIP LOCKED : deux workers ne prennent jamais la meme. Le
@@ -124,7 +124,7 @@ class DepotBenchmark:
                 verite_export=ligne.verite_empreintes,
             )
 
-    async def noter_moteur(
+    async def record_engine(
         self, execution_id: int, ocr_provider: str, ocr_model_id: Optional[str]
     ) -> None:
         """Recopie sur l'execution le moteur qui lit vraiment."""
@@ -135,9 +135,7 @@ class DepotBenchmark:
                 .values(ocr_provider=ocr_provider, ocr_model_id=ocr_model_id)
             )
 
-    async def identifier(
-        self, execution_id: int, comparateur_version: str, schema_hash: str
-    ) -> None:
+    async def identify(self, execution_id: int, comparateur_version: str, schema_hash: str) -> None:
         """Note ce qui doit concorder pour que deux scores se comparent."""
         async with get_async_session() as db:
             await db.execute(
@@ -149,7 +147,7 @@ class DepotBenchmark:
     async def schema(self, schema_id: int) -> Dict[str, Any]:
         """Le schema sous la forme de GET /schemas/{id}, pour ModeleDocument."""
         async with get_async_session() as db:
-            return await schema_en_dict(db, schema_id)
+            return await schema_to_dict(db, schema_id)
 
     async def documents(self, document_ids: List[int]) -> List[Tuple[int, int]]:
         """(document_id, file_id) des documents de la recette, dans son ordre."""
@@ -161,6 +159,16 @@ class DepotBenchmark:
             ).all()
         par_id = {int(d): int(f) for d, f in lignes}
         return [(d, par_id[d]) for d in document_ids if d in par_id]
+
+    async def noms(self, document_ids: List[int]) -> Dict[int, str]:
+        """{document_id: nom du fichier recu}, pour relier un JSON a son document."""
+        async with get_async_session() as db:
+            lignes = (
+                await db.execute(
+                    select(Document.id, Document.file_name).where(Document.id.in_(document_ids))
+                )
+            ).all()
+        return {int(d): str(n) for d, n in lignes}
 
     async def verite(self, document_id: int) -> List[ChampVerite]:
         """Les document_field du document, dans l'ordre du schema (lignes de
@@ -191,7 +199,7 @@ class DepotBenchmark:
             for df, fs, est_verifie in lignes
         ]
 
-    async def interrompue(self, execution_id: int) -> bool:
+    async def interrupted(self, execution_id: int) -> bool:
         """Vrai si l'execution n'est plus en cours : annulee depuis l'API, ou
         passee FAILED par echouer_bloquees alors que ce worker lisait encore
         (un document plus long que STALE_AFTER). Continuer paierait des appels
@@ -204,7 +212,7 @@ class DepotBenchmark:
             ).scalar_one_or_none()
         return statut != TestExecutionStatus.RUNNING.value
 
-    async def enregistrer_document(
+    async def save_document(
         self, execution_id: int, ecarts: List[Dict[str, Any]], compteurs: Dict[str, int]
     ) -> None:
         """Ecrit les ecarts d'un document et fait avancer les totaux.
@@ -230,7 +238,7 @@ class DepotBenchmark:
                 )
             )
 
-    async def terminer(
+    async def finish_execution(
         self,
         execution_id: int,
         statut: TestExecutionStatus,

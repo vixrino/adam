@@ -1,16 +1,16 @@
 """Worker de pre-alimentation OCR : polling des documents INGESTED.
 
 Un document ingere porte ses images mais aucun champ. Ce worker les lui donne :
-il soumet les images a l'OCR, recupere le schema attendu via le dataset, fusionne
-les deux, cree les DOCUMENT_FIELD par l'API, et fait passer le document en
-IN_PROGRESS.
+il soumet les images a l'OCR, lit le schema attendu via le dataset, fusionne
+les deux, cree les DOCUMENT_FIELD, et fait passer le document en IN_PROGRESS.
 
-Ce qui passe par la base et ce qui passe par HTTP
--------------------------------------------------
-Le polling et la transition de statut se font en base directe, comme les autres
-workers. La lecture du schema et la creation des champs passent par l'API : la
-validation de coherence field_spec/schema et la contrainte d'unicite y vivent
-deja, les dupliquer ici serait le debut d'une divergence.
+Tout passe par la base
+----------------------
+Le worker n'appelle pas l'API : le middleware exa-pie exige un JWT sur chaque
+route, que le X-Internal-Token d'un service ne fournit pas (400 "token not
+found"). La creation des champs reutilise adam_api.services.document_fields, ou
+vivent la validation de coherence field_spec/schema et la contrainte d'unicite :
+une seule implementation, appelee par la route comme par le worker.
 
 Isolation des erreurs
 ---------------------
@@ -18,12 +18,28 @@ Un document a la fois, chacun dans son propre try. Une erreur le fait passer en
 ERROR — et non rester en INGESTED, ou il serait repolle indefiniment et
 bloquerait le lot — puis la boucle continue avec le suivant.
 
-Un OCR indisponible n'est pas une erreur : le document est pre-alimente avec des
-champs vides et passe quand meme en IN_PROGRESS, l'operateur saisira tout. Un
-echec technique du connecteur ou de l'API met le document en ERROR, de meme
-qu'un document que l'OCR juge non conforme : aucune page du formulaire
-reconnue, ou des pages a champs introuvables. Le motif de l'ERROR est ecrit
-dans metadata["erreur"] du document, que l'API expose.
+Deux modes, choisis par document a l'upload (DOCUMENT.prealim_mode) :
+
+- ``ocr`` (defaut) : le document attend le moteur. Si l'OCR est coupe
+  (cle ``ocr_enabled`` de app_setting a faux) ou injoignable (ping en echec), il
+  reste INGESTED et le cycle suivant le reprend : le retry est naturel, rien n'est
+  mis en ERROR. Les documents ``empty`` du meme lot passent quand meme.
+- ``empty`` : les champs sont crees vides a partir du schema, sans ping ni appel
+  OCR, et le document passe en IN_PROGRESS. L'operateur saisira tout.
+
+Le moteur est sonde a chaque cycle, meme sans document en attente, et son etat
+est ecrit dans app_setting (cle ``ocr_status``) pour que l'API le serve a l'IHM.
+Un OCR qui repond sans resultat (extract rend None) n'est pas une erreur non
+plus : champs vides, IN_PROGRESS. Un echec technique du connecteur ou de l'API
+met le document en ERROR, de meme qu'un document que l'OCR juge non conforme :
+aucune page du formulaire reconnue, ou des pages a champs introuvables. Le motif
+de l'ERROR est ecrit dans metadata["erreur"] du document, que l'API expose.
+
+Ecriture en une transaction
+---------------------------
+Champs, OCR_RESULT et passage en IN_PROGRESS sont ecrits ensemble : un echec
+n'en laisse aucun a moitie. L'appel OCR, lui, se fait avant et hors de toute
+connexion ouverte, pour ne pas occuper le pool pendant des secondes de reseau.
 
 Remise en ordre des images
 --------------------------
@@ -52,15 +68,21 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from sqlalchemy import case, func, literal, select, update
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
+from sqlalchemy.orm import selectinload
 
-from adam_api.core.config import API_PREFIX, settings
+from adam_api.core.config import settings
+from adam_api.exceptions.document_fields import FieldSpecMismatch
+from adam_api.services import document_fields
+from adam_core.db import settings_store
 from adam_core.db.session import get_async_session
-from adam_core.enums.status import DocumentStatus
-from adam_core.models import Document, File
+from adam_core.enums.ocr import StorageMode
+from adam_core.enums.status import DocumentStatus, PrealimMode
+from adam_core.models import Dataset, DocSchema, Document, File, OcrResult
 from adam_core.schemas.interface_contract import SmartdocDocument
 from adam_core.utils.pdf_render import PdfRenderError, reorder_pdf
 from adam_worker.base_worker import BaseWorker
@@ -71,7 +93,6 @@ from adam_worker.connectors.base import (
     OcrConnectorError,
 )
 from adam_worker.connectors.modele import ModeleDocument
-from adam_worker.prepopulation.api_client import ApiClient, ApiClientError
 from adam_worker.prepopulation.merger import count_detected, merge
 
 _BATCH_SIZE = 20
@@ -81,41 +102,16 @@ _DEFAULT_POLL_INTERVAL = 30.0
 def default_pages_dir(file_id: int) -> Path:
     """Repertoire des images de page, relatif a la racine du PVC.
 
-    La convention est celle du pipeline d'ingestion : file_id/pages/, que
-    utils.pdf_render definit aussi.
+    La convention est celle du pipeline d'ingestion : file_id/pages/. Elle est
+    redefinie ici plutot qu'importee de utils.pdf_render, ou elle vit aussi :
+    ce module la importe PyMuPDF, et faire dependre la pre-alimentation d'un
+    moteur de rendu PDF pour une concatenation de chemin serait une dette
+    gratuite — le worker ne rend aucune image, il les lit.
 
     Le resolveur est injectable via `pages_dir` : si la convention change, ou
     differe entre deux deploiements, elle se surcharge sans toucher au worker.
     """
     return Path(str(file_id)) / "pages"
-
-
-#: Adresses d'ecoute qui ne designent aucun hote joignable. `0.0.0.0` et `::`
-#: signifient "toutes les interfaces locales" : elles disent a un serveur ou se
-#: mettre, pas a un client ou aller.
-#: nosec B104 : bandit y voit une ecoute sur toutes les interfaces, mais rien
-#: n'ecoute ici. Ces valeurs sont reconnues pour etre remplacees par 127.0.0.1
-#: dans _api_origin, ce qui est precisement l'inverse d'un bind.
-_WILDCARD_HOSTS = {"0.0.0.0", "::", "[::]", ""}  # nosec B104
-
-
-def _api_origin() -> str:
-    """Origine HTTP de l'API, telle qu'un client doit la composer.
-
-    api_host est l'adresse d'ECOUTE de l'API. La reutiliser telle quelle pour un
-    appel sortant marche tant qu'elle vaut un hote reel, et casse des qu'elle
-    vaut le joker d'ecoute : le worker tente alors une connexion vers 0.0.0.0,
-    que la pile reseau refuse — ECONNREFUSED sous Windows, comportement variable
-    ailleurs.
-
-    Le joker est donc rabattu sur localhost, qui est ce qu'il designe du point de
-    vue d'un processus tournant sur la meme machine. Un deploiement ou l'API vit
-    ailleurs renseigne api_host avec son nom d'hote, et rien ne change ici.
-    """
-    host = settings.api_host.strip()
-    if host in _WILDCARD_HOSTS:
-        host = "127.0.0.1"
-    return f"http://{host}:{settings.api_port}"
 
 
 class PrepopulationError(Exception):
@@ -137,7 +133,6 @@ class PrepopulationWorker(BaseWorker):
     def __init__(
         self,
         connector: Optional[BaseOcrConnector] = None,
-        api_client: Optional[ApiClient] = None,
         *,
         batch_size: int = _BATCH_SIZE,
         pvc_root: Optional[Path] = None,
@@ -146,41 +141,42 @@ class PrepopulationWorker(BaseWorker):
     ) -> None:
         super().__init__()
         self.connector = connector or connector_from_settings(settings)
-        self.api_client = api_client or ApiClient(
-            # API_PREFIX est celui que main.py monte : sans lui, chaque appel
-            # part en 404, que le worker traduirait en documents ERROR sans
-            # que la vraie cause apparaisse nulle part.
-            base_url=f"{_api_origin()}{API_PREFIX}",
-            # Sans cette cle, aucun en-tete d'authentification n'est emis et
-            # get_caller rejette l'appel en 401 : le worker mettait alors CHAQUE
-            # document en ERROR avec « schema injoignable », en production
-            # uniquement — le script de test surcharge get_caller par un
-            # ServiceCaller et ne voyait donc rien.
-            api_key=settings.internal_api_key,
-            timeout_seconds=float(settings.ocr_timeout_seconds),
-        )
         self.batch_size = batch_size
         self.pvc_root = pvc_root or Path(settings.pvc_mount_path)
         self.pages_dir = pages_dir
+        #: Dernier etat connu du moteur OCR : None tant qu'il n'a pas ete sonde.
+        self._moteur_joignable: Optional[bool] = None
+        #: Dernier etat de ocr_enabled vu par ce worker (pour ne journaliser que les changements).
+        self._ocr_coupe: Optional[bool] = None
         if poll_interval_seconds is not None:
             self.poll_interval_seconds = poll_interval_seconds
 
     # -- Boucle -------------------------------------------------------------
 
     async def poll(self) -> None:
-        candidates = await self._fetch_candidates()
-        if not candidates:
-            self.logger.debug("aucun document INGESTED")
+        store = await self._load_store()
+        ocr_pret = await self._engine_ready(store)
+        # Moteur indisponible : seuls les documents `empty` sont selectionnes, pour que
+        # les `ocr` les plus anciens ne remplissent pas le lot et ne les bloquent pas.
+        a_traiter = await self._fetch_candidates(ocr_pret)
+        if not a_traiter:
+            self.logger.debug("aucun document INGESTED a pre-alimenter")
             return
 
         # En DEBUG : chaque document du lot emet ensuite sa propre ligne, avec le
         # detail qui compte. Annoncer le decompte n'ajoutait rien devant N lignes
         # qui le disent.
-        self.logger.debug("%s document(s) INGESTED a pre-alimenter", len(candidates))
-        for document_id in candidates:
+        self.logger.debug("%s document(s) INGESTED a pre-alimenter", len(a_traiter))
+        cycle_started = perf_counter()
+        pre_alimentes = 0
+        en_erreur = 0
+        champs_crees = 0
+        for document_id, mode in a_traiter:
             try:
-                await self._process_one(document_id)
+                champs_crees += await self._process_one(document_id, mode)
+                pre_alimentes += 1
             except PrepopulationError as exc:
+                en_erreur += 1
                 # Echec attendu et deja diagnostique : on sort le document de la
                 # file plutot que de le laisser repoller sans fin.
                 self.logger.error(
@@ -191,65 +187,132 @@ class PrepopulationWorker(BaseWorker):
                 await self._set_error(document_id, {"message": str(exc), **exc.details})
             except Exception:  # pylint: disable=broad-exception-caught
                 # Filet : un imprevu ne doit pas interrompre le lot.
+                en_erreur += 1
                 self.logger.exception("echec inattendu [document_id=%s]", document_id)
                 await self._set_error(
                     document_id, {"message": "echec inattendu, voir les logs du worker"}
                 )
+        # Bilan du cycle : INGESTED -> IN_PROGRESS (champs crees) ou ERROR (motif en metadata).
+        self.logger.info(
+            "cycle termine [documents=%s pre_alimentes=%s error=%s champs_crees=%s duree=%.2fs]",
+            len(a_traiter),
+            pre_alimentes,
+            en_erreur,
+            champs_crees,
+            perf_counter() - cycle_started,
+        )
 
-    async def _fetch_candidates(self) -> List[int]:
-        """Documents prets, les plus anciens d'abord."""
+    async def _load_store(self) -> Dict[str, Any]:
+        """Reglages du cycle. Une lecture en echec laisse les valeurs par defaut :
+        le worker ne s'arrete pas parce qu'app_setting est illisible."""
+        try:
+            return await settings_store.load()
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self.logger.warning("lecture d'app_setting impossible, valeurs par defaut : %s", exc)
+            return {}
+
+    async def _engine_ready(self, store: Mapping[str, Any]) -> bool:
+        """Faux si les documents `ocr` doivent attendre ce cycle.
+
+        Un moteur coupe (`ocr_enabled` faux) ou hors ligne ne met pas les
+        documents en ERROR : ils restent INGESTED et sont repris au cycle suivant.
+        La sonde tourne a chaque cycle, meme sans document, et son resultat est
+        ecrit dans app_setting quand il change. Seuls les changements d'etat sont
+        journalises, pour ne pas repeter l'alerte a chaque cycle d'une longue panne.
+        """
+        if store.get("ocr_enabled", True) is False:
+            if self._ocr_coupe is not True:
+                self.logger.warning("OCR desactive (ocr_enabled=false), documents ocr en attente")
+            self._ocr_coupe = True
+            return False
+        if self._ocr_coupe:
+            self.logger.info("OCR reactive (ocr_enabled=true)")
+        self._ocr_coupe = False
+
+        motif = await self.connector.ping()
+        await self._record_status(store, motif is None)
+        if motif is not None:
+            if self._moteur_joignable is not False:
+                self.logger.warning(
+                    "moteur OCR injoignable, documents ocr laisses en INGESTED [%s]", motif
+                )
+            self._moteur_joignable = False
+            return False
+        if self._moteur_joignable is not True:
+            self.logger.info("moteur OCR joignable [connecteur=%s]", self.connector.name)
+        self._moteur_joignable = True
+        return True
+
+    async def _record_status(self, store: Mapping[str, Any], joignable: bool) -> None:
+        """Ecrit le dernier ping dans app_setting, seulement s'il a change."""
+        actuel = store.get(settings_store.OCR_STATUS_KEY)
+        if isinstance(actuel, dict) and actuel.get("reachable") is joignable:
+            return
+        try:
+            async with get_async_session() as db:
+                await settings_store.set_value(
+                    db,
+                    settings_store.OCR_STATUS_KEY,
+                    {"reachable": joignable},
+                    updated_by="prepopulation",
+                )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self.logger.warning("statut OCR non enregistre : %s", exc)
+
+    async def _fetch_candidates(self, ocr_pret: bool) -> List[Tuple[int, str]]:
+        """(id, prealim_mode) des documents prets, les plus anciens d'abord.
+
+        Sans moteur (`ocr_pret` faux), seuls les documents `empty` sont rendus.
+        """
+        query = select(Document.id, Document.prealim_mode).where(
+            Document.status == DocumentStatus.INGESTED.value
+        )
+        if not ocr_pret:
+            query = query.where(Document.prealim_mode == PrealimMode.EMPTY.value)
         async with get_async_session() as db:
             rows = (
-                (
-                    await db.execute(
-                        select(Document.id)
-                        .where(Document.status == DocumentStatus.INGESTED.value)
-                        .order_by(Document.created_at)
-                        .limit(self.batch_size)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            return list(rows)
+                await db.execute(query.order_by(Document.created_at).limit(self.batch_size))
+            ).all()
+            return [(int(r[0]), str(r[1])) for r in rows]
 
     # -- Traitement d'un document -------------------------------------------
 
-    async def _process_one(self, document_id: int) -> None:
+    async def _process_one(self, document_id: int, mode: str = PrealimMode.OCR.value) -> int:
+        """Pre-alimente un document ; retourne le nombre de champs crees."""
         dataset_id, file_id, file_path = await self._load_context(document_id)
-        images = self._page_images(file_id)
 
         # Le schema passe avant l'OCR : c'est lui qui dit au connecteur quels
         # champs extraire et a quoi ressemble chaque page.
         schema = await self._load_schema(dataset_id, document_id)
         field_specs: List[Dict[str, Any]] = schema.get("field_specs") or []
-        modele = ModeleDocument.depuis_schema(schema)
 
-        ocr = await self._run_ocr(images, document_id, modele)
-        _controle_pages(ocr)
-        await self._remettre_en_ordre(document_id, file_id, file_path, images, ocr)
+        ocr: Optional[SmartdocDocument] = None
+        if mode != PrealimMode.EMPTY.value:
+            images = self._page_images(file_id)
+            modele = ModeleDocument.from_schema(schema)
+            ocr = await self._run_ocr(images, document_id, modele)
+            _check_pages(ocr)
+            await self._restore_order(document_id, file_id, file_path, images, ocr)
 
         payloads = merge(field_specs, ocr)
         if not payloads:
             raise PrepopulationError(f"schema du dataset {dataset_id} sans field_spec")
 
-        try:
-            result = await self.api_client.create_fields_bulk(document_id, payloads)
-        except ApiClientError as exc:
-            raise PrepopulationError(f"creation des champs refusee : {exc}") from exc
+        result = await self._persist(document_id, dataset_id, payloads, ocr)
 
-        await self._set_status(document_id, DocumentStatus.IN_PROGRESS)
         self.logger.info(
-            "document pre-alimente [document_id=%s dataset_id=%s champs=%s "
+            "document pre-alimente [document_id=%s dataset_id=%s mode=%s champs=%s "
             "detectes=%s crees=%s ignores=%s ocr=%s]",
             document_id,
             dataset_id,
+            mode,
             len(payloads),
             count_detected(payloads),
-            len(result.get("created", [])),
-            len(result.get("skipped", [])),
+            len(result.created),
+            len(result.skipped),
             "oui" if ocr is not None else "non",
         )
+        return len(result.created)
 
     async def _load_context(self, document_id: int) -> Tuple[int, int, str]:
         async with get_async_session() as db:
@@ -298,18 +361,81 @@ class PrepopulationWorker(BaseWorker):
         return ocr
 
     async def _load_schema(self, dataset_id: int, document_id: int) -> Dict[str, Any]:
-        try:
-            return await self.api_client.get_dataset_schema(dataset_id)
-        except ApiClientError as exc:
-            raise PrepopulationError(
-                f"schema injoignable pour le document {document_id} : {exc}"
-            ) from exc
-
-    async def _set_status(self, document_id: int, status: DocumentStatus) -> None:
+        """Schema du dataset sous la forme que lisent le modele OCR et le merger."""
         async with get_async_session() as db:
+            schema = (
+                await db.execute(
+                    select(DocSchema)
+                    .join(Dataset, Dataset.schema_id == DocSchema.id)
+                    .where(Dataset.id == dataset_id)
+                    .options(selectinload(DocSchema.field_specs), selectinload(DocSchema.pages))
+                )
+            ).scalar_one_or_none()
+            if schema is None:
+                raise PrepopulationError(
+                    f"schema introuvable pour le document {document_id} (dataset {dataset_id})"
+                )
+            return {
+                "name": schema.name,
+                "pages": [
+                    {"page_number": p.page_number, "description": p.description}
+                    for p in schema.pages
+                ],
+                "field_specs": [
+                    {c.name: getattr(fs, c.name) for c in fs.__table__.columns}
+                    for fs in sorted(schema.field_specs, key=lambda x: (x.page, x.display_order))
+                ],
+            }
+
+    async def _persist(
+        self,
+        document_id: int,
+        dataset_id: int,
+        payloads: List[Dict[str, Any]],
+        ocr: Optional[SmartdocDocument],
+    ) -> document_fields.BulkOutcome:
+        """Ecrit champs, OCR_RESULT et statut IN_PROGRESS dans une seule transaction.
+
+        Tout ou rien : le service de l'API cree les champs, le worker ajoute la
+        reponse brute du moteur (upsert sur document + dataset) et le passage en
+        IN_PROGRESS. Une exception annule l'ensemble.
+        """
+        async with get_async_session() as db:
+            document = await document_fields.get_document_or_none(db, document_id)
+            if document is None:
+                raise PrepopulationError("document introuvable")
+            try:
+                result = await document_fields.create_bulk(db, document, payloads)
+            except FieldSpecMismatch as exc:
+                raise PrepopulationError(f"creation des champs refusee : {exc}") from exc
+            if ocr is not None:
+                await self._upsert_ocr_result(db, document_id, dataset_id, ocr)
             await db.execute(
-                update(Document).where(Document.id == document_id).values(status=status.value)
+                update(Document)
+                .where(Document.id == document_id)
+                .values(status=DocumentStatus.IN_PROGRESS.value)
             )
+            return result
+
+    async def _upsert_ocr_result(
+        self, db: Any, document_id: int, dataset_id: int, ocr: SmartdocDocument
+    ) -> None:
+        """Garde la derniere reponse OCR du document : un rejeu remplace la precedente."""
+        values = {
+            "provider": self.connector.name.upper(),
+            "model": getattr(self.connector, "model", None),
+            "storage_mode": StorageMode.JSONB.value,
+            "raw_json": ocr.model_dump(mode="json"),
+        }
+        statement = pg_insert(OcrResult).values(
+            document_id=document_id, dataset_id=dataset_id, **values
+        )
+        await db.execute(
+            statement.on_conflict_do_update(
+                constraint="uq_ocr_result_document_dataset",
+                set_={**values, "processed_at": func.now()},
+            )
+        )
 
     async def _set_error(self, document_id: int, erreur: Dict[str, Any]) -> None:
         """Passe le document en ERROR et ecrit le motif dans metadata["erreur"]."""
@@ -343,7 +469,7 @@ class PrepopulationWorker(BaseWorker):
         async with get_async_session() as db:
             await db.execute(update(Document).where(Document.id == document_id).values(**values))
 
-    async def _remettre_en_ordre(
+    async def _restore_order(
         self,
         document_id: int,
         file_id: int,
@@ -363,8 +489,8 @@ class PrepopulationWorker(BaseWorker):
         permutation = _permutation(ocr.metadata.get("ordre_pages"), len(images))
         if not permutation:
             return
-        pdf_ordonne = await self._reordonner_pdf(file_id, file_path, permutation, len(images))
-        self._reordonner_images(images, permutation)
+        pdf_ordonne = await self._reorder_pdf(file_id, file_path, permutation, len(images))
+        self._reorder_images(images, permutation)
 
         deplacees = [{"page": page, "rang_origine": rang} for rang, page in permutation.items()]
         self.logger.warning(
@@ -378,7 +504,7 @@ class PrepopulationWorker(BaseWorker):
             trace["pdf_origine"] = file_path
         await self._update_metadata(document_id, trace)
 
-    async def _reordonner_pdf(
+    async def _reorder_pdf(
         self, file_id: int, file_path: str, permutation: Mapping[int, int], nombre: int
     ) -> Optional[str]:
         """Ecrit <nom>_ordonne.pdf et y fait pointer le FILE ; rend son chemin.
@@ -411,7 +537,7 @@ class PrepopulationWorker(BaseWorker):
         return nouveau
 
     @staticmethod
-    def _reordonner_images(images: Sequence[Path], permutation: Mapping[int, int]) -> None:
+    def _reorder_images(images: Sequence[Path], permutation: Mapping[int, int]) -> None:
         """Renomme les images pour que l'image N porte la page N du formulaire.
 
         Les noms cibles sont ceux des images existantes : l'image de rang r
@@ -455,7 +581,7 @@ def _permutation(ordre_pages: Any, nombre_images: int) -> Dict[int, int]:
     return {rang: page for page, rang in page_vers_rang.items() if rang != page}
 
 
-def _controle_pages(ocr: Optional[SmartdocDocument]) -> None:
+def _check_pages(ocr: Optional[SmartdocDocument]) -> None:
     """Bloque un document dont des pages a champs sont introuvables.
 
     Le connecteur le signale sans lever : une page manquante n'empeche pas

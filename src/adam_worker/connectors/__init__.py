@@ -30,13 +30,13 @@ def connector_from_settings(settings: "Settings") -> BaseOcrConnector:
         api_key=settings.mistral_api_key,
         endpoint=settings.mistral_ocr_endpoint,
         model=settings.mistral_ocr_model,
-        annotation_model=settings.mistral_annotation_model,
         timeout_seconds=float(settings.ocr_timeout_seconds),
         ca_bundle=settings.mistral_ca_bundle or None,
+        page_concurrency=settings.ocr_page_concurrency,
     )
 
 
-def connector_pour_recette(
+def connector_for_recipe(
     config: "ConfigOcr", settings: "Settings", defaut: BaseOcrConnector
 ) -> Tuple[BaseOcrConnector, bool]:
     """Le moteur d'une recette de benchmark, et s'il faut le fermer apres.
@@ -48,6 +48,9 @@ def connector_pour_recette(
     if not (config.provider or config.model or config.annotation_model or config.prompt):
         return defaut, False
     fournisseur = config.provider or ("MOCK" if settings.ocr_mock_enabled else "MISTRAL")
+    if fournisseur == "SMARTDOC_JSON":
+        # Construit par le worker, qui connait le passage (ses JSON).
+        raise ValueError("SMARTDOC_JSON : connecteur lie a un passage")
     if fournisseur == "MOCK":
         from adam_worker.connectors.mock import MockOcrConnector
 

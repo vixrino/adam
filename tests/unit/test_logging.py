@@ -7,7 +7,7 @@ from adam_core.utils.logging import build_log_config, get_logger
 def _settings(**overrides: object) -> CoreSettings:
     base: dict[str, object] = {
         "app_env": "dev",
-        "app_name": "ADAM",
+        "app_name": "nota",
         "app_version": "0.1.0",
         "postgres_user": "u",
         "postgres_password": "p",

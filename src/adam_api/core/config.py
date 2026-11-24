@@ -1,9 +1,12 @@
 """
-Settings specifiques a l'API ADAM.
+Settings specifiques a l'API nota.
 """
 
 from functools import lru_cache
 from typing import List
+
+from pydantic import Field, ValidationError, model_validator
+from pydantic_settings import SettingsConfigDict
 
 from adam_core.core.config import CoreSettings
 
@@ -12,40 +15,76 @@ from adam_core.core.config import CoreSettings
 #: URL, et importer main.py depuis un worker chargerait toute l'application.
 API_PREFIX = "/api/v1"
 
+#: Environnements ou les durcissements ci-dessous sont suspendus. "test" est celui
+#: de la suite de tests, jamais un deploiement.
+_LOCAL_ENVIRONMENTS = {"dev", "test"}
+
+#: Longueur minimale de INTERNAL_API_KEY hors DEV (secret partage par tous les services).
+_MIN_INTERNAL_API_KEY_LENGTH = 32
+
 
 class Settings(CoreSettings):
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
+
     api_host: str
     api_port: int
     api_version: str
     api_title: str
     api_cors_origins: str
     api_disable_jwt_validation: bool
-    #: Matricule endosse quand la validation JWT est desactivee. Resolu en base
-    #: comme n'importe quel appelant : c'est ce qui evite de reinventer un
-    #: UserCaller de toutes pieces, dont l'organisation finissait par ne
-    #: correspondre a aucune ligne reelle. Sans effet hors bypass.
-    api_dev_matricule: str = "MAT00003"
+
+    # Dev
+    api_dev_matricule: str
+
+    # Auth service machine
     internal_auth_enabled: bool
     internal_api_key: str
     pvc_mount_path: str
     ocr_mock_enabled: bool
     ocr_mock_confidence: float
     ocr_timeout_seconds: int
+    #: Pages d'un document lues en parallele par le connecteur. 1 = sequentiel. Le plafond
+    #: de debit du moteur borne la valeur utile : au-dela, il repond 429.
+    ocr_page_concurrency: int = Field(default=3, ge=1, le=16)
     # Connecteur Mistral. Optionnels tant que ocr_mock_enabled est vrai ; le
     # constructeur du connecteur refuse une cle ou un endpoint vides.
     mistral_api_key: str = ""
     mistral_ocr_endpoint: str = ""
     mistral_ocr_model: str = "mistral-ocr-latest"
-    #: Modele qui extrait les champs du markdown rendu par l'OCR. L'endpoint
-    #: choisit seul le sien quand on lui delegue l'annotation, et son defaut
-    #: n'est pas deploye partout : on le nomme ici plutot que de le subir.
     mistral_annotation_model: str = "mistral-medium-latest"
     #: Chemin d'un truststore PEM pour un endpoint prive ; vide = CA systeme.
-    mistral_ca_bundle: str = ""
+    mistral_ca_bundle: str = "https.truststore.pem"
 
-    #: Annuaire Active Directory, interroge par le compte de service pour
-    #: affecter quelqu'un a un projet avant sa premiere connexion. Le mot de
-    #: passe ne vit que dans l'environnement, jamais dans le code.
+    @model_validator(mode="after")
+    def _harden_outside_dev(self) -> "Settings":
+        """Refuse de demarrer hors DEV avec une authentification affaiblie.
+
+        api_disable_jwt_validation=true endosse un matricule fixe (api_dev_matricule)
+        et internal_auth_enabled=false laisse n'importe quel X-Internal-Token devenir
+        un appelant service : dans les deux cas, plus rien ne prouve qui appelle.
+        Une INTERNAL_API_KEY courte se devine, et c'est le seul secret des services.
+        """
+        if self.app_env.lower() in _LOCAL_ENVIRONMENTS:
+            return self
+        if self.api_disable_jwt_validation or not self.internal_auth_enabled:
+            raise ValueError(
+                "bypass d'authentification interdit hors DEV (APP_ENV="
+                f"{self.app_env}) : API_DISABLE_JWT_VALIDATION doit etre false "
+                "et INTERNAL_AUTH_ENABLED true"
+            )
+        if len(self.internal_api_key) < _MIN_INTERNAL_API_KEY_LENGTH:
+            raise ValueError(
+                f"INTERNAL_API_KEY trop courte hors DEV (APP_ENV={self.app_env}) : "
+                f"{_MIN_INTERNAL_API_KEY_LENGTH} caracteres minimum"
+            )
+        return self
+
+    @property
+    def cors_origins(self) -> List[str]:
+        return [o.strip() for o in self.api_cors_origins.split(",")]
+
+    #: Annuaire Active Directory : actif si AD_ENABLED est vrai OU si la cle `ad_enabled` de
+    #: app_setting l'est (la variable force, le reglage en base allume a chaud).
     ad_enabled: bool = False
     ad_host: str = ""
     ad_port: int = 636
@@ -61,6 +100,7 @@ class Settings(CoreSettings):
     ad_min_chars: int = 3
     #: Une recherche au plus toutes les N secondes par utilisateur.
     ad_rate_seconds: float = 2.0
+
     #: Comptes a ne jamais proposer, bien que ranges sous AD_BASE_DN : debuts
     #: de matricule (« OT2 ») et unites d'organisation (« OT2 »), separes par
     #: des virgules.
@@ -68,21 +108,36 @@ class Settings(CoreSettings):
     #: Fins de matricule a exclure (« OT2 » : I21080MOT2).
     ad_exclude_suffixes: str = ""
     ad_exclude_ous: str = ""
-
+    #: Slug de l'organisation des agents crees a leur premiere connexion, quand
+    #: aucun mot de leur departement AD n'est le slug d'une organisation. Vide :
+    #: pas de repli, l'agent est refuse.
+    ad_organisation_defaut: str = ""
     #: Cle du HMAC des valeurs lues sur les champs sensibles, dans les ecarts du
     #: benchmark : une erreur recurrente sur un IBAN se reconnait a son
     #: empreinte, sans que l'IBAN soit stocke. Vide : le benchmark refuse de
     #: tourner. Ne vit que dans l'environnement, jamais en base ni en commit.
     comparison_hmac_key: str = ""
 
-    @property
-    def cors_origins(self) -> List[str]:
-        return [o.strip() for o in self.api_cors_origins.split(",")]
-
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    try:
+        return Settings()  # type: ignore[call-arg]
+    except ValidationError as e:
+        missing = [str(err["loc"][0]) for err in e.errors() if err["type"] == "missing"]
+        if not missing:  # configuration presente mais refusee
+            reasons = "; ".join(err["msg"].removeprefix("Value error, ") for err in e.errors())
+            raise RuntimeError(f"\n\n  NOTA configuration refusee : {reasons}\n") from e
+        raise RuntimeError(
+            "\n\n"
+            "  NOTA configuration manquante\n"
+            f"  Variables d'environnement absentes : {', '.join(missing)}\n"
+            "  Référence : resources/config/.env.template\n"
+        ) from e
+
+
+# def get_settings() -> Settings:
+#     return Settings()  # type: ignore[call-arg]
 
 
 settings = get_settings()

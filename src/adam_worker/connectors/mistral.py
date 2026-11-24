@@ -60,7 +60,20 @@ import asyncio
 import base64
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Awaitable,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+)
 
 import httpx
 
@@ -81,9 +94,38 @@ from adam_worker.connectors.modele import FieldDef, ModeleDocument
 
 logger = get_logger(__name__)
 
+_T = TypeVar("_T")
+
+
+class _PageLue(NamedTuple):
+    """Resultat du traitement d'une page, avant que l'ordre des pages n'intervienne."""
+
+    rang: int
+    markdown: str
+    dimensions: Dict[str, Any]
+    page_formulaire: Optional[int]
+    annotation: Optional[Dict[str, Any]]
+
+
+def _retry_after(response: httpx.Response) -> Optional[float]:
+    """Attente demandee par le moteur (en secondes), bornee ; None si absente ou illisible."""
+    try:
+        seconds = float(response.headers.get("Retry-After", ""))
+    except ValueError:
+        return None
+    return min(max(seconds, 0.0), _RETRY_AFTER_MAX_SECONDS)
+
+
 _MAX_ATTEMPTS = 3
 _BACKOFF_SECONDS = 1.0
-_RETRYABLE_STATUS = range(500, 600)
+#: Delai de la sonde de joignabilite : court, elle ne fait aucun travail.
+_PING_TIMEOUT_SECONDS = 5.0
+#: 429 est rejoue comme un 5xx : la lecture des pages en parallele peut atteindre le
+#: plafond de debit du moteur, qui se leve en attendant.
+_RETRYABLE_STATUS = (429, *range(500, 600))
+#: Attente maximale suivant un en-tete Retry-After, pour qu'un moteur ne puisse pas
+#: bloquer le worker plusieurs minutes.
+_RETRY_AFTER_MAX_SECONDS = 30.0
 
 _MIME_BY_SUFFIX = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
@@ -154,6 +196,7 @@ class MistralOcrConnector(BaseOcrConnector):
         annotation_model: str = "mistral-medium-latest",
         timeout_seconds: float = 30.0,
         ca_bundle: Optional[str] = None,
+        page_concurrency: int = 1,
         client: Optional[httpx.AsyncClient] = None,
         consigne: Optional[str] = None,
     ) -> None:
@@ -161,7 +204,16 @@ class MistralOcrConnector(BaseOcrConnector):
             raise ValueError("cle d'API Mistral absente : renseigner MISTRAL_API_KEY")
         if not endpoint:
             raise ValueError("endpoint Mistral absent : renseigner MISTRAL_OCR_ENDPOINT")
+        if not endpoint.lower().startswith(("https://")):
+            raise ValueError(
+                "MISTRAL_OCR_ENDPOINT doit commencer par http:// ou https:// "
+                "(ex : https://hote:port, sans /v1 : le connecteur l'ajoute)"
+            )
+        if page_concurrency < 1:
+            raise ValueError("OCR_PAGE_CONCURRENCY doit etre superieur ou egal a 1")
         self.endpoint = endpoint.rstrip("/")
+        #: Pages d'un meme document traitees en meme temps. 1 = sequentiel.
+        self.page_concurrency = page_concurrency
         self.model = model
         self.annotation_model = annotation_model
         #: Consigne du modele d'annotation ; celle d'une recette de benchmark
@@ -184,6 +236,29 @@ class MistralOcrConnector(BaseOcrConnector):
 
     # -- Interface BaseOcrConnector -----------------------------------------
 
+    async def ping(self) -> Optional[str]:
+        """GET /v1/models : toute reponse HTTP prouve que le moteur est joignable.
+
+        Seule une erreur de transport (delai, connexion refusee, certificat) le
+        declare injoignable. Un statut d'erreur ne le fait pas : un point d'entree
+        prive peut refuser ou ignorer cette route tout en servant /v1/ocr, et un
+        faux « hors ligne » arreterait toute la pre-alimentation. Un 401 ou 403 est
+        seulement journalise, car la cle est alors probablement refusee aussi.
+        """
+        try:
+            response = await self._client.get(
+                f"{self.endpoint}/v1/models", timeout=_PING_TIMEOUT_SECONDS
+            )
+        except httpx.HTTPError as exc:
+            detail = str(exc)
+            return type(exc).__name__ + (f" ({detail})" if detail else "")
+        if response.status_code in (401, 403):
+            logger.warning(
+                "sonde du moteur OCR : statut %s sur /v1/models, la cle est peut-etre refusee",
+                response.status_code,
+            )
+        return None
+
     async def extract(
         self, images: Sequence[Path], modele: Optional[ModeleDocument] = None
     ) -> Optional[SmartdocDocument]:
@@ -191,36 +266,43 @@ class MistralOcrConnector(BaseOcrConnector):
             # Sans champs, il n'y a rien a demander au moteur : c'est le schema
             # du dataset qui est incomplet, pas le document.
             raise OcrConnectorError("modele de document absent ou sans champ declare")
-        descriptions = _descriptions_pages(modele.champs, modele.pages)
-        consigne = _consigne_identification(modele.nom, descriptions, modele.nombre_pages)
+        descriptions = _page_descriptions(modele.champs, modele.pages)
+        consigne = _identification_instruction(modele.nom, descriptions, modele.page_total)
         pages: List[Page] = []
         anomalies: List[Dict[str, Any]] = []
         #: page du formulaire reconnue -> rang de l'image qui la porte.
         reconnues: Dict[int, int] = {}
         lues = 0
         detected = 0
-        for rang, image in enumerate(images, start=1):
-            markdown, dims = await self._read_page(image, rang)
-            if not markdown.strip():
+        # Chaque page est lue, identifiee et annotee sans rien savoir des autres : elles
+        # peuvent donc avancer en parallele. L'ordre n'intervient qu'ensuite, pour
+        # relever les anomalies (une page en double depend de celles qui la precedent).
+        traitees = await self._in_parallel(
+            self._process_page(rang, image, consigne, descriptions, modele)
+            for rang, image in enumerate(images, start=1)
+        )
+        for lue in traitees:
+            if not lue.markdown.strip():
                 # Page illisible ou vide : rien a identifier ni a annoter.
                 continue
             lues += 1
-            page_number = await self._identify(markdown, rang, consigne, descriptions)
-            anomalie = _anomalie(rang, page_number, reconnues, descriptions)
+            anomalie = _anomaly(lue.rang, lue.page_formulaire, reconnues, descriptions)
             if anomalie is not None:
                 logger.warning("page du formulaire inattendue : %s", anomalie)
                 anomalies.append(anomalie)
                 if anomalie["type"] == "page_en_double":
+                    # Annotee pour rien, sans consequence : le cas est rare.
                     continue
-            if page_number is None:
+            if lue.page_formulaire is None:
                 continue
-            reconnues[page_number] = rang
-            fields = modele.champs.get(page_number)
+            reconnues[lue.page_formulaire] = lue.rang
+            fields = modele.champs.get(lue.page_formulaire)
             if not fields:
                 # Page reconnue mais sans champs : rien a annoter.
                 continue
-            annotation = await self._extract_fields(markdown, page_number, fields)
-            page = self._build_page(page_number, fields, annotation, dims, modele)
+            page = self._build_page(
+                lue.page_formulaire, fields, lue.annotation or {}, lue.dimensions, modele
+            )
             detected += sum(1 for _, _, kv in _iter_pairs(page) if kv.value is not None)
             pages.append(page)
 
@@ -259,6 +341,49 @@ class MistralOcrConnector(BaseOcrConnector):
             },
         )
 
+    # -- Traitement des pages -----------------------------------------------
+
+    async def _process_page(
+        self,
+        rang: int,
+        image: Path,
+        consigne: str,
+        descriptions: Mapping[int, str],
+        modele: ModeleDocument,
+    ) -> _PageLue:
+        """OCR, identification, puis annotation d'une page, independamment des autres."""
+        markdown, dims = await self._read_page(image, rang)
+        if not markdown.strip():
+            return _PageLue(rang, "", dims, None, None)
+        page_formulaire = await self._identify(markdown, rang, consigne, descriptions)
+        fields = modele.champs.get(page_formulaire) if page_formulaire is not None else None
+        annotation = None
+        if page_formulaire is not None and fields:
+            annotation = await self._extract_fields(markdown, page_formulaire, fields)
+        return _PageLue(rang, markdown, dims, page_formulaire, annotation)
+
+    async def _in_parallel(self, coroutines: Iterable[Awaitable[_T]]) -> List[_T]:
+        """Execute les coroutines avec au plus `page_concurrency` en meme temps.
+
+        Rend les resultats dans l'ordre. A la premiere erreur, annule les autres et
+        la relance telle quelle (pas d'ExceptionGroup) : un document ne se
+        pre-alimente pas a moitie.
+        """
+        limite = asyncio.Semaphore(self.page_concurrency)
+
+        async def _bounded[T](coroutine: Awaitable[T]) -> T:
+            async with limite:
+                return await coroutine
+
+        taches = [asyncio.ensure_future(_bounded(c)) for c in coroutines]
+        try:
+            return list(await asyncio.gather(*taches))
+        except BaseException:
+            for tache in taches:
+                tache.cancel()
+            await asyncio.gather(*taches, return_exceptions=True)
+            raise
+
     # -- Appel de l'API -----------------------------------------------------
 
     async def _read_page(self, image: Path, page_number: int) -> Tuple[str, Dict[str, Any]]:
@@ -291,7 +416,7 @@ class MistralOcrConnector(BaseOcrConnector):
             ],
             "response_format": _identification_format(),
         }
-        reponse = _contenu_json(await self._post("/v1/chat/completions", payload, rang), rang)
+        reponse = _json_content(await self._post("/v1/chat/completions", payload, rang), rang)
         page = reponse.get("page")
         # bool est un int en Python : True ne doit pas se lire page 1.
         if isinstance(page, int) and not isinstance(page, bool) and page in descriptions:
@@ -317,7 +442,7 @@ class MistralOcrConnector(BaseOcrConnector):
             "response_format": _annotation_format(page_number, fields),
         }
         data = await self._post("/v1/chat/completions", payload, page_number)
-        return _flatten(_contenu_json(data, page_number), set(fields))
+        return _flatten(_json_content(data, page_number), set(fields))
 
     async def _post(self, path: str, payload: Dict[str, Any], page_number: int) -> Dict[str, Any]:
         """POST avec reprises sur erreurs reseau et 5xx, comme ApiClient."""
@@ -325,13 +450,22 @@ class MistralOcrConnector(BaseOcrConnector):
         last_error = ""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             self.appels += 1
+            attente = _BACKOFF_SECONDS * attempt
             try:
                 response = await self._client.post(url, json=payload)
             except httpx.HTTPError as exc:
-                last_error = f"erreur reseau : {exc}"
+                # Un timeout httpx a un message vide : sans le nom de la classe, le log
+                # ne dit pas s'il s'agit d'un delai depasse ou d'une connexion refusee.
+                detail = str(exc)
+                last_error = f"erreur reseau : {type(exc).__name__}" + (
+                    f" ({detail})" if detail else ""
+                )
             else:
                 if response.status_code in _RETRYABLE_STATUS:
                     last_error = f"statut {response.status_code}"
+                    demandee = _retry_after(response)
+                    if demandee is not None:
+                        attente = demandee
                 elif response.is_success:
                     try:
                         body = response.json()
@@ -356,7 +490,7 @@ class MistralOcrConnector(BaseOcrConnector):
                         f"(statut {response.status_code}) : {response.text[:300]}"
                     )
             if attempt < _MAX_ATTEMPTS:
-                await asyncio.sleep(_BACKOFF_SECONDS * attempt)
+                await asyncio.sleep(attente)
         raise OcrConnectorError(
             f"moteur OCR injoignable pour la page {page_number} "
             f"apres {_MAX_ATTEMPTS} tentatives ({last_error})"
@@ -394,7 +528,7 @@ class MistralOcrConnector(BaseOcrConnector):
         sections: Dict[str, List[KVPair]] = {}
         for key, spec in fields.items():
             value = _to_kv_value(annotation.get(key), spec)
-            cle, group_id = modele.cible(key)
+            cle, group_id = modele.target_of(key)
             section_id = cle.split(".", 1)[0]
             sections.setdefault(section_id, []).append(
                 KVPair(id=cle, group_id=group_id, value=value)
@@ -412,7 +546,7 @@ class MistralOcrConnector(BaseOcrConnector):
         )
 
 
-def _contenu_json(data: Mapping[str, Any], page_number: int) -> Dict[str, Any]:
+def _json_content(data: Mapping[str, Any], page_number: int) -> Dict[str, Any]:
     """Objet JSON rendu par une completion ; {} si elle ne rend rien."""
     choices = data.get("choices") or []
     if not choices:
@@ -434,7 +568,7 @@ def _contenu_json(data: Mapping[str, Any], page_number: int) -> Dict[str, Any]:
     return raw
 
 
-def _descriptions_pages(
+def _page_descriptions(
     page_fields: Mapping[int, Mapping[str, FieldDef]], titles: Mapping[int, str]
 ) -> Dict[int, str]:
     """Description de chaque page reconnaissable : ses rubriques imprimees, ou
@@ -447,7 +581,7 @@ def _descriptions_pages(
     return dict(sorted(descriptions.items()))
 
 
-def _consigne_identification(nom: str, descriptions: Mapping[int, str], total: int) -> str:
+def _identification_instruction(nom: str, descriptions: Mapping[int, str], total: int) -> str:
     """Consigne d'identification, construite depuis le modele du document.
 
     Elle ne nomme aucun formulaire particulier : le nom et la description des
@@ -495,7 +629,7 @@ def _identification_format() -> Dict[str, Any]:
     }
 
 
-def _anomalie(
+def _anomaly(
     rang: int,
     page_number: Optional[int],
     reconnues: Mapping[int, int],

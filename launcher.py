@@ -1,14 +1,17 @@
-"""Point d'entree unique des deploiements ADAM : l'API, les workers, ou les deux.
+"""Point d'entree unique des deploiements nota : l'API, les workers, ou les deux.
 
     python launcher.py           # les deux, comme `all`
     python launcher.py api
     python launcher.py worker
+    python launcher.py migrate
+
+`all` migre toujours avant de lancer l'API et les workers.
 
 Chaque mode n'importe que ce dont il a besoin : le pod API ne charge pas la
 chaine des workers (rendu PDF, consensus), le pod worker ne charge pas
 l'application FastAPI. D'ou les imports places dans les fonctions.
 
-Contrairement a scripts/run_dev.py, l'API tourne ici sans rechargement a chaud
+Contrairement a uvicorn --reload, l'API tourne ici sans rechargement a chaud
 et ecoute sur API_HOST : c'est le lanceur des pods, pas celui du poste de dev.
 
 `all` lance l'API et les workers dans deux processus fils, pas dans un seul :
@@ -29,6 +32,8 @@ import threading
 import time
 from pathlib import Path
 from typing import IO, Callable, Sequence
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 #: Delai laisse a un processus fils pour finir son cycle avant d'etre tue.
 _STOP_TIMEOUT_SECONDS = 30
@@ -71,6 +76,15 @@ def _run_worker() -> None:
         asyncio.run(run_workers())
     except KeyboardInterrupt:
         pass
+
+
+def _run_migrate() -> None:
+    """Applique les migrations Alembic jusqu'a head avec droit Admin
+    """
+    # pylint: disable=import-outside-toplevel
+    from adam_core.db.migrate import upgrade_head
+
+    upgrade_head()
 
 
 def _stop(process: subprocess.Popen[bytes]) -> None:
@@ -118,6 +132,8 @@ def _spawn(target: str) -> tuple[subprocess.Popen[bytes], threading.Thread]:
 
 
 def _run_all() -> int:
+    # Un seul pod porte migration, API et workers.
+    _run_migrate()
     spawned = [_spawn(target) for target in _CHILDREN]
     processes = [process for process, _ in spawned]
     try:
@@ -156,12 +172,13 @@ _TARGETS: dict[str, Callable[[], int | None]] = {
     "api": _run_api,
     "worker": _run_worker,
     "all": _run_all,
+    "migrate": _run_migrate,
 }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Lance la cible demandee et rend le code de sortie du processus."""
-    parser = argparse.ArgumentParser(description="Lanceur ADAM : API, workers, ou les deux.")
+    parser = argparse.ArgumentParser(description="Lanceur nota : API, workers, ou les deux.")
     parser.add_argument(
         "target",
         nargs="?",

@@ -32,8 +32,8 @@ from adam_worker.connectors.mistral import (
     _CONSIGNE,
     _IDENTIFICATION,
     MistralOcrConnector,
-    _consigne_identification,
-    _descriptions_pages,
+    _identification_instruction,
+    _page_descriptions,
     _to_kv_value,
 )
 from adam_worker.connectors.modele import ModeleDocument
@@ -485,6 +485,108 @@ def test_erreur_reseau_epuise_les_reprises(tmp_path: Path, monkeypatch) -> None:
     assert len(attempts) == 3
 
 
+def test_le_timeout_a_message_vide_nomme_sa_classe(tmp_path: Path, monkeypatch) -> None:
+    """str(httpx.ReadTimeout('')) est vide : le log doit quand meme dire de quoi il s'agit."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr("adam_worker.connectors.mistral._BACKOFF_SECONDS", 0.0)
+    with pytest.raises(OcrConnectorError, match=r"erreur reseau : ReadTimeout\)"):
+        asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE))
+
+
+def test_ping_erreur_de_transport_rend_la_classe() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("")
+
+    assert asyncio.run(_connector(handler).ping()) == "ConnectTimeout"
+
+
+@pytest.mark.parametrize("statut", [200, 401, 403, 404, 500])
+def test_ping_toute_reponse_http_vaut_joignable(statut: int) -> None:
+    """Un point d'entree prive peut refuser /v1/models tout en servant /v1/ocr."""
+    seen: List[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(statut)
+
+    assert asyncio.run(_connector(handler).ping()) is None
+    assert seen == ["/v1/models"]
+
+
+def test_429_est_rejoue_avec_l_attente_demandee(monkeypatch) -> None:
+    attentes: List[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        attentes.append(seconds)
+
+    monkeypatch.setattr("adam_worker.connectors.mistral.asyncio.sleep", _sleep)
+    reponses = [httpx.Response(429, headers={"Retry-After": "7"}), httpx.Response(200, json={})]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return reponses.pop(0)
+
+    assert asyncio.run(_connector(handler)._post("/v1/ocr", {}, 1)) == {}
+    assert attentes == [7.0]
+
+
+def test_retry_after_est_borne_et_ignore_s_il_est_illisible() -> None:
+    from adam_worker.connectors.mistral import _retry_after
+
+    def reponse(valeur: Optional[str]) -> httpx.Response:
+        return httpx.Response(429, headers={} if valeur is None else {"Retry-After": valeur})
+
+    assert _retry_after(reponse("5")) == 5.0
+    assert _retry_after(reponse("9999")) == 30.0
+    assert _retry_after(reponse("Wed, 21 Oct 2026 07:28:00 GMT")) is None
+    assert _retry_after(reponse(None)) is None
+
+
+def test_les_pages_avancent_en_parallele_dans_la_limite(tmp_path: Path) -> None:
+    """Six pages, concurrence 3 : jamais plus de 3 pages a la fois, et plus d'une."""
+    etat = {"en_vol": 0, "pic": 0, "pages": 0}
+    base = _routeur(lambda n: {}, identification=lambda n: 1)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/ocr"):
+            etat["en_vol"] += 1
+            etat["pic"] = max(etat["pic"], etat["en_vol"])
+        await asyncio.sleep(0.01)
+        reponse = base(request)
+        if request.url.path.endswith("/v1/ocr"):
+            etat["en_vol"] -= 1
+        return reponse
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    connecteur = MistralOcrConnector(
+        api_key="cle-test", endpoint=ENDPOINT, page_concurrency=3, client=client
+    )
+    asyncio.run(connecteur.extract(_images(tmp_path, 6), MODELE))
+    assert 1 < etat["pic"] <= 3
+
+
+def test_une_erreur_en_parallele_garde_son_type(tmp_path: Path) -> None:
+    """Pas d'ExceptionGroup : l'appelant continue d'attraper OcrConnectorError."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.005)
+        return httpx.Response(422, json={"detail": "refuse"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    connecteur = MistralOcrConnector(
+        api_key="cle-test", endpoint=ENDPOINT, page_concurrency=3, client=client
+    )
+    with pytest.raises(OcrConnectorError, match="statut 422"):
+        asyncio.run(connecteur.extract(_images(tmp_path, 6), MODELE))
+
+
+def test_concurrence_invalide_est_refusee() -> None:
+    with pytest.raises(ValueError, match="OCR_PAGE_CONCURRENCY"):
+        MistralOcrConnector(api_key="cle", endpoint=ENDPOINT, page_concurrency=0)
+
+
 def test_statut_4xx_ne_se_rejoue_pas(tmp_path: Path) -> None:
     attempts: List[int] = []
 
@@ -533,6 +635,13 @@ def test_cle_et_endpoint_obligatoires() -> None:
         MistralOcrConnector(api_key="cle", endpoint="")
 
 
+@pytest.mark.parametrize("endpoint", ["api.mistral.ai", "hote-interne:8443", "//hote"])
+def test_endpoint_sans_protocole_est_refuse_au_demarrage(endpoint: str) -> None:
+    """Sans protocole, httpx echoue a chaque page apres 3 tentatives et met le document en ERROR."""
+    with pytest.raises(ValueError, match="http://"):
+        MistralOcrConnector(api_key="cle", endpoint=endpoint)
+
+
 def test_factory_choisit_le_connecteur_selon_la_configuration() -> None:
     """CA-4 : le passage du mock a Mistral est un changement de configuration."""
     mock_settings = SimpleNamespace(ocr_mock_enabled=True, ocr_mock_confidence=0.9)
@@ -546,9 +655,11 @@ def test_factory_choisit_le_connecteur_selon_la_configuration() -> None:
         mistral_annotation_model="mistral-medium-latest",
         mistral_ca_bundle="",
         ocr_timeout_seconds=30,
+        ocr_page_concurrency=4,
     )
     connector = connector_from_settings(mistral_settings)
     assert isinstance(connector, MistralOcrConnector)
+    assert connector.page_concurrency == 4
     assert connector.annotation_model == "mistral-medium-latest"
 
 
@@ -580,14 +691,15 @@ def test_lignes_du_cerfa_vierge() -> None:
     assert "cautionnement.personne_cautionnee" in CERFA_V2_PAGE_FIELDS[11]
 
 
+
 def test_le_schema_couvre_les_pages_a_champs_du_cerfa() -> None:
     """Pages 1 a 11 ; la 12 n'est qu'un avertissement d'envoi."""
     assert sorted(CERFA_V2_PAGE_FIELDS) == list(range(1, 12))
 
 
 def _consigne(modele: ModeleDocument) -> str:
-    descriptions = _descriptions_pages(modele.champs, modele.pages)
-    return _consigne_identification(modele.nom, descriptions, modele.nombre_pages)
+    descriptions = _page_descriptions(modele.champs, modele.pages)
+    return _identification_instruction(modele.nom, descriptions, modele.page_total)
 
 
 # -- Extraction generique ---------------------------------------------------
@@ -609,7 +721,7 @@ def test_un_autre_formulaire_que_le_cerfa(tmp_path: Path) -> None:
     """Un bulletin de salaire de deux pages, decrit en base comme n'importe
     quel schema : identification et annotation suivent son modele, et la
     consigne ne parle plus du CERFA."""
-    bulletin = ModeleDocument.depuis_schema(
+    bulletin = ModeleDocument.from_schema(
         {
             "name": "Bulletin de salaire",
             "pages": [
@@ -681,14 +793,14 @@ def test_modele_depuis_schema_une_propriete_par_ligne_de_tableau() -> None:
         }
         for n in range(1, 7)
     ]
-    modele = ModeleDocument.depuis_schema({"name": "x", "field_specs": specs})
+    modele = ModeleDocument.from_schema({"name": "x", "field_specs": specs})
     assert list(modele.champs[10]) == [
         f"credits_consommation.pret_{n}.reference" for n in range(1, 7)
     ]
     propriete = modele.champs[10]["credits_consommation.pret_2.reference"]
     assert propriete["description"] == "Reference du pret (ligne n° 2 du tableau)"
-    assert modele.cible("credits_consommation.pret_2.reference") == (
+    assert modele.target_of("credits_consommation.pret_2.reference") == (
         "credits_consommation.reference",
         "pret_2",
     )
-    assert modele.nombre_pages == 10
+    assert modele.page_total == 10

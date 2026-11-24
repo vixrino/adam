@@ -85,6 +85,7 @@ def _recette(status: str = "LOCKED", config: Optional[Dict[str, Any]] = None, **
         locked_at=_NOW,
         created_at=_NOW,
     )
+
     return SimpleNamespace(**{**base, **autres})
 
 
@@ -186,6 +187,7 @@ class TestExports:
         empreintes = db.ajoutes[0].verite_empreintes
         assert set(empreintes) == {"14", "15"} and empreintes["14"] != empreintes["15"]
 
+
     def test_document_hors_du_dataset_422(self) -> None:
         db = _db({"Dataset": SimpleNamespace(id=4, schema_id=9)}, _resultat(scalars=[14]))
         r = _client(SUPERVISEUR, db).post(
@@ -237,6 +239,7 @@ class TestRecettes:
         assert client.patch("/test-recipes/3", json=corps).status_code == 403
         assert client.post("/test-recipes/3/versions", json=corps).status_code == 403
 
+
     def test_creation_sur_tout_l_export_avec_moteur(self) -> None:
         r = self._creer(
             {
@@ -254,9 +257,8 @@ class TestRecettes:
         )
         assert r.status_code == 201, r.text
         corps = r.json()
-        assert corps["status"] == "LOCKED" and corps["document_ids"] == [14, 15]
+        assert corps["status"] == "DRAFT" and corps["document_ids"] == [14, 15]
         assert (corps["dataset_export_id"], corps["dataset_id"], corps["version"]) == (8, 4, 1)
-        # Le modele d'annotation laisse vide prend celui du .env, fige a la creation.
         assert corps["config"]["ocr"] == {
             "provider": "MISTRAL",
             "model": "mistral-ocr-2",
@@ -316,11 +318,12 @@ class TestRecettes:
         )
         assert r.status_code == 404
 
+
     def test_recette_figee_non_modifiable(self) -> None:
         db = _db({"TestRecipe": _recette("LOCKED")})
+
         r = _client(SUPERVISEUR, db).patch("/test-recipes/3", json={"description": "autre"})
         assert r.status_code == 409 and "/versions" in r.text
-
 
 class TestRefus:
     """Ce que la relecture a releve : recettes sans export, doublons, null."""
@@ -424,9 +427,9 @@ class TestVersions:
         assert r.status_code == 201, r.text
         corps = r.json()
         assert (corps["name"], corps["version"], corps["recette_racine_id"]) == ("r", 2, 3)
-        assert corps["document_ids"] == [14, 15] and corps["status"] == "LOCKED"
+        assert corps["document_ids"] == [14, 15] and corps["status"] == "DRAFT"
         assert corps["config"]["ocr"]["model"] == "mistral-ocr-2"
-        assert corps["config"]["ocr"]["provider"] in ("MISTRAL", "MOCK")
+        assert corps["config"]["ocr"]["provider"] in ("MISTRAL", "MOCK", "SMARTDOC_JSON")
         assert source.version == 1 and source.document_ids == [14]  # la source ne bouge pas
 
     def test_sans_corps_reprend_la_source(self) -> None:
@@ -442,6 +445,7 @@ class TestVersions:
         corps = r.json()
         assert (corps["version"], corps["recette_racine_id"]) == (3, 3)
         assert corps["document_ids"] == [14]
+
 
     def test_config_partielle_fusionnee_avec_la_source(self) -> None:
         """Le corps dit ce qui change : le reste de la config est garde."""
@@ -490,6 +494,7 @@ class TestVersions:
         assert r.status_code == 200, r.text
         assert r.json()["document_ids"] == [14] and r.json()["tout_l_export"] is False
 
+
     def test_lister_les_versions(self) -> None:
         source = _recette("LOCKED")
         v2 = _recette("LOCKED", id=5, version=2, recette_racine_id=3)
@@ -512,10 +517,33 @@ class TestExecutions:
         assert r.status_code == 201, r.text
         assert r.json()["status"] == "PENDING"
 
-    def test_recette_brouillon_refusee(self) -> None:
-        db = _db({"TestRecipe": _recette("DRAFT")})
+    def test_lancer_un_brouillon_le_fige(self) -> None:
+        recette = _recette("DRAFT", locked_at=None)
+        db = _db({"TestRecipe": recette}, _resultat(scalar=1))
+        r = _client(SUPERVISEUR, db).post("/test-executions", json={"recipe_id": 3})
+        assert r.status_code == 201, r.text
+        assert recette.status == "LOCKED" and recette.locked_at is not None
+
+    def test_brouillon_sans_document_non_lance(self) -> None:
+        recette = _recette("DRAFT", document_ids=[])
+        db = _db({"TestRecipe": recette})
+        r = _client(SUPERVISEUR, db).post("/test-executions", json={"recipe_id": 3})
+        assert r.status_code == 422 and recette.status == "DRAFT"
+
+    def test_recette_archivee_non_lancee(self) -> None:
+        db = _db({"TestRecipe": _recette("ARCHIVED")})
         r = _client(SUPERVISEUR, db).post("/test-executions", json={"recipe_id": 3})
         assert r.status_code == 409
+
+    def test_archiver(self) -> None:
+        for avant in ("DRAFT", "LOCKED"):
+            recette = _recette(avant)
+            r = _client(SUPERVISEUR, _db({"TestRecipe": recette})).post("/test-recipes/3/archive")
+            assert r.status_code == 200 and r.json()["status"] == "ARCHIVED"
+
+    def test_archiver_deux_fois_409(self) -> None:
+        db = _db({"TestRecipe": _recette("ARCHIVED")})
+        assert _client(SUPERVISEUR, db).post("/test-recipes/3/archive").status_code == 409
 
     def test_metriques_avant_la_fin_409(self) -> None:
         db = _db({"TestExecution": _execution("RUNNING")})
@@ -591,6 +619,8 @@ class TestExecutions:
         r = _client(OPERATEUR, _db({})).post("/test-executions/1/cancel")
         assert r.status_code == 403
 
+
+
     def test_executions_de_l_export(self) -> None:
         db = _db(
             {"DatasetExport": _export(), "TestExecution": _execution(), "TestRecipe": _recette()},
@@ -608,6 +638,7 @@ class TestExecutions:
     def test_executions_d_un_export_inconnu_404(self) -> None:
         r = _client(SUPERVISEUR, _db({})).get("/dataset-exports/99/executions")
         assert r.status_code == 404
+
 
     def test_comparaison_n_est_pas_prise_pour_un_id(self) -> None:
         execution = _execution()
@@ -726,7 +757,6 @@ class TestExecutions:
         }
         assert m["dataset"]["id"] == 4
 
-
 class TestRapportPdf:
     def test_pdf_avec_filtres(self) -> None:
         cr = SimpleNamespace(
@@ -772,3 +802,177 @@ class TestRapportPdf:
         db = _db({"TestExecution": _execution()})
         r = _client(OPERATEUR, db).get("/test-executions/1/metriques.pdf")
         assert r.status_code == 403
+
+_SMARTDOC = {"ocr": {"provider": "SMARTDOC_JSON"}}
+
+
+def _json_smartdoc(nom: str = "doc") -> bytes:
+    return (
+        '{"smartdoc_version":"0.3","document_id":"%s","page_count":1,'
+        '"pages":[],"metadata":{"provider":"smartdoc"}}' % nom
+    ).encode()
+
+
+class TestSmartdocJson:
+    def _lancer(self, db: AsyncMock, fichiers: List[Any], libelle: str = "v2.3") -> Any:
+        return _client(SUPERVISEUR, db).post(
+            "/test-executions/smartdoc-json",
+            data={"recipe_id": "3", "libelle": libelle},
+            files=fichiers,
+        )
+
+    def _db(self, config: Dict[str, Any]) -> AsyncMock:
+        return _db(
+            {"TestRecipe": _recette("DRAFT", config=config, locked_at=None)},
+            _resultat(scalars=["Doc1.pdf", "autre.pdf"]),
+            _resultat(scalar=1),
+        )
+
+    def test_depot_relie_au_nom_garde_les_json_et_fige_la_recette(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setattr(settings, "pvc_mount_path", str(tmp_path))
+        db = self._db(_SMARTDOC)
+        r = self._lancer(db, [("fichiers", ("doc1.json", _json_smartdoc(), "application/json"))])
+        assert r.status_code == 201, r.text
+        assert r.json()["status"] == "PENDING" and r.json()["ocr_provider"] == "SMARTDOC_JSON"
+        assert r.json()["ocr_model_id"] == "v2.3"
+        dossier = tmp_path / "benchmark" / "smartdoc_json" / "50"
+        assert (dossier / "Doc1.json").is_file()  # nomme comme le document
+        assert "v2.3" in (dossier / "_meta.json").read_text()
+
+    def test_json_sans_document_et_json_illisible_refuses(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setattr(settings, "pvc_mount_path", str(tmp_path))
+        r = self._lancer(
+            self._db(_SMARTDOC),
+            [
+                ("fichiers", ("inconnu.json", _json_smartdoc(), "application/json")),
+                ("fichiers", ("doc1.json", b'{"x": 1}', "application/json")),
+                ("fichiers", ("autre.txt", b"x", "text/plain")),
+            ],
+        )
+        assert r.status_code == 422
+        detail = " ".join(r.json()["detail"])
+        assert "inconnu.json : aucun document" in detail
+        assert "doc1.json : JSON non conforme" in detail
+        assert "autre.txt : extension .json" in detail
+        assert not (tmp_path / "benchmark").exists()  # rien d'ecrit
+
+    def test_recette_d_un_autre_moteur_refusee(self) -> None:
+        r = self._lancer(
+            self._db({"ocr": {"provider": "MISTRAL"}}),
+            [("fichiers", ("doc1.json", _json_smartdoc(), "application/json"))],
+        )
+        assert r.status_code == 409
+
+    def test_le_lancement_simple_renvoie_au_depot_de_json(self) -> None:
+        db = _db({"TestRecipe": _recette("LOCKED", config=_SMARTDOC)})
+        r = _client(SUPERVISEUR, db).post("/test-executions", json={"recipe_id": 3})
+        assert r.status_code == 409 and "smartdoc-json" in r.text
+
+
+class TestArchiveExport:
+    def test_zip_avec_pdf_labellisation_et_manifest(self, tmp_path: Any, monkeypatch: Any) -> None:
+        import io
+        import json
+        import zipfile
+
+        monkeypatch.setattr(settings, "pvc_mount_path", str(tmp_path))
+        (tmp_path / "f").mkdir()
+        (tmp_path / "f" / "a.pdf").write_bytes(b"%PDF-1.4 a")
+        documents = [
+            (
+                SimpleNamespace(id=14, file_name="Dossier A.pdf"),
+                SimpleNamespace(file_path="f/a.pdf", page_count=1),
+            ),
+            (  # meme nom, fichier absent du PVC
+                SimpleNamespace(id=15, file_name="dossier a.pdf"),
+                SimpleNamespace(file_path="f/absent.pdf", page_count=1),
+            ),
+        ]
+        champ = (
+            SimpleNamespace(group_id=None, resolved_value="Jean"),
+            SimpleNamespace(
+                page=1,
+                section_id="dep",
+                section_label="Dep",
+                field_key="dep.nom",
+                display_label="Nom",
+                value_type="TEXT",
+                polygon=None,
+            ),
+            True,
+        )
+        db = _db(
+            {"DatasetExport": _export()},
+            _resultat(all_=documents),
+            _resultat(all_=[champ]),
+            _resultat(all_=[champ]),
+        )
+        r = _client(SUPERVISEUR, db).get("/dataset-exports/8/archive")
+        assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
+        archive = zipfile.ZipFile(io.BytesIO(r.content))
+        assert sorted(archive.namelist()) == ["Dossier A.json", "Dossier A.pdf", "manifest.json"]
+        assert archive.read("Dossier A.pdf") == b"%PDF-1.4 a"
+        labellisation = json.loads(archive.read("Dossier A.json"))
+        assert labellisation["pages"][0]["sections"][0]["kv_pairs"][0]["value"]["text"] == "Jean"
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["export"]["id"] == 8 and manifest["documents_absents_du_pvc"] == [15]
+        assert manifest["documents"][0]["champs_verifies"] == 1
+
+    def test_reserve_aux_superviseurs(self) -> None:
+        r = _client(OPERATEUR, _db({})).get("/dataset-exports/8/archive")
+        assert r.status_code == 403
+
+    def test_option_sans_sensibles_vide_les_valeurs_des_champs_sensibles(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        import io
+        import json
+        import zipfile
+
+        monkeypatch.setattr(settings, "pvc_mount_path", str(tmp_path))
+        (tmp_path / "a.pdf").write_bytes(b"%PDF-1.4")
+
+        def champ(cle: str, valeur: str, sensible: bool) -> Any:
+            return (
+                SimpleNamespace(group_id=None, resolved_value=valeur),
+                SimpleNamespace(
+                    page=1,
+                    section_id="dep",
+                    section_label="Dep",
+                    field_key=cle,
+                    display_label=cle,
+                    value_type="TEXT",
+                    polygon=None,
+                    sensitive=sensible,
+                ),
+                True,
+            )
+
+        document = (
+            SimpleNamespace(id=14, file_name="a.pdf"),
+            SimpleNamespace(file_path="a.pdf", page_count=1),
+        )
+
+        def archive(requete: str) -> Any:
+            db = _db(
+                {"DatasetExport": _export()},
+                _resultat(all_=[document]),
+                _resultat(all_=[champ("dep.nom", "Jean", True), champ("dep.ville", "Lyon", False)]),
+            )
+            r = _client(SUPERVISEUR, db).get(f"/dataset-exports/8/archive{requete}")
+            assert r.status_code == 200
+            z = zipfile.ZipFile(io.BytesIO(r.content))
+            paires = json.loads(z.read("a.json"))["pages"][0]["sections"][0]["kv_pairs"]
+            return json.loads(z.read("manifest.json")), {p["id"]: p.get("value") for p in paires}
+
+        manifest, valeurs = archive("")
+        assert valeurs["dep.nom"]["text"] == "Jean" and manifest["sans_sensibles"] is False
+
+        manifest, valeurs = archive("?sans_sensibles=true")
+        assert manifest["sans_sensibles"] is True
+        assert valeurs["dep.nom"] is None  # le champ reste, sans valeur
+        assert valeurs["dep.ville"]["text"] == "Lyon"

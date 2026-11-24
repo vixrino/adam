@@ -31,7 +31,7 @@ from adam_core.models import DocumentField, FieldProposal
 ChampJuge = Tuple[int, Optional[str], Optional[str]]
 
 
-def empreinte_document(champs: Iterable[ChampJuge]) -> str:
+def document_fingerprint(champs: Iterable[ChampJuge]) -> str:
     """Empreinte des champs verifies d'un document, dans n'importe quel ordre.
 
     Un hash, pas les valeurs : un IBAN n'y est pas lisible, et l'empreinte ne
@@ -43,14 +43,14 @@ def empreinte_document(champs: Iterable[ChampJuge]) -> str:
     return hashlib.sha256(json.dumps(contenu, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
-def empreinte_verite(par_document: Mapping[int, str]) -> str:
+def truth_fingerprint(par_document: Mapping[int, str]) -> str:
     """Empreinte de la verite d'un lot de documents, a partir de celles de
     chaque document."""
     contenu = sorted((int(d), e) for d, e in par_document.items())
     return hashlib.sha256(json.dumps(contenu).encode()).hexdigest()[:16]
 
 
-async def empreintes_documents(db: AsyncSession, document_ids: List[int]) -> Dict[int, str]:
+async def document_fingerprints(db: AsyncSession, document_ids: List[int]) -> Dict[int, str]:
     """Empreinte de la verite de chaque document, comme le worker la calcule."""
     if not document_ids:
         return {}
@@ -70,4 +70,4 @@ async def empreintes_documents(db: AsyncSession, document_ids: List[int]) -> Dic
     par_document: Dict[int, List[ChampJuge]] = {int(d): [] for d in document_ids}
     for document_id, field_spec_id, group_id, valeur in lignes:
         par_document[int(document_id)].append((field_spec_id, group_id, valeur))
-    return {d: empreinte_document(champs) for d, champs in par_document.items()}
+    return {d: document_fingerprint(champs) for d, champs in par_document.items()}

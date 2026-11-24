@@ -103,9 +103,7 @@ async def show_visible(caller: UserCaller) -> None:
         organisation_id=organisation_id, matricule=scoped_matricule
     ) as session:
         projects = (await session.execute(select(Project).order_by(Project.name))).scalars().all()
-        documents = (
-            (await session.execute(select(Document).order_by(Document.id))).scalars().all()
-        )
+        documents = (await session.execute(select(Document).order_by(Document.id))).scalars().all()
 
     print()
     print(SEPARATOR)

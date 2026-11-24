@@ -2,24 +2,32 @@
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.functions import count
 
-from adam_api.dependencies.auth import Caller, ServiceCaller, UserCaller, get_caller
+from adam_api.dependencies.auth import Caller, ServiceCaller, UserCaller, get_caller, require_user
 from adam_api.dependencies.db import get_db
+from adam_api.dependencies.permissions import verify_project_admin
 from adam_core.enums.roles import PlatformRole, ProjectRole
 from adam_core.enums.status import ProjectStatus
-from adam_core.models import Project, UserProject
+from adam_core.models import Project, User, UserProject
 from adam_core.schemas.responses import (
     ProjectCreatedOut,
     ProjectDetailOut,
     ProjectOut,
+    ProjectUserOut,
     UserProjectOut,
     UserRolePatchOut,
 )
-from adam_core.utils.exceptions import raise_not_found, raise_unprocessable
+from adam_core.utils.exceptions import (
+    raise_conflict,
+    raise_forbidden,
+    raise_not_found,
+    raise_unprocessable,
+)
 from adam_core.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -52,6 +60,32 @@ class UserRolePatch(BaseModel):
     role: str
 
 
+async def _refuse_if_last_admin(db: AsyncSession, project_id: int, user_id: int) -> None:
+    """409 si user_id est le seul administrateur metier du projet.
+
+    Un projet sans administrateur metier reste valide a sa creation (l'Administrateur
+    NOTA n'y est pas inscrit) : on n'empeche donc que de le laisser sans, pas d'en
+    etre prive des le depart.
+    """
+    autres = (
+        await db.execute(
+            select(count())
+            .select_from(UserProject)
+            .where(UserProject.project_id == project_id)
+            .where(UserProject.role == ProjectRole.BUSINESS_ADMIN.value)
+            .where(UserProject.user_id != user_id)
+        )
+    ).scalar_one()
+    if autres == 0:
+        raise_conflict(UserProject, "le projet ne peut pas rester sans administrateur metier")
+
+
+def _refuse_if_self(caller: UserCaller, user_id: int, action: str) -> None:
+    """409 si l'appelant vise sa propre inscription : evite les fausses manipulations."""
+    if caller.user_id == user_id:
+        raise_conflict(UserProject, f"vous ne pouvez pas {action}")
+
+
 @router.get("", response_model=List[ProjectOut])
 async def list_projects(
     organisation_id: Optional[int] = None,
@@ -61,7 +95,16 @@ async def list_projects(
     if organisation_id is not None:
         query = query.where(Project.organisation_id == organisation_id)
     rows = (await db.execute(query)).scalars().all()
-    return [ProjectOut(id=r.id, name=r.name, organisation_id=r.organisation_id) for r in rows]
+    return [
+        ProjectOut(
+            id=r.id,
+            name=r.name,
+            organisation_id=r.organisation_id,
+            status=r.status,
+            updated_at=r.updated_at,
+        )
+        for r in rows
+    ]
 
 
 @router.get("/{project_id}", response_model=ProjectDetailOut)
@@ -74,8 +117,34 @@ async def get_project(project_id: int, db: AsyncSession = Depends(get_db)) -> Pr
         name=row.name,
         description=row.description,
         status=row.status,
+        organisation_id=row.organisation_id,
         updated_at=row.updated_at,
     )
+
+
+@router.get("/{project_id}/users", response_model=List[ProjectUserOut])
+async def list_project_users(
+    project_id: int, db: AsyncSession = Depends(get_db)
+) -> List[ProjectUserOut]:
+    if not await db.get(Project, project_id):
+        raise_not_found(Project)
+    rows = (
+        await db.execute(
+            select(UserProject, User)
+            .join(User, User.id == UserProject.user_id)
+            .where(UserProject.project_id == project_id)
+        )
+    ).all()
+    return [
+        ProjectUserOut(
+            user_id=up.user_id,
+            project_id=project_id,
+            role=up.role,
+            email=user.email,
+            full_name=user.full_name,
+        )
+        for up, user in rows
+    ]
 
 
 def _require_project_creator(caller: Caller = Depends(get_caller)) -> Caller:
@@ -90,10 +159,7 @@ def _require_project_creator(caller: Caller = Depends(get_caller)) -> Caller:
     n'ont pas de role au sens du RACI, qui decrit des acteurs humains.
     """
     if isinstance(caller, UserCaller) and caller.platform_role != PlatformRole.NOTA_ADMIN.value:
-        raise HTTPException(
-            status_code=403,
-            detail="Creation de projet reservee a l'Administrateur NOTA",
-        )
+        raise_forbidden("Creation de projet reservee a l'Administrateur NOTA")
     return caller
 
 
@@ -115,10 +181,12 @@ async def create_project(
 
 @router.post("/{project_id}/users", response_model=UserProjectOut, status_code=201)
 async def add_user_to_project(
-    project_id: int, body: UserProjectIn, db: AsyncSession = Depends(get_db)
+    project_id: int,
+    body: UserProjectIn,
+    caller: UserCaller = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
 ) -> UserProjectOut:
-    if not await db.get(Project, project_id):
-        raise_not_found(Project)
+    await verify_project_admin(db, caller, project_id)
     up = UserProject(user_id=body.user_id, project_id=project_id, role=body.role)
     db.add(up)
     await db.flush()
@@ -127,11 +195,12 @@ async def add_user_to_project(
 
 @router.patch("/{project_id}", response_model=ProjectDetailOut)
 async def patch_project(
-    project_id: int, body: ProjectPatch, db: AsyncSession = Depends(get_db)
+    project_id: int,
+    body: ProjectPatch,
+    caller: UserCaller = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
 ) -> ProjectDetailOut:
-    row = await db.get(Project, project_id)
-    if not row:
-        raise_not_found(Project)
+    row = await verify_project_admin(db, caller, project_id)
     if body.name is not None:
         row.name = body.name
     if body.description is not None:
@@ -142,20 +211,27 @@ async def patch_project(
             raise_unprocessable(f"Statut invalide. Valeurs acceptees : {allowed}")
         row.status = body.status
     await db.flush()
+    await db.refresh(row, ["updated_at"])
     return ProjectDetailOut(
         id=row.id,
         name=row.name,
         description=row.description,
         status=row.status,
+        organisation_id=row.organisation_id,
         updated_at=row.updated_at,
     )
 
 
 @router.patch("/{project_id}/users/{user_id}", response_model=UserRolePatchOut)
 async def update_user_role(
-    project_id: int, user_id: int, body: UserRolePatch, db: AsyncSession = Depends(get_db)
+    project_id: int,
+    user_id: int,
+    body: UserRolePatch,
+    caller: UserCaller = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
 ) -> UserRolePatchOut:
     """Change le role d'un utilisateur sur un projet."""
+    await verify_project_admin(db, caller, project_id)
     up = (
         await db.execute(
             select(UserProject)
@@ -168,6 +244,9 @@ async def update_user_role(
     allowed = [r.value for r in ProjectRole]
     if body.role not in allowed:
         raise_unprocessable(f"Role invalide. Valeurs acceptees : {allowed}")
+    if up.role == ProjectRole.BUSINESS_ADMIN.value and body.role != up.role:
+        _refuse_if_self(caller, user_id, "vous retrograder")
+        await _refuse_if_last_admin(db, project_id, user_id)
     up.role = body.role
     return UserRolePatchOut(
         user_id=user_id,
@@ -179,9 +258,14 @@ async def update_user_role(
 
 @router.delete("/{project_id}/users/{user_id}", status_code=204)
 async def remove_user_from_project(
-    project_id: int, user_id: int, db: AsyncSession = Depends(get_db)
+    project_id: int,
+    user_id: int,
+    caller: UserCaller = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
 ) -> None:
     """Retire un utilisateur d'un projet. Pas de soft delete."""
+    await verify_project_admin(db, caller, project_id)
+    _refuse_if_self(caller, user_id, "vous retirer")
     up = (
         await db.execute(
             select(UserProject)
@@ -191,4 +275,6 @@ async def remove_user_from_project(
     ).scalar_one_or_none()
     if not up:
         raise_not_found(UserProject, f"User {user_id} n'est pas assigne au projet {project_id}")
+    if up.role == ProjectRole.BUSINESS_ADMIN.value:
+        await _refuse_if_last_admin(db, project_id, user_id)
     await db.delete(up)

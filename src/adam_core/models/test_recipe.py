@@ -1,35 +1,7 @@
-"""Table TEST_RECIPE : recette d'evaluation du moteur OCR.
-
-Une recette designe un perimetre fige de documents d'un dataset, contre lequel
-les executions successives comparent la sortie du moteur. La verite terrain
-n'est PAS copiee ici : elle vit dans document_field, restreinte aux champs
-portant au moins une field_proposal — la seule preuve qu'un humain a regarde le
-champ, l'IHM envoyant une proposition aussi bien pour confirmer que pour
-corriger. Copier 120 000 valeurs (dont des IBAN et des NIR) hors de leur
-contexte rendrait le droit a l'effacement inapplicable ; referencer laisse la
-suppression d'un document faire son travail.
-
-Le perimetre est porte par ``document_ids`` plutot que par une table de
-liaison : 200 entiers dans un ARRAY, fige au verrouillage, et une table de
-moins a scoper, migrer et tester. Si un document du perimetre est supprime, le
-worker le constate au lancement et le signale — le tableau reste la reference
-de ce qui ETAIT attendu.
-
-Deux passages ne sont comparables que si la recette n'a pas bouge entre eux :
-d'ou le statut LOCKED, prerequis de toute execution.
-
-Une recette part d'un export de dataset (dataset_export), lot de documents
-fige : elle en prend tous les documents ou une partie. ``dataset_id`` est
-recopie de l'export, pour le filtrage par organisation et par projet.
-
-Versions : une recette figee ne change plus ; la modifier, c'est en creer la
-version suivante (meme nom, ``version`` + 1, ``recette_racine_id`` vers la
-version 1). La config porte le moteur OCR (fournisseur, modeles, consigne)
-et les seuils, voir ConfigRecette dans adam_core.benchmark.recette.
-"""
+"""Table TEST_RECIPE : recette d'evaluation du moteur OCR."""
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from sqlalchemy import (
     Boolean,
@@ -53,8 +25,6 @@ from adam_core.db.scoping import (
 )
 from adam_core.enums.status import TestRecipeStatus
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
 
@@ -62,9 +32,6 @@ if TYPE_CHECKING:
 class TestRecipe(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "test_recipe"
 
-    # pytest collecte les classes prefixees Test* importees dans un module de
-    # test ; ce marqueur l'en dissuade sans renommer la table du cahier des
-    # charges.
     __test__ = False
 
     __table_args__ = (

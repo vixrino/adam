@@ -36,8 +36,8 @@ ne justifient pas un pool.
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass
+import time
 from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 from adam_core.utils.logging import get_logger
@@ -50,7 +50,7 @@ ATTRIBUTS = ["sAMAccountName", "displayName", "mail", "givenName", "sn", "depart
 #: Comptes de personnes, desactives exclus. La regle de correspondance
 #: 1.2.840.113556.1.4.803 est le ET bit a bit de l'AD : 2 = ACCOUNTDISABLE.
 _PERSONNES_ACTIVES = (
-    "(objectCategory=person)(objectClass=user)" "(!(userAccountControl:1.2.840.113556.1.4.803:=2))"
+    "(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2))"
 )
 
 #: Au-dela, la saisie est trop vague pour etre utile : les premiers mots suffisent.
@@ -62,7 +62,7 @@ class AnnuaireErreur(Exception):
 
 
 class AnnuaireDesactive(AnnuaireErreur):
-    """AD_ENABLED est faux, ou la configuration est incomplete."""
+    """ad_enabled est faux dans app_setting, ou la configuration est incomplete."""
 
 
 @dataclass(frozen=True)
@@ -78,15 +78,15 @@ class PersonneAnnuaire:
 
 
 class Annuaire(Protocol):
-    async def rechercher(self, texte: str) -> List[PersonneAnnuaire]: ...
+    async def search_people(self, texte: str) -> List[PersonneAnnuaire]: ...
 
-    async def trouver(self, matricule: str) -> Optional[PersonneAnnuaire]: ...
+    async def find_person(self, matricule: str) -> Optional[PersonneAnnuaire]: ...
 
 
 # -- Filtres LDAP (fonctions pures, testables sans AD) --------------------------
 
 
-def echapper(valeur: str) -> str:
+def escape_ldap(valeur: str) -> str:
     """Echappe une valeur saisie pour un filtre LDAP (RFC 4515).
 
     Sans cela, une saisie contenant `*`, `(` ou `)` changerait le filtre lui-meme
@@ -100,17 +100,17 @@ def _exclusions(prefixes: Sequence[str], suffixes: Sequence[str] = ()) -> str:
     """Conditions qui ecartent les matricules commencant par l'un des prefixes
     ou finissant par l'un des suffixes."""
     return "".join(
-        [f"(!(sAMAccountName={echapper(p.strip())}*))" for p in prefixes if p.strip()]
-        + [f"(!(sAMAccountName=*{echapper(s.strip())}))" for s in suffixes if s.strip()]
+        [f"(!(sAMAccountName={escape_ldap(p.strip())}*))" for p in prefixes if p.strip()]
+        + [f"(!(sAMAccountName=*{escape_ldap(s.strip())}))" for s in suffixes if s.strip()]
     )
 
 
-def filtre_recherche(
+def search_filter(
     texte: str, prefixes_exclus: Sequence[str] = (), suffixes_exclus: Sequence[str] = ()
 ) -> str:
     """Filtre pour une saisie libre : chaque mot doit correspondre a un debut de
     matricule, de prenom ou de nom, ou a un morceau du nom affiche."""
-    mots = [echapper(m) for m in texte.split()[:_MOTS_MAX]]
+    mots = [escape_ldap(m) for m in texte.split()[:_MOTS_MAX]]
     conditions = "".join(
         f"(|(sAMAccountName={m}*)(givenName={m}*)(sn={m}*)(displayName=*{m}*))" for m in mots
     )
@@ -118,7 +118,7 @@ def filtre_recherche(
     return f"(&{_PERSONNES_ACTIVES}{exclusions}{conditions})"
 
 
-def filtre_matricule(
+def employee_id_filter(
     matricule: str, prefixes_exclus: Sequence[str] = (), suffixes_exclus: Sequence[str] = ()
 ) -> str:
     """Filtre exact sur un matricule, comptes actifs seulement. Les exclusions
@@ -126,11 +126,11 @@ def filtre_matricule(
     etre affecte en tapant son matricule."""
     return (
         f"(&{_PERSONNES_ACTIVES}{_exclusions(prefixes_exclus, suffixes_exclus)}"
-        f"(sAMAccountName={echapper(matricule.strip())}))"
+        f"(sAMAccountName={escape_ldap(matricule.strip())}))"
     )
 
 
-def dans_ou_exclue(dn: Optional[str], ou_exclues: Sequence[str]) -> bool:
+def in_or_excluded(dn: Optional[str], ou_exclues: Sequence[str]) -> bool:
     """Le DN passe-t-il par l'une des unites d'organisation exclues ?
 
     Compare les composants « OU=... » du DN, sans casse : OU=OT2 exclut
@@ -142,7 +142,7 @@ def dans_ou_exclue(dn: Optional[str], ou_exclues: Sequence[str]) -> bool:
     return any(f"OU={ou.strip().upper()}" in composants for ou in ou_exclues if ou.strip())
 
 
-def personne_depuis_attributs(attributs: Dict[str, Any]) -> Optional[PersonneAnnuaire]:
+def person_from_attributes(attributs: Dict[str, Any]) -> Optional[PersonneAnnuaire]:
     """Construit une personne a partir des attributs d'une entree ; None sans matricule."""
 
     def valeur(nom: str) -> Optional[str]:
@@ -156,7 +156,13 @@ def personne_depuis_attributs(attributs: Dict[str, Any]) -> Optional[PersonneAnn
     if matricule is None:
         return None
     prenom, nom = valeur("givenName"), valeur("sn")
-    nom_affiche = valeur("displayName") or " ".join(p for p in (prenom, nom) if p) or matricule
+    # « Prenom NOM » depuis givenName/sn : displayName peut porter des mentions
+    # (service, prestataire...) qui n'ont rien a faire dans l'IHM.
+    nom_affiche = (
+        " ".join(p for p in (prenom, nom and nom.upper()) if p)
+        or valeur("displayName")
+        or matricule
+    )
     return PersonneAnnuaire(
         matricule=matricule,
         nom_affiche=nom_affiche,
@@ -232,7 +238,7 @@ class AnnuaireLdap:
         self.suffixes_exclus = [s for s in suffixes_exclus if s.strip()]
         self.ou_exclues = [o for o in ou_exclues if o.strip()]
 
-    def _serveur(self) -> Any:
+    def _server(self) -> Any:
         import ssl
 
         from ldap3 import NONE, Server, Tls
@@ -256,7 +262,7 @@ class AnnuaireLdap:
         from ldap3 import SIMPLE, Connection
 
         return Connection(
-            self._serveur(),
+            self._server(),
             user=self.bind_dn,
             password=self._password,
             authentication=SIMPLE,
@@ -264,7 +270,7 @@ class AnnuaireLdap:
             read_only=True,
         )
 
-    def _chercher(self, filtre: str, limite: int) -> List[PersonneAnnuaire]:
+    def _lookup(self, filtre: str, limite: int) -> List[PersonneAnnuaire]:
         from ldap3 import SUBTREE
         from ldap3.core.exceptions import LDAPException
 
@@ -284,28 +290,28 @@ class AnnuaireLdap:
                 entrees = [
                     e.get("attributes", {})
                     for e in connexion.response or []
-                    if not dans_ou_exclue(e.get("dn"), self.ou_exclues)
+                    if not in_or_excluded(e.get("dn"), self.ou_exclues)
                 ]
             finally:
                 connexion.unbind()
         except LDAPException as exc:
             raise AnnuaireErreur(f"annuaire injoignable : {exc}") from exc
-        personnes = [p for p in map(personne_depuis_attributs, entrees) if p is not None]
+        personnes = [p for p in map(person_from_attributes, entrees) if p is not None]
         return sorted(personnes, key=lambda p: ((p.departement or "~"), p.nom_affiche.lower()))
 
-    async def rechercher(self, texte: str) -> List[PersonneAnnuaire]:
-        filtre = filtre_recherche(texte, self.prefixes_exclus, self.suffixes_exclus)
-        return await asyncio.to_thread(self._chercher, filtre, self.limite)
+    async def search_people(self, texte: str) -> List[PersonneAnnuaire]:
+        filtre = search_filter(texte, self.prefixes_exclus, self.suffixes_exclus)
+        return await asyncio.to_thread(self._lookup, filtre, self.limite)
 
-    async def trouver(self, matricule: str) -> Optional[PersonneAnnuaire]:
-        filtre = filtre_matricule(matricule, self.prefixes_exclus, self.suffixes_exclus)
-        trouvees = await asyncio.to_thread(self._chercher, filtre, 2)
+    async def find_person(self, matricule: str) -> Optional[PersonneAnnuaire]:
+        filtre = employee_id_filter(matricule, self.prefixes_exclus, self.suffixes_exclus)
+        trouvees = await asyncio.to_thread(self._lookup, filtre, 2)
         return trouvees[0] if len(trouvees) == 1 else None
 
 
-def annuaire_depuis_settings(settings: Any) -> AnnuaireLdap:
+def directory_from_settings(settings: Any, enabled: bool) -> AnnuaireLdap:
     """L'annuaire configure ; AnnuaireDesactive s'il est coupe ou incomplet."""
-    if not settings.ad_enabled:
+    if not enabled:
         raise AnnuaireDesactive("annuaire desactive (AD_ENABLED=false)")
     return AnnuaireLdap(
         host=settings.ad_host,

@@ -92,7 +92,7 @@ Table field_spec {
   display_label varchar [not null, note: 'Libellé affiché à lopérateur']
   value_type varchar [not null, note: 'Type de valeur : TEXT, NUMBER, DATE, DATETIME, BOOLEAN']
   required boolean [not null]
-  is_sensitive boolean [not null]
+  sensitive boolean [not null]
   display_order integer [not null]
   polygon "array" [note: '4 points (x1,y1,x2,y2,x3,y3,x4,y4). 8 floats si non null']
   updated_at timestamptz [not null]

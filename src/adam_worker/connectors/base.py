@@ -50,6 +50,15 @@ class BaseOcrConnector(ABC):
     #: Nom court, pour les logs et la tracabilite.
     name: str = "base"
 
+    async def ping(self) -> Optional[str]:
+        """Sonde de joignabilite du moteur : None s'il repond, sinon le motif.
+
+        Par defaut un connecteur est toujours joignable (le mock). La sonde ne
+        consomme ni jeton ni quota : elle sert a ne pas lancer un lot quand le
+        moteur est hors ligne.
+        """
+        return None
+
     @abstractmethod
     async def extract(
         self, images: Sequence[Path], modele: Optional[ModeleDocument] = None

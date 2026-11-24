@@ -26,16 +26,23 @@ recettes de tests, les campagnes et les rapports.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import tempfile
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
+import zipfile
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from adam_api.core.config import settings
 from adam_api.dependencies.auth import UserCaller, require_user
@@ -47,10 +54,12 @@ from adam_api.schemas.benchmark import (
     ProgressionOut,
 )
 from adam_api.services import rapport_metriques_pdf
-from adam_core.benchmark.metriques import FiltresChamps, calculer, comparer
-from adam_core.benchmark.recette import ConfigRecette, config_ocr
-from adam_core.benchmark.schema import empreinte_schema, schema_en_dict
-from adam_core.benchmark.verite import empreintes_documents
+from adam_core.benchmark import smartdoc_json
+from adam_core.benchmark.labellisation import ChampLabellise, labelled_document
+from adam_core.benchmark.metriques import FiltresChamps, compare_metrics, compute
+from adam_core.benchmark.recette import ConfigRecette, ocr_config
+from adam_core.benchmark.schema import schema_fingerprint, schema_to_dict
+from adam_core.benchmark.verite import document_fingerprints
 from adam_core.enums.roles import PlatformRole
 from adam_core.enums.status import ComparisonVerdict, TestExecutionStatus, TestRecipeStatus
 from adam_core.models import (
@@ -62,17 +71,22 @@ from adam_core.models import (
     EvaluationReport,
     FieldProposal,
     FieldSpec,
+    File as FichierPhysique,
     TestExecution,
     TestRecipe,
     User,
 )
+from adam_core.schemas.interface_contract import SmartdocDocument
 
 router = APIRouter(tags=["Benchmark OCR"])
+
+_RECETTE_INTROUVABLE = "Recette introuvable"
+_EXECUTION_INTROUVABLE = "Execution introuvable"
 
 _ROLES = {PlatformRole.NOTA_SUPERVISOR.value, PlatformRole.NOTA_ADMIN.value}
 
 
-async def require_benchmark(caller: UserCaller = Depends(require_user)) -> UserCaller:
+def require_benchmark(caller: UserCaller = Depends(require_user)) -> UserCaller:
     if caller.platform_role not in _ROLES:
         raise HTTPException(
             status_code=403, detail="Reserve aux superviseurs et administrateurs NOTA"
@@ -80,7 +94,7 @@ async def require_benchmark(caller: UserCaller = Depends(require_user)) -> UserC
     return caller
 
 
-def _consigne_autorisee(caller: UserCaller, config: Optional[ConfigRecette]) -> None:
+def _instruction_allowed(caller: UserCaller, config: Optional[ConfigRecette]) -> None:
     """La consigne libre est envoyee telle quelle au modele et change ce qu'il
     lit : un superviseur pourrait fausser un benchmark sans que cela se voie.
     Reservee aux administrateurs NOTA."""
@@ -127,8 +141,8 @@ class RecetteIn(BaseModel):
     tout_l_export: bool = False
     document_ids: List[int] = Field(default_factory=list)
     config: ConfigRecette = Field(default_factory=ConfigRecette)
-    #: Figer tout de suite (une execution exige une recette figee).
-    verrouiller: bool = True
+    #: Figer tout de suite. Par defaut un brouillon : le lancement la fige.
+    verrouiller: bool = False
 
 
 class RecettePatch(BaseModel):
@@ -145,14 +159,14 @@ class RecettePatch(BaseModel):
 
     @field_validator("tout_l_export", "document_ids", "config")
     @classmethod
-    def _pas_de_null(cls, valeur: Any) -> Any:
+    def _not_null(cls, valeur: Any) -> Any:
         if valeur is None:
             raise ValueError("null refuse : omettre le champ pour ne pas le changer")
         return valeur
 
 
 class VersionIn(RecettePatch):
-    verrouiller: bool = True
+    verrouiller: bool = False
 
 
 class RecetteOut(BaseModel):
@@ -221,7 +235,7 @@ class EcartOut(BaseModel):
     sensitive: bool
 
 
-def _recette_out(r: TestRecipe) -> RecetteOut:
+def _recipe_out(r: TestRecipe) -> RecetteOut:
     return RecetteOut(
         id=r.id,
         dataset_id=r.dataset_id,
@@ -243,7 +257,7 @@ def _execution_out(e: TestExecution) -> ExecutionOut:
     return ExecutionOut.model_validate(e, from_attributes=True)
 
 
-async def _createur(db: AsyncSession, caller: UserCaller) -> int:
+async def _creator(db: AsyncSession, caller: UserCaller) -> int:
     user_id = (
         await db.execute(
             select(User.id).where(func.upper(User.matricule) == caller.matricule.upper())
@@ -254,7 +268,7 @@ async def _createur(db: AsyncSession, caller: UserCaller) -> int:
     return int(user_id)
 
 
-async def _documents_verifies(db: AsyncSession, dataset_id: int) -> List[int]:
+async def _verified_documents(db: AsyncSession, dataset_id: int) -> List[int]:
     """Documents du dataset portant au moins une proposition humaine."""
     verifies = (
         select(DocumentField.document_id)
@@ -282,7 +296,16 @@ def _export_out(e: DatasetExport) -> ExportOut:
     return ExportOut.model_validate(e, from_attributes=True)
 
 
-@router.post("/dataset-exports", response_model=ExportOut, status_code=201)
+@router.post(
+    "/dataset-exports",
+    status_code=201,
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+        422: {"description": "Requete invalide"},
+    },
+)
 async def creer_export(
     body: ExportIn,
     caller: UserCaller = Depends(require_benchmark),
@@ -312,7 +335,7 @@ async def creer_export(
             )
         documents = sorted(set(body.document_ids))
     else:
-        documents = await _documents_verifies(db, body.dataset_id)
+        documents = await _verified_documents(db, body.dataset_id)
     if not documents:
         raise HTTPException(
             status_code=422,
@@ -334,20 +357,20 @@ async def creer_export(
     export = DatasetExport(
         dataset_id=dataset.id,
         schema_id=dataset.schema_id,
-        schema_hash=empreinte_schema(await schema_en_dict(db, dataset.schema_id)),
+        schema_hash=schema_fingerprint(await schema_to_dict(db, dataset.schema_id)),
         verite_empreintes={
-            str(d): e for d, e in (await empreintes_documents(db, documents)).items()
+            str(d): e for d, e in (await document_fingerprints(db, documents)).items()
         },
         name=body.name,
         description=body.description,
         document_ids=documents,
-        created_by_user_id=await _createur(db, caller),
+        created_by_user_id=await _creator(db, caller),
     )
-    await _inserer(db, export, f"export « {body.name} » deja present")
+    await _insert(db, export, f"export « {body.name} » deja present")
     return _export_out(export)
 
 
-@router.get("/dataset-exports", response_model=List[ExportOut])
+@router.get("/dataset-exports", responses={403: {"description": "Interdit"}})
 async def lister_exports(
     dataset_id: Optional[int] = None,
     _: UserCaller = Depends(require_benchmark),
@@ -359,7 +382,10 @@ async def lister_exports(
     return [_export_out(e) for e in (await db.execute(requete)).scalars().all()]
 
 
-@router.get("/dataset-exports/{export_id}", response_model=ExportOut)
+@router.get(
+    "/dataset-exports/{export_id}",
+    responses={403: {"description": "Interdit"}, 404: {"description": "Introuvable"}},
+)
 async def lire_export(
     export_id: int,
     _: UserCaller = Depends(require_benchmark),
@@ -371,10 +397,153 @@ async def lire_export(
     return _export_out(export)
 
 
+@router.get(
+    "/dataset-exports/{export_id}/archive",
+    responses={403: {"description": "Interdit"}, 404: {"description": "Introuvable"}},
+)
+async def archive_de_l_export(
+    export_id: int,
+    sans_sensibles: bool = Query(
+        False, description="Vrai : les champs sensibles restent dans la labellisation, sans valeur"
+    ),
+    _: UserCaller = Depends(require_benchmark),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """Un ZIP des documents de l'export, pour les passer dans SMARTDOC.
+
+    Pour chaque document : ``<nom>.pdf`` et ``<nom>.json``, la labellisation
+    (verite humaine, contrat Smartdoc v0.3) ; plus ``manifest.json``. Les
+    valeurs de la labellisation sont les champs verifies par un humain, y
+    compris les champs sensibles (le fichier est alors a traiter comme les PDF)
+    sauf avec ``sans_sensibles`` : ces champs restent presents, sans valeur.
+    """
+    export = await _export_of(db, export_id)
+    lignes = (
+        await db.execute(
+            select(Document, FichierPhysique)
+            .join(FichierPhysique, FichierPhysique.id == Document.file_id)
+            .where(Document.id.in_(export.document_ids))
+            .order_by(Document.id)
+        )
+    ).all()
+    verifie = (
+        select(FieldProposal.id).where(FieldProposal.document_field_id == DocumentField.id).exists()
+    )
+    entrees: List[Tuple[Document, FichierPhysique, Dict[str, Any], int]] = []
+    for document, fichier in lignes:
+        champs = (
+            await db.execute(
+                select(DocumentField, FieldSpec, verifie.label("verifie"))
+                .join(FieldSpec, FieldSpec.id == DocumentField.field_spec_id)
+                .where(DocumentField.document_id == document.id)
+                .order_by(FieldSpec.page, FieldSpec.display_order, FieldSpec.id)
+            )
+        ).all()
+        labellises = [
+            ChampLabellise(
+                page=fs.page,
+                section_id=fs.section_id,
+                section_label=fs.section_label,
+                field_key=fs.field_key,
+                display_label=fs.display_label,
+                value_type=fs.value_type,
+                group_id=df.group_id,
+                valeur=(
+                    df.resolved_value
+                    if est_verifie and not (sans_sensibles and fs.sensitive)
+                    else None
+                ),
+                polygon=fs.polygon,
+            )
+            for df, fs, est_verifie in champs
+        ]
+        contenu = labelled_document(
+            document_id=document.id,
+            file_name=document.file_name,
+            page_count=fichier.page_count,
+            champs=labellises,
+            export_id=export.id,
+        )
+        entrees.append((document, fichier, contenu, sum(1 for c in labellises if c.valeur)))
+    descripteur, chemin = tempfile.mkstemp(suffix=".zip")
+    os.close(descripteur)
+    try:
+        await run_in_threadpool(_write_archive, Path(chemin), export, entrees, sans_sensibles)
+    except Exception:
+        os.unlink(chemin)
+        raise
+    return FileResponse(
+        chemin,
+        media_type="application/zip",
+        filename=f"export-{export.id}.zip",
+        background=BackgroundTask(os.unlink, chemin),
+    )
+
+
+def _write_archive(
+    chemin: Path,
+    export: DatasetExport,
+    entrees: List[Tuple[Document, FichierPhysique, Dict[str, Any], int]],
+    sans_sensibles: bool = False,
+) -> None:
+    racine = Path(settings.pvc_mount_path)
+    pris: set[str] = set()
+    documents: List[Dict[str, Any]] = []
+    absents: List[int] = []
+    with zipfile.ZipFile(chemin, "w", zipfile.ZIP_DEFLATED) as archive:
+        for document, fichier, labellisation, nb_verifies in entrees:
+            base = Path(document.file_name).stem or f"document-{document.id}"
+            if base.casefold() in pris:  # deux documents de meme nom : l'identifiant les distingue
+                base = f"{base}__{document.id}"
+            pris.add(base.casefold())
+            source = racine / fichier.file_path
+            if not source.is_file():
+                absents.append(document.id)
+                continue
+            archive.write(source, f"{base}.pdf")
+            archive.writestr(
+                f"{base}.json", json.dumps(labellisation, ensure_ascii=False, indent=2)
+            )
+            documents.append(
+                {
+                    "document_id": document.id,
+                    "pdf": f"{base}.pdf",
+                    "json": f"{base}.json",
+                    "champs_verifies": nb_verifies,
+                }
+            )
+        archive.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "export": {
+                        "id": export.id,
+                        "name": export.name,
+                        "dataset_id": export.dataset_id,
+                        "schema_hash": export.schema_hash,
+                        "created_at": export.created_at.isoformat() if export.created_at else None,
+                    },
+                    "sans_sensibles": sans_sensibles,
+                    "documents": documents,
+                    "documents_absents_du_pvc": absents,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+
+
 # -- Recettes ------------------------------------------------------------------------
 
 
-@router.get("/dataset-exports/{export_id}/executions", response_model=List[ExecutionDeLExport])
+@router.get(
+    "/dataset-exports/{export_id}/executions",
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+    },
+)
 async def executions_de_l_export(
     export_id: int,
     limit: int = Query(50, ge=1, le=200),
@@ -384,7 +553,7 @@ async def executions_de_l_export(
     """Les passages termines de toutes les recettes de l'export, les plus
     recents d'abord : l'ecran de comparaison y choisit deux executions a
     passer a /test-executions/comparaison."""
-    await _export_de(db, export_id)
+    await _export_of(db, export_id)
     ids = (
         (
             await db.execute(
@@ -401,7 +570,7 @@ async def executions_de_l_export(
     )
     lignes = []
     for execution_id in ids:
-        m = await _metriques(db, execution_id)
+        m = await _metrics(db, execution_id)
         lignes.append(
             ExecutionDeLExport(
                 execution_id=execution_id,
@@ -420,7 +589,7 @@ async def executions_de_l_export(
     return lignes
 
 
-def _perimetre(export: DatasetExport, tout_l_export: bool, document_ids: List[int]) -> List[int]:
+def _scope(export: DatasetExport, tout_l_export: bool, document_ids: List[int]) -> List[int]:
     """Les documents d'une recette : tout l'export, ou une liste prise dedans."""
     if tout_l_export:
         if document_ids:
@@ -441,7 +610,7 @@ def _perimetre(export: DatasetExport, tout_l_export: bool, document_ids: List[in
     return sorted(set(document_ids))
 
 
-def _nouveau_perimetre(
+def _new_scope(
     champs: Dict[str, Any], tout_actuel: bool, liste_actuelle: List[int]
 ) -> Tuple[bool, List[int]]:
     """(tout_l_export, document_ids) apres un PATCH ou pour une nouvelle version.
@@ -457,7 +626,7 @@ def _nouveau_perimetre(
     return tout, [] if tout else list(liste_actuelle)
 
 
-def _config_fusionnee(actuelle: Optional[Dict[str, Any]], modif: ConfigRecette) -> ConfigRecette:
+def _merged_config(actuelle: Optional[Dict[str, Any]], modif: ConfigRecette) -> ConfigRecette:
     """La config d'un PATCH ou d'une nouvelle version : celle en place, avec
     ce que le corps change.
 
@@ -479,7 +648,7 @@ def _config_fusionnee(actuelle: Optional[Dict[str, Any]], modif: ConfigRecette) 
     return ConfigRecette.model_validate(fusion)
 
 
-def _config_resolue(config: ConfigRecette) -> Dict[str, Any]:
+def _resolved_config(config: ConfigRecette) -> Dict[str, Any]:
     """La config a figer : le moteur y est ecrit en entier.
 
     Les champs moteur laisses vides prennent la valeur du .env au moment de la
@@ -501,7 +670,7 @@ def _config_resolue(config: ConfigRecette) -> Dict[str, Any]:
     return config.model_copy(update={"ocr": resolu}).model_dump(exclude_none=True)
 
 
-async def _inserer(db: AsyncSession, objet: Any, conflit: str) -> None:
+async def _insert(db: AsyncSession, objet: Any, conflit: str) -> None:
     """Ajoute et ecrit ; un conflit d'unicite (deux creations simultanees,
     nom deja pris) rend 409 au lieu d'une erreur 500."""
     db.add(objet)
@@ -511,7 +680,7 @@ async def _inserer(db: AsyncSession, objet: Any, conflit: str) -> None:
         raise HTTPException(status_code=409, detail=conflit) from exc
 
 
-def _exige_un_export(recette: TestRecipe) -> None:
+def _require_export(recette: TestRecipe) -> None:
     """Les documents d'un benchmark viennent d'un export, jamais du dataset vivant."""
     if recette.dataset_export_id is None:
         raise HTTPException(
@@ -521,14 +690,14 @@ def _exige_un_export(recette: TestRecipe) -> None:
         )
 
 
-async def _export_de(db: AsyncSession, export_id: Optional[int]) -> DatasetExport:
+async def _export_of(db: AsyncSession, export_id: Optional[int]) -> DatasetExport:
     export = await db.get(DatasetExport, export_id) if export_id is not None else None
     if export is None:
         raise HTTPException(status_code=404, detail="Export introuvable")
     return export
 
 
-@router.get("/test-recipes", response_model=List[RecetteOut])
+@router.get("/test-recipes", responses={403: {"description": "Interdit"}})
 async def lister_recettes(
     dataset_id: Optional[int] = None,
     dataset_export_id: Optional[int] = None,
@@ -540,10 +709,13 @@ async def lister_recettes(
         requete = requete.where(TestRecipe.dataset_id == dataset_id)
     if dataset_export_id is not None:
         requete = requete.where(TestRecipe.dataset_export_id == dataset_export_id)
-    return [_recette_out(r) for r in (await db.execute(requete)).scalars().all()]
+    return [_recipe_out(r) for r in (await db.execute(requete)).scalars().all()]
 
 
-@router.get("/test-recipes/{recipe_id}", response_model=RecetteOut)
+@router.get(
+    "/test-recipes/{recipe_id}",
+    responses={403: {"description": "Interdit"}, 404: {"description": "Introuvable"}},
+)
 async def lire_recette(
     recipe_id: int,
     _: UserCaller = Depends(require_benchmark),
@@ -551,11 +723,20 @@ async def lire_recette(
 ) -> RecetteOut:
     recette = await db.get(TestRecipe, recipe_id)
     if recette is None:
-        raise HTTPException(status_code=404, detail="Recette introuvable")
-    return _recette_out(recette)
+        raise HTTPException(status_code=404, detail=_RECETTE_INTROUVABLE)
+    return _recipe_out(recette)
 
 
-@router.post("/test-recipes", response_model=RecetteOut, status_code=201)
+@router.post(
+    "/test-recipes",
+    status_code=201,
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+        422: {"description": "Requete invalide"},
+    },
+)
 async def creer_recette(
     body: RecetteIn,
     caller: UserCaller = Depends(require_benchmark),
@@ -563,9 +744,9 @@ async def creer_recette(
 ) -> RecetteOut:
     """Version 1 d'une recette, sur un export. Un nom deja pris dans le
     dataset : creer une version de la recette existante."""
-    _consigne_autorisee(caller, body.config)
-    export = await _export_de(db, body.dataset_export_id)
-    documents = _perimetre(export, body.tout_l_export, body.document_ids)
+    _instruction_allowed(caller, body.config)
+    export = await _export_of(db, body.dataset_export_id)
+    documents = _scope(export, body.tout_l_export, body.document_ids)
     deja = (
         await db.execute(
             select(TestRecipe.id)
@@ -589,16 +770,24 @@ async def creer_recette(
         version=1,
         description=body.description,
         document_ids=documents,
-        config=_config_resolue(body.config),
+        config=_resolved_config(body.config),
         status=(TestRecipeStatus.LOCKED if body.verrouiller else TestRecipeStatus.DRAFT).value,
         locked_at=maintenant if body.verrouiller else None,
-        created_by_user_id=await _createur(db, caller),
+        created_by_user_id=await _creator(db, caller),
     )
-    await _inserer(db, recette, f"recette « {body.name} » creee entre-temps : creer une version")
-    return _recette_out(recette)
+    await _insert(db, recette, f"recette « {body.name} » creee entre-temps : creer une version")
+    return _recipe_out(recette)
 
 
-@router.patch("/test-recipes/{recipe_id}", response_model=RecetteOut)
+@router.patch(
+    "/test-recipes/{recipe_id}",
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+        422: {"description": "Requete invalide"},
+    },
+)
 async def modifier_recette(
     recipe_id: int,
     body: RecettePatch,
@@ -607,33 +796,41 @@ async def modifier_recette(
 ) -> RecetteOut:
     """Modifiable tant que la recette est un brouillon : une fois figee, deux
     passages ne seraient plus comparables ; en creer une version."""
-    _consigne_autorisee(caller, body.config)
+    _instruction_allowed(caller, body.config)
     recette = await db.get(TestRecipe, recipe_id)
     if recette is None:
-        raise HTTPException(status_code=404, detail="Recette introuvable")
+        raise HTTPException(status_code=404, detail=_RECETTE_INTROUVABLE)
     if recette.status != TestRecipeStatus.DRAFT.value:
         raise HTTPException(
             status_code=409,
             detail=f"recette figee : POST /test-recipes/{recipe_id}/versions pour la modifier",
         )
-    _exige_un_export(recette)
+    _require_export(recette)
     champs = body.model_dump(exclude_unset=True)
     if "tout_l_export" in champs or "document_ids" in champs:
-        tout, liste = _nouveau_perimetre(
+        tout, liste = _new_scope(
             champs, bool(recette.tout_l_export), list(recette.document_ids or [])
         )
-        export = await _export_de(db, recette.dataset_export_id)
-        recette.document_ids = _perimetre(export, tout, liste)
+        export = await _export_of(db, recette.dataset_export_id)
+        recette.document_ids = _scope(export, tout, liste)
         recette.tout_l_export = tout
     if "description" in champs:
         recette.description = champs["description"]
     if body.config is not None:
-        recette.config = _config_resolue(_config_fusionnee(recette.config, body.config))
+        recette.config = _resolved_config(_merged_config(recette.config, body.config))
     await db.flush()
-    return _recette_out(recette)
+    return _recipe_out(recette)
 
 
-@router.post("/test-recipes/{recipe_id}/lock", response_model=RecetteOut)
+@router.post(
+    "/test-recipes/{recipe_id}/lock",
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+        422: {"description": "Requete invalide"},
+    },
+)
 async def verrouiller_recette(
     recipe_id: int,
     _: UserCaller = Depends(require_benchmark),
@@ -641,18 +838,48 @@ async def verrouiller_recette(
 ) -> RecetteOut:
     recette = await db.get(TestRecipe, recipe_id)
     if recette is None:
-        raise HTTPException(status_code=404, detail="Recette introuvable")
+        raise HTTPException(status_code=404, detail=_RECETTE_INTROUVABLE)
     if recette.status != TestRecipeStatus.DRAFT.value:
         raise HTTPException(status_code=409, detail=f"recette deja {recette.status}")
+    _lock(recette)
+    await db.flush()
+    return _recipe_out(recette)
+
+
+def _lock(recette: TestRecipe) -> None:
+    """DRAFT -> LOCKED. Une recette sans document ne se fige pas."""
     if not recette.document_ids:
         raise HTTPException(status_code=422, detail="recette sans document")
     recette.status = TestRecipeStatus.LOCKED.value
     recette.locked_at = datetime.now(timezone.utc)
+
+
+@router.post(
+    "/test-recipes/{recipe_id}/archive",
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+    },
+)
+async def archiver_recette(
+    recipe_id: int,
+    _: UserCaller = Depends(require_benchmark),
+    db: AsyncSession = Depends(get_db),
+) -> RecetteOut:
+    """Retire la recette de l'usage ; ses executions et rapports restent lisibles.
+    Brouillon ou figee ; il n'y a pas de retour."""
+    recette = await db.get(TestRecipe, recipe_id)
+    if recette is None:
+        raise HTTPException(status_code=404, detail=_RECETTE_INTROUVABLE)
+    if recette.status == TestRecipeStatus.ARCHIVED.value:
+        raise HTTPException(status_code=409, detail="recette deja ARCHIVED")
+    recette.status = TestRecipeStatus.ARCHIVED.value
     await db.flush()
-    return _recette_out(recette)
+    return _recipe_out(recette)
 
 
-async def _famille(db: AsyncSession, recette: TestRecipe) -> List[TestRecipe]:
+async def _family(db: AsyncSession, recette: TestRecipe) -> List[TestRecipe]:
     racine = recette.recette_racine_id or recette.id
     return list(
         (
@@ -667,7 +894,16 @@ async def _famille(db: AsyncSession, recette: TestRecipe) -> List[TestRecipe]:
     )
 
 
-@router.post("/test-recipes/{recipe_id}/versions", response_model=RecetteOut, status_code=201)
+@router.post(
+    "/test-recipes/{recipe_id}/versions",
+    status_code=201,
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+        422: {"description": "Requete invalide"},
+    },
+)
 async def nouvelle_version(
     recipe_id: int,
     body: VersionIn,
@@ -677,18 +913,18 @@ async def nouvelle_version(
     """La version suivante d'une recette : meme nom, meme export, et ce que le
     corps change (documents, moteur, seuils). La recette d'origine ne bouge
     pas : ses executions restent lisibles et comparables."""
-    _consigne_autorisee(caller, body.config)
+    _instruction_allowed(caller, body.config)
     source = await db.get(TestRecipe, recipe_id)
     if source is None:
-        raise HTTPException(status_code=404, detail="Recette introuvable")
-    _exige_un_export(source)
+        raise HTTPException(status_code=404, detail=_RECETTE_INTROUVABLE)
+    _require_export(source)
     if source.status == TestRecipeStatus.DRAFT.value:
         raise HTTPException(
             status_code=409,
             detail=f"recette {recipe_id} en brouillon : la modifier (PATCH) au lieu d'en "
             "creer une version",
         )
-    famille = await _famille(db, source)
+    famille = await _family(db, source)
     derniere = max(famille, key=lambda r: r.version or 1)
     if derniere.id != source.id:
         raise HTTPException(
@@ -697,12 +933,10 @@ async def nouvelle_version(
             f"partir d'elle, POST /test-recipes/{derniere.id}/versions",
         )
     champs = body.model_dump(exclude_unset=True)
-    tout, liste = _nouveau_perimetre(
-        champs, bool(source.tout_l_export), list(source.document_ids or [])
-    )
-    documents = _perimetre(await _export_de(db, source.dataset_export_id), tout, liste)
+    tout, liste = _new_scope(champs, bool(source.tout_l_export), list(source.document_ids or []))
+    documents = _scope(await _export_of(db, source.dataset_export_id), tout, liste)
     config = (
-        _config_resolue(_config_fusionnee(source.config, body.config))
+        _resolved_config(_merged_config(source.config, body.config))
         if body.config is not None
         else dict(source.config or {})
     )
@@ -719,15 +953,18 @@ async def nouvelle_version(
         config=config,
         status=(TestRecipeStatus.LOCKED if body.verrouiller else TestRecipeStatus.DRAFT).value,
         locked_at=maintenant if body.verrouiller else None,
-        created_by_user_id=await _createur(db, caller),
+        created_by_user_id=await _creator(db, caller),
     )
-    await _inserer(
+    await _insert(
         db, version, f"une version de « {source.name} » a ete creee entre-temps : reessayer"
     )
-    return _recette_out(version)
+    return _recipe_out(version)
 
 
-@router.get("/test-recipes/{recipe_id}/versions", response_model=List[RecetteOut])
+@router.get(
+    "/test-recipes/{recipe_id}/versions",
+    responses={403: {"description": "Interdit"}, 404: {"description": "Introuvable"}},
+)
 async def lister_versions(
     recipe_id: int,
     _: UserCaller = Depends(require_benchmark),
@@ -736,46 +973,160 @@ async def lister_versions(
     """Toutes les versions de la recette, de la premiere a la derniere."""
     recette = await db.get(TestRecipe, recipe_id)
     if recette is None:
-        raise HTTPException(status_code=404, detail="Recette introuvable")
-    return [_recette_out(r) for r in await _famille(db, recette)]
+        raise HTTPException(status_code=404, detail=_RECETTE_INTROUVABLE)
+    return [_recipe_out(r) for r in await _family(db, recette)]
 
 
 # -- Executions ----------------------------------------------------------------------
 
 
-@router.post("/test-executions", response_model=ExecutionOut, status_code=201)
+@router.post(
+    "/test-executions",
+    status_code=201,
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+    },
+)
 async def lancer_execution(
     body: ExecutionIn,
     caller: UserCaller = Depends(require_benchmark),
     db: AsyncSession = Depends(get_db),
 ) -> ExecutionOut:
-    """Cree un passage en attente ; le worker de benchmark le prend."""
-    recette = await db.get(TestRecipe, body.recipe_id)
-    if recette is None:
-        raise HTTPException(status_code=404, detail="Recette introuvable")
-    if recette.status != TestRecipeStatus.LOCKED.value:
+    """Cree un passage en attente ; le worker de benchmark le prend. Une recette
+    en brouillon est figee par ce lancement."""
+    recette = await _launchable_recipe(db, body.recipe_id)
+    if ocr_config(recette.config).provider == smartdoc_json.FOURNISSEUR:
         raise HTTPException(
-            status_code=409, detail="recette non figee : la verrouiller avant de la lancer"
+            status_code=409,
+            detail="moteur SMARTDOC_JSON : deposer les JSON avec POST /test-executions/smartdoc-json",
         )
-    _exige_un_export(recette)
-    moteur = config_ocr(recette.config)
+    return _execution_out(await _new_execution(db, recette, caller))
+
+
+async def _launchable_recipe(db: AsyncSession, recipe_id: int) -> TestRecipe:
+    """La recette d'un lancement : jamais archivee, et un brouillon est fige."""
+    recette = await db.get(TestRecipe, recipe_id)
+    if recette is None:
+        raise HTTPException(status_code=404, detail=_RECETTE_INTROUVABLE)
+    if recette.status == TestRecipeStatus.ARCHIVED.value:
+        raise HTTPException(status_code=409, detail="recette archivee : on ne la lance plus")
+    _require_export(recette)
+    if recette.status == TestRecipeStatus.DRAFT.value:
+        _lock(recette)  # le premier lancement fige la recette
+    return recette
+
+
+async def _new_execution(
+    db: AsyncSession, recette: TestRecipe, caller: UserCaller, modele: Optional[str] = None
+) -> TestExecution:
+    moteur = ocr_config(recette.config)
     execution = TestExecution(
         recipe_id=recette.id,
         status=TestExecutionStatus.PENDING.value,
         # Provisoire : le worker y recopie le moteur reellement utilise.
         ocr_provider=moteur.provider or "EN_ATTENTE",
-        ocr_model_id=moteur.model,
-        created_by_user_id=await _createur(db, caller),
+        ocr_model_id=modele or moteur.model,
+        created_by_user_id=await _creator(db, caller),
     )
     db.add(execution)
     await db.flush()
+    return execution
+
+
+_JSON_MAX_OCTETS = 20 * 1024 * 1024
+_JSON_MAX_FICHIERS = 1000
+
+
+@router.post(
+    "/test-executions/smartdoc-json",
+    status_code=201,
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+        422: {"description": "Requete invalide"},
+    },
+)
+async def lancer_execution_smartdoc_json(
+    recipe_id: int = Form(...),
+    libelle: Optional[str] = Form(None),
+    fichiers: List[UploadFile] = File(...),
+    caller: UserCaller = Depends(require_benchmark),
+    db: AsyncSession = Depends(get_db),
+) -> ExecutionOut:
+    """Lance un passage qui compare des JSON SMARTDOC au lieu de lire avec un moteur.
+
+    Une recette dont le moteur est SMARTDOC_JSON. Chaque JSON est relie a un
+    document de la recette par son nom (``doc.json`` <-> ``doc.pdf``). Un JSON
+    illisible ou sans document correspondant refuse le depot ; un document sans
+    JSON est ecarte et signale dans le message du passage. ``libelle`` (version
+    de SMARTDOC, lot...) sert a retrouver le passage dans la liste.
+    """
+    recette = await _launchable_recipe(db, recipe_id)
+    if ocr_config(recette.config).provider != smartdoc_json.FOURNISSEUR:
+        raise HTTPException(status_code=409, detail="moteur de la recette : pas SMARTDOC_JSON")
+    if not 0 < len(fichiers) <= _JSON_MAX_FICHIERS:
+        raise HTTPException(
+            status_code=422, detail=f"entre 1 et {_JSON_MAX_FICHIERS} fichiers JSON attendus"
+        )
+    noms = {
+        smartdoc_json.cle(nom): nom
+        for nom in (
+            await db.execute(
+                select(Document.file_name).where(Document.id.in_(recette.document_ids))
+            )
+        )
+        .scalars()
+        .all()
+    }
+    contenus: Dict[str, bytes] = {}
+    erreurs: List[str] = []
+    for fichier in fichiers:
+        nom = Path(fichier.filename or "").name
+        octets = await fichier.read(_JSON_MAX_OCTETS + 1)
+        cle = smartdoc_json.cle(nom)
+        if not nom.lower().endswith(".json"):
+            erreurs.append(f"{nom or '(sans nom)'} : extension .json attendue")
+        elif len(octets) > _JSON_MAX_OCTETS:
+            erreurs.append(f"{nom} : plus de {_JSON_MAX_OCTETS // (1024 * 1024)} Mo")
+        elif cle in contenus:
+            erreurs.append(f"{nom} : deux JSON pour le meme document")
+        elif cle not in noms:
+            erreurs.append(f"{nom} : aucun document de la recette ne porte ce nom")
+        else:
+            try:
+                SmartdocDocument.model_validate_json(octets)
+            except ValueError as exc:
+                erreurs.append(f"{nom} : JSON non conforme au contrat Smartdoc v0.3 ({exc})"[:300])
+            contenus[cle] = octets
+    if erreurs:
+        raise HTTPException(status_code=422, detail=erreurs)
+    execution = await _new_execution(db, recette, caller, (libelle or "").strip() or None)
+    racine = Path(settings.pvc_mount_path) / smartdoc_json.dossier(execution.id)
+    await run_in_threadpool(_write_json, racine, contenus, noms, (libelle or "").strip() or None)
     return _execution_out(execution)
+
+
+def _write_json(
+    racine: Path, contenus: Dict[str, bytes], noms: Dict[str, str], libelle: Optional[str]
+) -> None:
+    racine.mkdir(parents=True, exist_ok=True)
+    for cle, octets in contenus.items():
+        (racine / f"{Path(noms[cle]).stem}.json").write_bytes(octets)
+    (racine / smartdoc_json.META).write_text(
+        json.dumps({"libelle": libelle, "fichiers": len(contenus)}), encoding="utf-8"
+    )
 
 
 _EN_COURS = (TestExecutionStatus.PENDING.value, TestExecutionStatus.RUNNING.value)
 
 
-@router.get("/test-executions/{execution_id}/progression", response_model=ProgressionOut)
+@router.get(
+    "/test-executions/{execution_id}/progression",
+    responses={403: {"description": "Interdit"}, 404: {"description": "Introuvable"}},
+)
 async def progression_execution(
     execution_id: int,
     _: UserCaller = Depends(require_benchmark),
@@ -788,7 +1139,7 @@ async def progression_execution(
     des documents de meme taille."""
     execution = await db.get(TestExecution, execution_id)
     if execution is None:
-        raise HTTPException(status_code=404, detail="Execution introuvable")
+        raise HTTPException(status_code=404, detail=_EXECUTION_INTROUVABLE)
     recette = await db.get(TestRecipe, execution.recipe_id)
     total = len(getattr(recette, "document_ids", None) or [])
     traites = int(execution.documents_traites or 0)
@@ -823,7 +1174,14 @@ async def progression_execution(
     )
 
 
-@router.post("/test-executions/{execution_id}/cancel", response_model=ExecutionOut)
+@router.post(
+    "/test-executions/{execution_id}/cancel",
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+    },
+)
 async def annuler_execution(
     execution_id: int,
     caller: UserCaller = Depends(require_benchmark),
@@ -851,7 +1209,7 @@ async def annuler_execution(
     ).scalar_one_or_none()
     execution = await db.get(TestExecution, execution_id)
     if execution is None:
-        raise HTTPException(status_code=404, detail="Execution introuvable")
+        raise HTTPException(status_code=404, detail=_EXECUTION_INTROUVABLE)
     if annulee is None:
         raise HTTPException(
             status_code=409, detail=f"execution {execution.status} : plus rien a annuler"
@@ -860,7 +1218,7 @@ async def annuler_execution(
     return _execution_out(execution)
 
 
-@router.get("/test-executions", response_model=List[ExecutionOut])
+@router.get("/test-executions", responses={403: {"description": "Interdit"}})
 async def lister_executions(
     recipe_id: Optional[int] = None,
     status: Optional[str] = None,
@@ -875,7 +1233,7 @@ async def lister_executions(
     return [_execution_out(e) for e in (await db.execute(requete)).scalars().all()]
 
 
-def filtres_champs(
+def field_filters(
     recherche: Optional[str] = Query(None, description="Morceau de la cle du champ"),
     type_champ: List[str] = Query([], description="TEXT, NUMBER, DATE, BOOLEAN ; repetable"),
     reussite_inferieure_a: Optional[float] = Query(
@@ -894,7 +1252,7 @@ def filtres_champs(
     )
 
 
-async def _metriques(
+async def _metrics(
     db: AsyncSession,
     execution_id: int,
     tous_les_champs: bool = False,
@@ -930,7 +1288,7 @@ async def _metriques(
         ).all()
     }
     colonnes = [c.name for c in EvaluationReport.__table__.columns]
-    metriques = calculer(
+    metriques = compute(
         [
             {**{c: getattr(rapport, c) for c in colonnes}, "section_label": libelle}
             for rapport, libelle in lignes
@@ -962,7 +1320,15 @@ async def _metriques(
     return metriques
 
 
-@router.get("/test-executions/comparaison", response_model=ComparaisonOut)
+@router.get(
+    "/test-executions/comparaison",
+    response_model=ComparaisonOut,
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+    },
+)
 async def comparer_executions(
     a: int = Query(..., description="Execution de reference"),
     b: int = Query(..., description="Execution comparee a la reference"),
@@ -973,10 +1339,13 @@ async def comparer_executions(
     meme export (deux moteurs OCR). « comparable » faux si les documents, la
     version du comparateur, le schema ou la verite humaine different ;
     ``moteur`` dit ce qui change entre a et b."""
-    return comparer(await _metriques(db, a, True), await _metriques(db, b, True))
+    return compare_metrics(await _metrics(db, a, True), await _metrics(db, b, True))
 
 
-@router.get("/test-executions/{execution_id}", response_model=ExecutionOut)
+@router.get(
+    "/test-executions/{execution_id}",
+    responses={403: {"description": "Interdit"}, 404: {"description": "Introuvable"}},
+)
 async def lire_execution(
     execution_id: int,
     _: UserCaller = Depends(require_benchmark),
@@ -984,17 +1353,25 @@ async def lire_execution(
 ) -> ExecutionOut:
     execution = await db.get(TestExecution, execution_id)
     if execution is None:
-        raise HTTPException(status_code=404, detail="Execution introuvable")
+        raise HTTPException(status_code=404, detail=_EXECUTION_INTROUVABLE)
     return _execution_out(execution)
 
 
-@router.get("/test-executions/{execution_id}/metriques", response_model=MetriquesOut)
+@router.get(
+    "/test-executions/{execution_id}/metriques",
+    response_model=MetriquesOut,
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+    },
+)
 async def metriques_execution(
     execution_id: int,
     tous_les_champs: bool = Query(
         False, description="Faux : par_champ ne liste que les champs en erreur"
     ),
-    filtres: FiltresChamps = Depends(filtres_champs),
+    filtres: FiltresChamps = Depends(field_filters),
     _: UserCaller = Depends(require_benchmark),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
@@ -1004,26 +1381,32 @@ async def metriques_execution(
     Chaque champ porte sa reussite, ses documents en erreur et son echec
     principal. Les filtres ne restreignent que ``par_champ`` ; ``selection``
     rappelle les filtres et compte les champs retenus."""
-    return await _metriques(db, execution_id, tous_les_champs, filtres)
+    return await _metrics(db, execution_id, tous_les_champs, filtres)
 
 
 @router.get(
     "/test-executions/{execution_id}/metriques.pdf",
     response_class=Response,
-    responses={200: {"content": {"application/pdf": {}}, "description": "Le rapport en PDF"}},
+    responses={
+        200: {"content": {"application/pdf": {}}, "description": "Le rapport en PDF"},
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        409: {"description": "Conflit"},
+        422: {"description": "Requete invalide"},
+    },
 )
 async def metriques_pdf(
     execution_id: int,
-    filtres: FiltresChamps = Depends(filtres_champs),
+    filtres: FiltresChamps = Depends(field_filters),
     _: UserCaller = Depends(require_benchmark),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Le rapport de qualite d'extraction en PDF, avec les filtres de la page :
     taux et marge, repartition, filtres appliques, champs en erreur, extraits
     des documents en erreur. Un champ sensible n'y montre jamais de valeur."""
-    metriques = await _metriques(db, execution_id, False, filtres)
+    metriques = await _metrics(db, execution_id, False, filtres)
     extraits = {
-        champ: rapport_metriques_pdf.dict_ecarts(
+        champ: rapport_metriques_pdf.discrepancy_dict(
             await lire_ecarts(
                 db,
                 execution_id,
@@ -1032,10 +1415,10 @@ async def metriques_pdf(
                 limit=rapport_metriques_pdf.EXTRAITS_PAR_CHAMP,
             )
         )
-        for champ in rapport_metriques_pdf.extraits_a_montrer(metriques["par_champ"])
+        for champ in rapport_metriques_pdf.excerpts_to_show(metriques["par_champ"])
     }
     pdf = await run_in_threadpool(
-        rapport_metriques_pdf.rendre_pdf,
+        rapport_metriques_pdf.render_pdf,
         metriques,
         recette=metriques["recette"],
         dataset=metriques["dataset"]["name"],
@@ -1052,7 +1435,7 @@ async def metriques_pdf(
 _CHAMP = re.compile(r"^(?P<cle>[^\[\]]+)(?:\[(?P<ligne>[^\[\]]+)\])?$")
 
 
-def _decouper_champ(champ: str) -> Tuple[str, Optional[str]]:
+def _split_field(champ: str) -> Tuple[str, Optional[str]]:
     """« section.cle[ligne] » -> (« section.cle », « ligne ») ; 422 si illisible."""
     trouve = _CHAMP.match(champ.strip())
     if trouve is None:
@@ -1062,7 +1445,7 @@ def _decouper_champ(champ: str) -> Tuple[str, Optional[str]]:
     return trouve["cle"], trouve["ligne"]
 
 
-def _requete_ecarts(
+def _discrepancy_query(
     execution_id: int,
     *,
     verdict: Optional[str] = None,
@@ -1102,7 +1485,7 @@ def _requete_ecarts(
     if champs:
         conditions = []
         for champ in champs:
-            cle_champ, ligne = _decouper_champ(champ)
+            cle_champ, ligne = _split_field(champ)
             conditions.append(
                 and_(
                     (FieldSpec.field_key == cle_champ) | (cle == cle_champ),
@@ -1130,7 +1513,7 @@ async def lire_ecarts(
     """Les ecarts d'une execution, document par document (filtres de
     _requete_ecarts : verdict, field_key, champs, types_erreur)."""
     requete = (
-        _requete_ecarts(execution_id, **filtres)
+        _discrepancy_query(execution_id, **filtres)
         .order_by(
             DocumentField.document_id,
             FieldSpec.page,
@@ -1142,16 +1525,20 @@ async def lire_ecarts(
     if limit is not None:
         requete = requete.limit(limit)
     lignes = (await db.execute(requete)).all()
-    return [_ecart_out(cr, df, fs, str(type_)) for cr, df, fs, type_ in lignes]
+    return [_discrepancy_out(cr, df, fs, str(type_)) for cr, df, fs, type_ in lignes]
 
 
 async def compter_ecarts(db: AsyncSession, execution_id: int, **filtres: Any) -> int:
     """Nombre d'ecarts avec les memes filtres : le N de « Document i sur N »."""
-    requete = select(func.count()).select_from(_requete_ecarts(execution_id, **filtres).subquery())
+    requete = select(func.count()).select_from(
+        _discrepancy_query(execution_id, **filtres).subquery()
+    )
     return int((await db.execute(requete)).scalar_one())
 
 
-def _ecart_out(cr: ComparisonResult, df: DocumentField, fs: FieldSpec, type_: str) -> EcartOut:
+def _discrepancy_out(
+    cr: ComparisonResult, df: DocumentField, fs: FieldSpec, type_: str
+) -> EcartOut:
     field_key = (
         fs.field_key
         if fs.field_key.startswith(f"{fs.section_id}.")
@@ -1173,7 +1560,14 @@ def _ecart_out(cr: ComparisonResult, df: DocumentField, fs: FieldSpec, type_: st
     )
 
 
-@router.get("/test-executions/{execution_id}/ecarts", response_model=List[EcartOut])
+@router.get(
+    "/test-executions/{execution_id}/ecarts",
+    responses={
+        403: {"description": "Interdit"},
+        404: {"description": "Introuvable"},
+        422: {"description": "Requete invalide"},
+    },
+)
 async def ecarts_execution(
     execution_id: int,
     reponse: Response,
@@ -1195,7 +1589,7 @@ async def ecarts_execution(
     Un champ sensible n'y montre jamais de valeur : seuls le verdict, le type
     d'erreur, la categorie et l'ampleur."""
     if await db.get(TestExecution, execution_id) is None:
-        raise HTTPException(status_code=404, detail="Execution introuvable")
+        raise HTTPException(status_code=404, detail=_EXECUTION_INTROUVABLE)
     filtres: Dict[str, Any] = {
         "verdict": verdict,
         "field_key": field_key,

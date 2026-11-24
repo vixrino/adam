@@ -174,9 +174,7 @@ async def counts(organisation_id: Optional[int], matricule: Optional[str]) -> tu
 async def org_of(matricule: str) -> int:
     async with get_async_session() as session:
         found = (
-            await session.execute(
-                select(User.organisation_id).where(User.matricule == matricule)
-            )
+            await session.execute(select(User.organisation_id).where(User.matricule == matricule))
         ).scalar_one_or_none()
     if found is None:
         # scalar_one levait un NoResultFound qui ne nommait pas le coupable :
@@ -210,9 +208,7 @@ async def main() -> int:
         # dur laissait lire "(MAT00002)" sous une session ouverte pour un tout
         # autre utilisateur, ce qui egare au pire moment, celui du diagnostic.
         f"Operateur Metier    ({OPERATOR})": await counts(organisation_id, OPERATOR),
-        f"Admin Metier        ({BUSINESS_ADMIN})": await counts(
-            organisation_id, BUSINESS_ADMIN
-        ),
+        f"Admin Metier        ({BUSINESS_ADMIN})": await counts(organisation_id, BUSINESS_ADMIN),
         f"Client NOTA         ({NOTA_CLIENT})": await counts(organisation_id, NOTA_CLIENT),
         f"Admin NOTA          ({NOTA_ADMIN})": await counts(None, None),
         "Service machine": await counts(None, None),

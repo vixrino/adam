@@ -5,19 +5,15 @@
 - statut CANCELLED : la colonne status est une chaine sans contrainte, seul son
   commentaire change.
 
-Schema nomme explicitement, comme d0e1f2a3b4c5. Le paquet *_core est deduit
-du chemin du fichier : la migration se copie telle quelle d'adam a nota.
+Schema nomme explicitement, comme d0e1f2a3b4c5.
 """
 
-import importlib
-from pathlib import Path
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
+import sqlalchemy as sa
 
-# .../src/<paquet>_core/migrations/versions/ce_fichier.py
-Base = importlib.import_module(f"{Path(__file__).resolve().parents[2].name}.db.base").Base
+from adam_core.db.base import Base
 
 revision: str = "f2a3b4c5d6e7"
 down_revision: Union[str, None] = "e1f2a3b4c5d6"

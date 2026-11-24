@@ -37,7 +37,7 @@ FieldDef = Mapping[str, Any]
 _COLONNES = (("deposant", "Deposant"), ("co_deposant", "Co-deposant"))
 
 
-def _colonnes(prefixe: str, champs: Mapping[str, FieldDef]) -> Dict[str, FieldDef]:
+def _columns(prefixe: str, champs: Mapping[str, FieldDef]) -> Dict[str, FieldDef]:
     """Double une rubrique a deux colonnes, deposant et co-deposant."""
     doubles: Dict[str, FieldDef] = {}
     for personne, colonne in _COLONNES:
@@ -49,7 +49,7 @@ def _colonnes(prefixe: str, champs: Mapping[str, FieldDef]) -> Dict[str, FieldDe
     return doubles
 
 
-def _montant(libelle: str) -> FieldDef:
+def _amount(libelle: str) -> FieldDef:
     return {"description": f"{libelle} : montant mensuel", "type": "number"}
 
 
@@ -57,7 +57,7 @@ def _nature(libelle: str) -> FieldDef:
     return {"description": f"{libelle} : nature precisee a la main", "type": "string"}
 
 
-def _oui_non(prefixe: str, question: str) -> Dict[str, FieldDef]:
+def _yes_no(prefixe: str, question: str) -> Dict[str, FieldDef]:
     """Une question a cases Oui / Non : UN booleen, vrai pour Oui, faux pour Non.
 
     Le CERFA pose la question une fois, avec deux cases ; deux booleens (une
@@ -67,7 +67,7 @@ def _oui_non(prefixe: str, question: str) -> Dict[str, FieldDef]:
     return {prefixe: {"description": f"{question} ?", "type": "boolean"}}
 
 
-def _nom_adresse(section: str, objet: str, qui: str = "creancier") -> Dict[str, FieldDef]:
+def _name_address(section: str, objet: str, qui: str = "creancier") -> Dict[str, FieldDef]:
     """Colonne « Nom et adresse du creancier » : une seule case sur le CERFA."""
     return {
         f"{section}.nom_adresse_{qui}": {
@@ -77,27 +77,27 @@ def _nom_adresse(section: str, objet: str, qui: str = "creancier") -> Dict[str, 
     }
 
 
-def _poursuites(section: str, objet: str) -> Dict[str, FieldDef]:
-    return _oui_non(f"{section}.poursuites", f"Faites-vous l'objet de poursuites, {objet}")
+def _proceedings(section: str, objet: str) -> Dict[str, FieldDef]:
+    return _yes_no(f"{section}.poursuites", f"Faites-vous l'objet de poursuites, {objet}")
 
 
-def _dettes(section: str, objet: str, montant: str = "Montant impaye") -> Dict[str, FieldDef]:
+def _debts(section: str, objet: str, montant: str = "Montant impaye") -> Dict[str, FieldDef]:
     """Tableau de dettes des pages 6 et 7 : creancier, reference, montant, poursuites."""
     return {
-        **_nom_adresse(section, objet),
+        **_name_address(section, objet),
         f"{section}.reference": {
             "description": f"Reference de la dette, {objet}",
             "type": "string",
         },
         f"{section}.montant_impaye": {"description": f"{montant}, {objet}", "type": "number"},
-        **_poursuites(section, objet),
+        **_proceedings(section, objet),
     }
 
 
 def _credit(section: str, objet: str) -> Dict[str, FieldDef]:
     """Colonnes d'un tableau de credits sans assurance (pages 10 et 11)."""
     return {
-        **_nom_adresse(section, objet),
+        **_name_address(section, objet),
         f"{section}.reference": {"description": f"Reference du pret, {objet}", "type": "string"},
         f"{section}.date_octroi": {
             "description": f"Date d'octroi, {objet}",
@@ -119,7 +119,7 @@ def _credit(section: str, objet: str) -> Dict[str, FieldDef]:
             "description": f"Montant exigible, {objet}",
             "type": "number",
         },
-        **_poursuites(section, objet),
+        **_proceedings(section, objet),
     }
 
 
@@ -276,7 +276,7 @@ _PAGE_1: Dict[str, FieldDef] = {
 }
 
 _PAGE_2: Dict[str, FieldDef] = {
-    **_oui_non("dossier_precedent.depose", "Avez-vous deja depose un dossier de surendettement"),
+    **_yes_no("dossier_precedent.depose", "Avez-vous deja depose un dossier de surendettement"),
     "dossier_precedent.numero": {"description": "Numero du dossier precedent", "type": "string"},
     "situation_familiale.marie": {"description": "Marie(e)", "type": "boolean"},
     "situation_familiale.marie_date": {
@@ -333,7 +333,7 @@ _PAGE_2: Dict[str, FieldDef] = {
         "description": "Situation ou mode de garde",
         "type": "string",
     },
-    **_oui_non("personnes_a_charge.ressources", "La personne a charge a-t-elle des ressources"),
+    **_yes_no("personnes_a_charge.ressources", "La personne a charge a-t-elle des ressources"),
     **{
         f"situation_logement_{personne}.{cle}": {
             **spec,
@@ -342,9 +342,9 @@ _PAGE_2: Dict[str, FieldDef] = {
         for personne, colonne in _COLONNES
         for cle, spec in {
             "locataire": {"description": "Case Locataire", "type": "boolean"},
-            **_oui_non("expulsion", "Faites-vous l'objet d'une procedure d'expulsion"),
+            **_yes_no("expulsion", "Faites-vous l'objet d'une procedure d'expulsion"),
             "proprietaire": {"description": "Case Proprietaire", "type": "boolean"},
-            **_oui_non("saisie_immobiliere", "Faites-vous l'objet d'une saisie immobiliere"),
+            **_yes_no("saisie_immobiliere", "Faites-vous l'objet d'une saisie immobiliere"),
             "heberge": {"description": "Case Heberge", "type": "boolean"},
             "occupant_gratuit": {
                 "description": "Case Occupant a titre gratuit",
@@ -358,7 +358,7 @@ _PAGE_2: Dict[str, FieldDef] = {
             },
         }.items()
     },
-    **_colonnes(
+    **_columns(
         "prestations_familiales",
         {
             "caf_numero_allocataire": {
@@ -374,7 +374,7 @@ _PAGE_2: Dict[str, FieldDef] = {
 }
 
 _PAGE_6: Dict[str, FieldDef] = {
-    **_nom_adresse("dettes_logement", "dette de logement"),
+    **_name_address("dettes_logement", "dette de logement"),
     "dettes_logement.reference": {
         "description": "Reference de la dette de logement",
         "type": "string",
@@ -383,8 +383,8 @@ _PAGE_6: Dict[str, FieldDef] = {
         "description": "Montant impaye de la dette de logement",
         "type": "number",
     },
-    **_poursuites("dettes_logement", "dette de logement"),
-    **_nom_adresse("dettes_courantes", "dette courante"),
+    **_proceedings("dettes_logement", "dette de logement"),
+    **_name_address("dettes_courantes", "dette courante"),
     "dettes_courantes.reference": {
         "description": "Reference de la dette courante",
         "type": "string",
@@ -393,14 +393,14 @@ _PAGE_6: Dict[str, FieldDef] = {
         "description": "Montant impaye de la dette courante",
         "type": "number",
     },
-    **_poursuites("dettes_courantes", "dette courante"),
+    **_proceedings("dettes_courantes", "dette courante"),
 }
 
 #: Page 9, credits immobiliers. Meme tableau que la page 10, a deux colonnes
 #: pres : le CERFA y demande l'assureur du pret et le montant mensuel de son
 #: assurance, qui n'existent pas pour un credit a la consommation.
 _PAGE_9: Dict[str, FieldDef] = {
-    **_nom_adresse("credits_immobiliers", "credit immobilier"),
+    **_name_address("credits_immobiliers", "credit immobilier"),
     "credits_immobiliers.nom_assureur": {
         "description": "Nom et adresse de l'assureur du pret, si different du creancier",
         "type": "string",
@@ -439,13 +439,13 @@ _PAGE_9: Dict[str, FieldDef] = {
         "description": "Montant exigible",
         "type": "number",
     },
-    **_poursuites("credits_immobiliers", "credit immobilier"),
+    **_proceedings("credits_immobiliers", "credit immobilier"),
 }
 
 #: Colonnes du tableau des credits a la consommation, qui commence page 10
 #: (prets n° 1 a 6) et se termine page 11 (prets n° 7 et 8).
 _CREDITS_CONSOMMATION: Dict[str, FieldDef] = {
-    **_nom_adresse("credits_consommation", "credit"),
+    **_name_address("credits_consommation", "credit"),
     "credits_consommation.reference": {"description": "Reference du pret", "type": "string"},
     "credits_consommation.date_octroi": {
         "description": "Date d'octroi du credit",
@@ -467,7 +467,7 @@ _CREDITS_CONSOMMATION: Dict[str, FieldDef] = {
         "type": "number",
     },
     "credits_consommation.montant_exigible": {"description": "Montant exigible", "type": "number"},
-    **_poursuites("credits_consommation", "credit"),
+    **_proceedings("credits_consommation", "credit"),
 }
 
 _PAGE_10: Dict[str, FieldDef] = dict(_CREDITS_CONSOMMATION)
@@ -553,7 +553,7 @@ _EPARGNE = {
 #: statut a sa date « depuis le » sur sa ligne, et plusieurs cases peuvent etre
 #: cochees (salarie en CDD et etudiant) : chaque date suit sa case.
 _PAGE_3: Dict[str, FieldDef] = {
-    **_colonnes(
+    **_columns(
         "situation_professionnelle",
         {
             "profession": {
@@ -582,29 +582,27 @@ _PAGE_3: Dict[str, FieldDef] = {
             },
         },
     ),
-    **_colonnes(
+    **_columns(
         "ressources_mensuelles",
         {
             champ: spec
             for cle, (libelle, a_nature) in _RESSOURCES.items()
             for champ, spec in ([(f"{cle}_nature", _nature(libelle))] if a_nature else [])
-            + [(cle, _montant(libelle))]
+            + [(cle, _amount(libelle))]
         },
     ),
 }
 
 #: Page 4, dans l'ordre du CERFA : charges, gestion du budget, vehicules.
 _PAGE_4: Dict[str, FieldDef] = {
-    **_colonnes(
-        "charges_mensuelles", {cle: _montant(libelle) for cle, libelle in _CHARGES.items()}
-    ),
-    **_oui_non("gestion_budget.compte_bancaire", "Avez-vous au moins un compte bancaire"),
+    **_columns("charges_mensuelles", {cle: _amount(libelle) for cle, libelle in _CHARGES.items()}),
+    **_yes_no("gestion_budget.compte_bancaire", "Avez-vous au moins un compte bancaire"),
     "gestion_budget.iban": {
         "description": "IBAN des comptes declares, tels qu'ecrits",
         "type": "string",
     },
     "vehicules.type": {"description": "Type de vehicule", "type": "string"},
-    **_oui_non(
+    **_yes_no(
         "vehicules.loa_lld",
         "Location avec option d'achat (LOA) ou location longue duree (LLD)",
     ),
@@ -624,16 +622,14 @@ _PAGE_5: Dict[str, FieldDef] = {
                 "description": f"{libelle} : valeur estimee en euros",
                 "type": "number",
             },
-            **_oui_non(
-                f"patrimoine_immobilier.{cle}_indivision", f"{libelle} : bien en indivision"
-            ),
+            **_yes_no(f"patrimoine_immobilier.{cle}_indivision", f"{libelle} : bien en indivision"),
         }.items()
     },
     "patrimoine_immobilier.autre_precision": {
         "description": "Nature du bien ecrite a cote de « Autres a preciser »",
         "type": "string",
     },
-    **_colonnes(
+    **_columns(
         "epargne",
         {
             cle: {"description": f"{libelle} : montant", "type": "number"}
@@ -653,8 +649,8 @@ _PAGE_5: Dict[str, FieldDef] = {
 #: Page 7, dettes diverses ; dettes de pension alimentaire, amendes,
 #: condamnations penales et dettes frauduleuses.
 _PAGE_7: Dict[str, FieldDef] = {
-    **_dettes("dettes_diverses", "dette diverse (avocat, factures, cheques impayes)"),
-    **_dettes(
+    **_debts("dettes_diverses", "dette diverse (avocat, factures, cheques impayes)"),
+    **_debts(
         "dettes_pension_amendes",
         "dette de pension alimentaire, amende, condamnation penale ou dette frauduleuse",
     ),
@@ -674,8 +670,8 @@ _PAGE_8: Dict[str, FieldDef] = {
         "description": "Montant du decouvert utilise",
         "type": "number",
     },
-    **_poursuites("decouverts_bancaires", "decouvert bancaire"),
-    **_nom_adresse("locations_diverses", "location"),
+    **_proceedings("decouverts_bancaires", "decouvert bancaire"),
+    **_name_address("locations_diverses", "location"),
     "locations_diverses.reference_contrat": {
         "description": "Reference du contrat de location",
         "type": "string",
@@ -701,7 +697,7 @@ _PAGE_8: Dict[str, FieldDef] = {
         "description": "Montant du solde apres-vente",
         "type": "number",
     },
-    **_poursuites("locations_diverses", "location"),
+    **_proceedings("locations_diverses", "location"),
 }
 
 #: Page 11, dans l'ordre du CERFA : fin du tableau des credits a la

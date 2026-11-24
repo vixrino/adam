@@ -3,7 +3,6 @@
 Trois niveaux, correspondant a la separation du sous-module :
 
     merger      fonction pure : fusion OCR + schema. Aucune base, aucun HTTP.
-    api_client  transport : reprises, entetes, erreurs non rejouables.
     poller      orchestration : selection, transitions de statut, isolation.
 
 Les criteres d'acceptation couverts sont ceux de la spec : les trois cas de
@@ -21,12 +20,15 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import pytest
+from sqlalchemy import update
+from sqlalchemy.dialects import postgresql
 
+from adam_api.exceptions.document_fields import FieldSpecMismatch
 from adam_core.enums.status import DocumentFieldStatus, DocumentStatus
+from adam_core.models import Document
 from adam_worker.connectors.base import DocumentNonConforme, OcrConnectorError
 from adam_worker.connectors.mock import MockOcrConnector
 from adam_worker.prepopulation import poller as poller_module
-from adam_worker.prepopulation.api_client import ApiClient, ApiClientError
 from adam_worker.prepopulation.merger import (
     OCR_RESOLVER,
     count_detected,
@@ -204,138 +206,31 @@ class TestMockConnector:
 
 
 # ---------------------------------------------------------------------------
-# api_client : transport
-# ---------------------------------------------------------------------------
-
-
-class _FakeResponse:
-    def __init__(self, status_code: int, payload: Optional[Dict[str, Any]] = None) -> None:
-        self.status_code = status_code
-        self._payload = payload or {}
-        self.content = b"{}" if payload is not None else b""
-        self.text = str(payload)
-
-    def json(self) -> Dict[str, Any]:
-        return self._payload
-
-
-class _FakeHttpClient:
-    """Rejoue une sequence de reponses et enregistre les appels."""
-
-    def __init__(self, responses: List[Any]) -> None:
-        self._responses = responses
-        self.calls: List[Dict[str, Any]] = []
-
-    async def request(
-        self, method: str, url: str, json: Any = None, headers: Any = None
-    ) -> _FakeResponse:
-        self.calls.append({"method": method, "url": url, "json": json, "headers": headers})
-        result = self._responses.pop(0)
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-    async def aclose(self) -> None:
-        return None
-
-
-@pytest.fixture(autouse=True)
-def _no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Neutralise l'attente entre deux tentatives : les tests ne doivent pas dormir."""
-
-    async def _sleep(_seconds: float) -> None:
-        return None
-
-    monkeypatch.setattr("adam_worker.prepopulation.api_client.asyncio.sleep", _sleep)
-
-
-class TestApiClient:
-    @pytest.mark.asyncio
-    async def test_appel_nominal(self) -> None:
-        http = _FakeHttpClient([_FakeResponse(200, {"id": 7, "schema_id": 3})])
-        client = ApiClient("http://api:8000", client=http)  # type: ignore[arg-type]
-        assert await client.get_dataset(7) == {"id": 7, "schema_id": 3}
-        assert http.calls[0]["url"] == "http://api:8000/datasets/7"
-
-    @pytest.mark.asyncio
-    async def test_pas_d_entete_sans_cle(self) -> None:
-        http = _FakeHttpClient([_FakeResponse(200, {})])
-        client = ApiClient("http://api:8000", client=http)  # type: ignore[arg-type]
-        await client.get_dataset(1)
-        assert http.calls[0]["headers"] == {}
-
-    @pytest.mark.asyncio
-    async def test_entete_injectee_quand_la_cle_existe(self) -> None:
-        """Point d'injection prevu pour l'API key a venir."""
-        http = _FakeHttpClient([_FakeResponse(200, {})])
-        client = ApiClient("http://api:8000", api_key="secret", client=http)  # type: ignore[arg-type]
-        await client.get_dataset(1)
-        assert http.calls[0]["headers"] == {"X-Internal-Token": "secret"}
-
-    @pytest.mark.asyncio
-    async def test_5xx_rejoue_puis_abandonne(self) -> None:
-        http = _FakeHttpClient([_FakeResponse(500), _FakeResponse(503), _FakeResponse(500)])
-        client = ApiClient("http://api:8000", client=http)  # type: ignore[arg-type]
-        with pytest.raises(ApiClientError):
-            await client.get_dataset(1)
-        assert len(http.calls) == 3
-
-    @pytest.mark.asyncio
-    async def test_5xx_puis_succes(self) -> None:
-        http = _FakeHttpClient([_FakeResponse(500), _FakeResponse(200, {"ok": True})])
-        client = ApiClient("http://api:8000", client=http)  # type: ignore[arg-type]
-        assert await client.get_dataset(1) == {"ok": True}
-        assert len(http.calls) == 2
-
-    @pytest.mark.asyncio
-    async def test_4xx_n_est_pas_rejoue(self) -> None:
-        # Une demande invalide ne deviendra pas valide en la repetant.
-        http = _FakeHttpClient([_FakeResponse(422, {"detail": "hors schema"})])
-        client = ApiClient("http://api:8000", client=http)  # type: ignore[arg-type]
-        with pytest.raises(ApiClientError):
-            await client.get_dataset(1)
-        assert len(http.calls) == 1
-
-    @pytest.mark.asyncio
-    async def test_get_field_specs_chaine_les_deux_appels(self) -> None:
-        http = _FakeHttpClient(
-            [
-                _FakeResponse(200, {"id": 4, "schema_id": 9}),
-                _FakeResponse(200, {"id": 9, "field_specs": [{"id": 1}]}),
-            ]
-        )
-        client = ApiClient("http://api:8000", client=http)  # type: ignore[arg-type]
-        assert await client.get_field_specs(4) == [{"id": 1}]
-        assert http.calls[1]["url"] == "http://api:8000/schemas/9"
-
-    @pytest.mark.asyncio
-    async def test_dataset_sans_schema(self) -> None:
-        http = _FakeHttpClient([_FakeResponse(200, {"id": 4})])
-        client = ApiClient("http://api:8000", client=http)  # type: ignore[arg-type]
-        with pytest.raises(ApiClientError):
-            await client.get_field_specs(4)
-
-
-# ---------------------------------------------------------------------------
 # poller : orchestration
 # ---------------------------------------------------------------------------
 
 
 class _FakeDb:
-    """Rejoue candidats et contexte, et enregistre les UPDATE de statut."""
+    """Rejoue candidats et contexte, et enregistre les UPDATE de statut.
 
-    def __init__(self, candidates: List[int], context: Optional[Any] = None) -> None:
-        self.candidates = candidates
+    `candidates` : des ids (mode "ocr") ou des couples (id, mode). Comme la vraie
+    requete, il ne rend que les documents `empty` quand elle porte le filtre
+    `prealim_mode = ...`.
+    """
+
+    def __init__(self, candidates: List[Any], context: Optional[Any] = None) -> None:
+        self.candidates = [c if isinstance(c, tuple) else (c, "ocr") for c in candidates]
         self.context = context
         self.statements: List[Any] = []
 
     async def execute(self, statement: Any) -> Any:
         self.statements.append(statement)
         outer = self
+        filtre_empty = "prealim_mode =" in str(statement)
 
         class _Result:
-            def scalars(self) -> Any:
-                return SimpleNamespace(all=lambda: outer.candidates)
+            def all(self) -> Any:
+                return [c for c in outer.candidates if not filtre_empty or c[1] == "empty"]
 
             def one_or_none(self) -> Any:
                 return outer.context
@@ -344,6 +239,12 @@ class _FakeDb:
 
 
 class _FakeApiClient:
+    """Remplace les deux acces base du worker : lecture du schema, creation des champs."""
+
+    #: Base de la session patchee : `persist` y ecrit le passage en IN_PROGRESS,
+    #: comme la vraie transaction, pour que `_statuses` le retrouve.
+    current_db: Optional["_FakeDb"] = None
+
     def __init__(
         self,
         field_specs: Optional[List[Dict[str, Any]]] = None,
@@ -355,24 +256,27 @@ class _FakeApiClient:
         self.specs_error = specs_error
         self.bulk_error = bulk_error
         self.bulk_payloads: List[List[Dict[str, Any]]] = []
+        self.ocr_results: List[Any] = []
 
-    async def get_field_specs(self, dataset_id: int) -> List[Dict[str, Any]]:
+    async def load_schema(self, dataset_id: int, document_id: int) -> Dict[str, Any]:
         if self.specs_error:
-            raise ApiClientError("schema injoignable")
-        return self.field_specs
-
-    async def get_dataset_schema(self, dataset_id: int) -> Dict[str, Any]:
-        if self.specs_error:
-            raise ApiClientError("schema injoignable")
+            raise PrepopulationError("schema injoignable")
         return {"name": "schema de test", "pages": [], "field_specs": self.field_specs}
 
-    async def create_fields_bulk(
-        self, document_id: int, fields: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    async def persist(
+        self, document_id: int, dataset_id: int, fields: List[Dict[str, Any]], ocr: Any
+    ) -> Any:
         if self.bulk_error:
-            raise ApiClientError("bulk refuse")
+            raise PrepopulationError("creation des champs refusee : bulk refuse")
         self.bulk_payloads.append(list(fields))
-        return {"created": list(fields), "skipped": []}
+        self.ocr_results.append(ocr)
+        if _FakeApiClient.current_db is not None:
+            _FakeApiClient.current_db.statements.append(
+                update(Document)
+                .where(Document.id == document_id)
+                .values(status=DocumentStatus.IN_PROGRESS.value)
+            )
+        return SimpleNamespace(created=list(fields), skipped=[])
 
 
 def _patch_session(monkeypatch: pytest.MonkeyPatch, db: _FakeDb) -> None:
@@ -381,14 +285,41 @@ def _patch_session(monkeypatch: pytest.MonkeyPatch, db: _FakeDb) -> None:
         yield db
 
     monkeypatch.setattr(poller_module, "get_async_session", _fake_get_async_session)
+    _FakeApiClient.current_db = db
+
+
+class _FakeStore:
+    """Remplace settings_store : un dict en memoire, et la liste des ecritures."""
+
+    OCR_STATUS_KEY = "ocr_status"
+
+    def __init__(self) -> None:
+        self.data: Dict[str, Any] = {}
+        self.writes: List[Any] = []
+
+    async def load(self, *_a: Any, **_k: Any) -> Dict[str, Any]:
+        return dict(self.data)
+
+    async def set_value(self, _db: Any, key: str, value: Any, updated_by: Any = None) -> None:
+        self.writes.append((key, value))
+        self.data[key] = value
+
+
+@pytest.fixture(autouse=True)
+def store(monkeypatch: pytest.MonkeyPatch) -> _FakeStore:
+    fake = _FakeStore()
+    monkeypatch.setattr(poller_module, "settings_store", fake)
+    return fake
 
 
 def _worker(api_client: Any, connector: Any = None, tmp_path: Optional[Path] = None) -> Any:
-    return PrepopulationWorker(
+    worker = PrepopulationWorker(
         connector=connector or MockOcrConnector(["demandeur.nom"]),
-        api_client=api_client,
         pvc_root=tmp_path or Path("/inexistant"),
     )
+    worker._load_schema = api_client.load_schema  # type: ignore[method-assign]
+    worker._persist = api_client.persist  # type: ignore[method-assign]
+    return worker
 
 
 def _statuses(db: _FakeDb) -> List[str]:
@@ -417,13 +348,64 @@ class TestPollerSelection:
         assert "'INGESTED'" in str(db.statements[0].compile(compile_kwargs={"literal_binds": True}))
 
 
+class _MoteurHorsLigne(MockOcrConnector):
+    """Connecteur dont la sonde echoue tant que `motif` est renseigne."""
+
+    def __init__(self, motif: Optional[str]) -> None:
+        super().__init__(["demandeur.nom"])
+        self.motif = motif
+
+    async def ping(self) -> Optional[str]:
+        return self.motif
+
+
+class TestMoteurHorsLigne:
+    @pytest.mark.asyncio
+    async def test_cycle_saute_sans_toucher_aux_documents(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        db = _FakeDb(candidates=[1, 2], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="x.pdf"))
+        _patch_session(monkeypatch, db)
+        worker = _worker(_FakeApiClient(), connector=_MoteurHorsLigne("ConnectTimeout"))
+        with caplog.at_level(logging.INFO):
+            await worker.poll()
+            await worker.poll()
+        assert _statuses(db) == []  # aucun UPDATE : ni ERROR ni IN_PROGRESS
+        alertes = [r for r in caplog.records if "injoignable" in r.getMessage()]
+        assert len(alertes) == 1  # une alerte au changement d'etat, pas une par cycle
+        assert "ConnectTimeout" in alertes[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_reprise_au_retour_du_moteur(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="x.pdf"))
+        _patch_session(monkeypatch, db)
+        moteur = _MoteurHorsLigne("ConnectError")
+        worker = _worker(_FakeApiClient(), connector=moteur)
+        with caplog.at_level(logging.INFO):
+            await worker.poll()
+            moteur.motif = None
+            await worker.poll()
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
+        assert any("moteur OCR joignable" in r.getMessage() for r in caplog.records)
+
+
 class TestPollerSucces:
     @pytest.mark.asyncio
+    async def test_bilan_du_cycle_loggue(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),)
+        _patch_session(monkeypatch, db)
+        with caplog.at_level(logging.INFO):
+            await _worker(_FakeApiClient()).poll()
+        bilan = next(r.getMessage() for r in caplog.records if "cycle termine" in r.getMessage())
+        assert f"documents=1 pre_alimentes=1 error=0 champs_crees={len(SPECS)}" in bilan
+
+    @pytest.mark.asyncio
     async def test_document_passe_en_in_progress(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(
-            candidates=[1],
-            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
-        )
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),)
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient()).poll()
         assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
@@ -432,10 +414,7 @@ class TestPollerSucces:
     async def test_tous_les_champs_du_schema_sont_envoyes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        db = _FakeDb(
-            candidates=[1],
-            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
-        )
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),)
         _patch_session(monkeypatch, db)
         api = _FakeApiClient()
         await _worker(api).poll()
@@ -444,10 +423,7 @@ class TestPollerSucces:
     @pytest.mark.asyncio
     async def test_ocr_indisponible_reste_un_succes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Un OCR muet n'est pas une erreur : champs vides, document utilisable."""
-        db = _FakeDb(
-            candidates=[1],
-            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
-        )
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),)
         _patch_session(monkeypatch, db)
         api = _FakeApiClient()
         await _worker(api, connector=MockOcrConnector(available=False)).poll()
@@ -458,40 +434,28 @@ class TestPollerSucces:
 class TestPollerEchecs:
     @pytest.mark.asyncio
     async def test_connecteur_en_echec_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(
-            candidates=[1],
-            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
-        )
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),)
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
 
     @pytest.mark.asyncio
     async def test_schema_injoignable_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(
-            candidates=[1],
-            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
-        )
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),)
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(specs_error=True)).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
 
     @pytest.mark.asyncio
     async def test_bulk_refuse_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(
-            candidates=[1],
-            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
-        )
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),)
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(bulk_error=True)).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
 
     @pytest.mark.asyncio
     async def test_schema_vide_met_en_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = _FakeDb(
-            candidates=[1],
-            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
-        )
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),)
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(field_specs=[])).poll()
         assert DocumentStatus.ERROR.value in _statuses(db)
@@ -501,10 +465,7 @@ class TestPollerEchecs:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """CA : le document suivant doit etre traite malgre l'echec du precedent."""
-        db = _FakeDb(
-            candidates=[1, 2, 3],
-            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
-        )
+        db = _FakeDb(candidates=[1, 2, 3], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),)
         _patch_session(monkeypatch, db)
         await _worker(_FakeApiClient(specs_error=True)).poll()
         assert _statuses(db).count(DocumentStatus.ERROR.value) == 3
@@ -516,10 +477,7 @@ class TestPollerConfidentialite:
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """CA : ni IBAN ni NIR ne doivent apparaitre, donc aucune valeur du tout."""
-        db = _FakeDb(
-            candidates=[1],
-            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
-        )
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),)
         _patch_session(monkeypatch, db)
         secret = "FR7630006000011234567890189"
         connector = MockOcrConnector(["demandeur.nom"], value=secret)
@@ -531,10 +489,7 @@ class TestPollerConfidentialite:
     async def test_le_log_porte_les_comptages(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        db = _FakeDb(
-            candidates=[1],
-            context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),
-        )
+        db = _FakeDb(candidates=[1], context=SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf"),)
         _patch_session(monkeypatch, db)
         with caplog.at_level(logging.INFO):
             await _worker(_FakeApiClient()).poll()
@@ -557,29 +512,6 @@ class TestPageImages:
         assert [p.name for p in worker._page_images(1)] == ["page_1.png", "page_2.png"]
 
 
-class TestApiOrigin:
-    """api_host est une adresse d'ecoute ; le worker en tire une destination.
-
-    Le joker d'ecoute a deja produit une panne : le worker tentait une connexion
-    vers 0.0.0.0, refusee par la pile reseau, et aucun document n'etait
-    pre-alimente sans que la cause soit lisible.
-    """
-
-    @pytest.mark.parametrize("host", ["0.0.0.0", "::", "[::]", "", "  "])
-    def test_les_jokers_d_ecoute_sont_rabattus_sur_localhost(
-        self, monkeypatch: pytest.MonkeyPatch, host: str
-    ) -> None:
-        monkeypatch.setattr(poller_module.settings, "api_host", host)
-        monkeypatch.setattr(poller_module.settings, "api_port", 8001)
-        assert poller_module._api_origin() == "http://127.0.0.1:8001"
-
-    @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "api.interne"])
-    def test_un_hote_reel_est_conserve(self, monkeypatch: pytest.MonkeyPatch, host: str) -> None:
-        monkeypatch.setattr(poller_module.settings, "api_host", host)
-        monkeypatch.setattr(poller_module.settings, "api_port", 8001)
-        assert poller_module._api_origin() == f"http://{host}:8001"
-
-
 def test_prepopulation_error_est_exportee() -> None:
     assert issubclass(PrepopulationError, Exception)
 
@@ -597,6 +529,9 @@ class _ConnecteurFige:
     def __init__(self, rendu: Any = None, erreur: Optional[Exception] = None) -> None:
         self.rendu = rendu
         self.erreur = erreur
+
+    async def ping(self) -> Optional[str]:
+        return None
 
     async def extract(self, images: Any, modele: Any = None) -> Any:
         if self.erreur is not None:
@@ -780,7 +715,7 @@ class TestMetadataJsonNull:
         await _worker(_FakeApiClient(), connector=MockOcrConnector(failing=True)).poll()
 
         update_sql = next(str(s) for s in reversed(db.statements) if str(s).startswith("UPDATE"))
-        assert "jsonb_typeof(document.metadata)" in update_sql
+        assert "jsonb_typeof(nota.document.metadata)" in update_sql
         assert "coalesce" not in update_sql.lower()
 
 
@@ -822,9 +757,10 @@ class TestReorderPdf:
         """PyMuPDF s'importe sous le nom pymupdf, comme cote nota : l'alias
         historique fitz y faisait lever « name 'fitz' is not defined »."""
         from adam_core.utils import pdf_render
-
         assert not hasattr(pdf_render, "fitz")
         assert hasattr(pdf_render, "pymupdf")
+
+
 
     def test_ordre_incompatible_ne_laisse_aucun_fichier(self, tmp_path: Path) -> None:
         from adam_core.utils.pdf_render import PdfRenderError, reorder_pdf
@@ -865,7 +801,7 @@ class TestPollerPdfOrdonne:
         # L'original reste, trace du scan tel que recu.
         assert _pdf_textes(tmp_path / "org/cerfa/doc.pdf") == ["scan-1", "scan-2", "scan-3"]
         # Le FILE pointe sur la copie ordonnee.
-        maj_file = [s.compile().params for s in db.statements if str(s).startswith("UPDATE file")]
+        maj_file = [s.compile().params for s in db.statements if str(s).startswith("UPDATE nota.file")]
         assert maj_file and maj_file[0]["file_path"] == "org/cerfa/doc_ordonne.pdf"
         assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
 
@@ -889,3 +825,248 @@ class TestPollerPdfOrdonne:
         assert (dossier / "0002.png").read_text() == "scan-3"
         assert not any(str(s).startswith("UPDATE file") for s in db.statements)
         assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
+
+# ---------------------------------------------------------------------------
+# poller : modes de pre-alimentation, statut du moteur, ecriture
+# ---------------------------------------------------------------------------
+
+_CONTEXT = SimpleNamespace(dataset_id=4, file_id=10, file_path="org/cerfa/doc.pdf")
+
+
+class _Espion(MockOcrConnector):
+    """Compte les appels au moteur ; `motif` fait echouer la sonde."""
+
+    def __init__(self, motif: Optional[str] = None) -> None:
+        super().__init__(["demandeur.nom"])
+        self.motif = motif
+        self.pings = 0
+        self.extracts = 0
+
+    async def ping(self) -> Optional[str]:
+        self.pings += 1
+        return self.motif
+
+    async def extract(self, images: Any, modele: Any = None) -> Any:
+        self.extracts += 1
+        return await super().extract(images, modele)
+
+
+class TestPrealimMode:
+    @pytest.mark.asyncio
+    async def test_empty_cree_les_champs_sans_appeler_l_ocr(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = _FakeDb(candidates=[(1, "empty")], context=_CONTEXT)
+        _patch_session(monkeypatch, db)
+        api, moteur = _FakeApiClient(), _Espion()
+        await _worker(api, connector=moteur).poll()
+        assert moteur.extracts == 0
+        assert api.ocr_results == [None]  # pas d'OCR_RESULT
+        assert all(p["ocr_value"] is None for p in api.bulk_payloads[0])
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
+
+    @pytest.mark.asyncio
+    async def test_empty_passe_meme_moteur_hors_ligne(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = _FakeDb(candidates=[(1, "empty")], context=_CONTEXT)
+        _patch_session(monkeypatch, db)
+        await _worker(_FakeApiClient(), connector=_Espion("ConnectTimeout")).poll()
+        assert _statuses(db) == [DocumentStatus.IN_PROGRESS.value]
+
+    @pytest.mark.asyncio
+    async def test_ocr_attend_le_moteur_sans_erreur(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = _FakeDb(candidates=[(1, "ocr")], context=_CONTEXT)
+        _patch_session(monkeypatch, db)
+        moteur = _Espion("ConnectTimeout")
+        await _worker(_FakeApiClient(), connector=moteur).poll()
+        assert moteur.extracts == 0
+        assert _statuses(db) == []  # reste INGESTED : ni ERROR ni IN_PROGRESS
+
+    @pytest.mark.asyncio
+    async def test_lot_mixte_moteur_hors_ligne_ne_traite_que_les_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = _FakeDb(candidates=[(1, "ocr"), (2, "empty"), (3, "ocr")], context=_CONTEXT)
+        _patch_session(monkeypatch, db)
+        api = _FakeApiClient()
+        await _worker(api, connector=_Espion("ConnectError")).poll()
+        assert len(api.bulk_payloads) == 1  # le seul document empty
+        selection = next(s for s in db.statements if str(s).startswith("SELECT"))
+        assert "empty" in selection.compile().params.values()  # filtre pose dans la requete
+
+    @pytest.mark.asyncio
+    async def test_lot_mixte_moteur_en_ligne_traite_tout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = _FakeDb(candidates=[(1, "ocr"), (2, "empty")], context=_CONTEXT)
+        _patch_session(monkeypatch, db)
+        api, moteur = _FakeApiClient(), _Espion()
+        await _worker(api, connector=moteur).poll()
+        assert len(api.bulk_payloads) == 2
+        assert moteur.extracts == 1  # seul le document ocr appelle le moteur
+        assert api.ocr_results[0] is not None and api.ocr_results[1] is None
+
+    @pytest.mark.asyncio
+    async def test_ocr_desactive_en_base_met_les_ocr_en_attente_sans_ping(
+        self, monkeypatch: pytest.MonkeyPatch, store: _FakeStore
+    ) -> None:
+        store.data["ocr_enabled"] = False
+        db = _FakeDb(candidates=[(1, "ocr"), (2, "empty")], context=_CONTEXT)
+        _patch_session(monkeypatch, db)
+        api, moteur = _FakeApiClient(), _Espion()
+        await _worker(api, connector=moteur).poll()
+        assert moteur.pings == 0 and moteur.extracts == 0
+        assert len(api.bulk_payloads) == 1  # l'empty passe, l'ocr attend
+        assert store.writes == []  # pas de statut de joignabilite sans ping
+
+    @pytest.mark.asyncio
+    async def test_ocr_desactive_n_alerte_qu_une_fois(
+        self, monkeypatch: pytest.MonkeyPatch, store: _FakeStore, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        store.data["ocr_enabled"] = False
+        _patch_session(monkeypatch, _FakeDb(candidates=[]))
+        worker = _worker(_FakeApiClient())
+        with caplog.at_level(logging.INFO):
+            await worker.poll()
+            await worker.poll()
+        assert sum("OCR desactive" in r.getMessage() for r in caplog.records) == 1
+        store.data["ocr_enabled"] = True
+        with caplog.at_level(logging.INFO):
+            await worker.poll()
+        assert any("OCR reactive" in r.getMessage() for r in caplog.records)
+
+
+class TestStatutMoteur:
+    @pytest.mark.asyncio
+    async def test_le_ping_est_ecrit_meme_sans_document(
+        self, monkeypatch: pytest.MonkeyPatch, store: _FakeStore
+    ) -> None:
+        _patch_session(monkeypatch, _FakeDb(candidates=[]))
+        await _worker(_FakeApiClient(), connector=_Espion("ConnectError")).poll()
+        assert store.writes == [("ocr_status", {"reachable": False})]
+
+    @pytest.mark.asyncio
+    async def test_statut_reecrit_seulement_au_changement(
+        self, monkeypatch: pytest.MonkeyPatch, store: _FakeStore
+    ) -> None:
+        _patch_session(monkeypatch, _FakeDb(candidates=[]))
+        moteur = _Espion()
+        worker = _worker(_FakeApiClient(), connector=moteur)
+        await worker.poll()
+        await worker.poll()
+        assert store.writes == [("ocr_status", {"reachable": True})]  # une seule ecriture
+        moteur.motif = "ConnectError"
+        await worker.poll()
+        assert store.writes[-1] == ("ocr_status", {"reachable": False})
+        assert len(store.writes) == 2
+
+    @pytest.mark.asyncio
+    async def test_statut_non_enregistre_ne_bloque_pas_le_cycle(
+        self, monkeypatch: pytest.MonkeyPatch, store: _FakeStore
+    ) -> None:
+        async def boom(*_a: Any, **_k: Any) -> None:
+            raise RuntimeError("app_setting en lecture seule")
+
+        monkeypatch.setattr(store, "set_value", boom)
+        db = _FakeDb(candidates=[(1, "ocr")], context=_CONTEXT)
+        _patch_session(monkeypatch, db)
+        await _worker(_FakeApiClient()).poll()
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
+
+    @pytest.mark.asyncio
+    async def test_app_setting_illisible_garde_les_valeurs_par_defaut(
+        self, monkeypatch: pytest.MonkeyPatch, store: _FakeStore
+    ) -> None:
+        async def boom(*_a: Any, **_k: Any) -> Dict[str, Any]:
+            raise RuntimeError("base injoignable")
+
+        monkeypatch.setattr(store, "load", boom)
+        db = _FakeDb(candidates=[(1, "ocr")], context=_CONTEXT)
+        _patch_session(monkeypatch, db)
+        await _worker(_FakeApiClient()).poll()
+        assert DocumentStatus.IN_PROGRESS.value in _statuses(db)
+
+
+class _Session:
+    """Session factice de la transaction d'ecriture : enregistre ce qu'elle execute."""
+
+    def __init__(self) -> None:
+        self.statements: List[Any] = []
+
+    async def execute(self, statement: Any) -> Any:
+        self.statements.append(statement)
+
+
+def _sql(statement: Any) -> str:
+    return str(statement.compile(dialect=postgresql.dialect()))
+
+
+class TestEcritureEnUneTransaction:
+    def _brancher(self, monkeypatch: pytest.MonkeyPatch, bulk: Any) -> _Session:
+        session = _Session()
+
+        @asynccontextmanager
+        async def fake_session(**_k: Any) -> AsyncIterator[_Session]:
+            yield session
+
+        async def get_document(_db: Any, _id: int) -> Any:
+            return SimpleNamespace(id=_id)
+
+        monkeypatch.setattr(poller_module, "get_async_session", fake_session)
+        monkeypatch.setattr(poller_module.document_fields, "get_document_or_none", get_document)
+        monkeypatch.setattr(poller_module.document_fields, "create_bulk", bulk)
+        return session
+
+    @pytest.mark.asyncio
+    async def test_champs_ocr_result_et_statut_dans_la_meme_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def bulk(_db: Any, _doc: Any, payloads: Any) -> Any:
+            return SimpleNamespace(created=payloads, skipped=[])
+
+        session = self._brancher(monkeypatch, bulk)
+        worker = PrepopulationWorker(connector=_Espion(), pvc_root=Path("/inexistant"))
+        ocr = await _ocr("demandeur.nom")
+        await worker._persist(1, 4, [{"field_spec_id": 1}], ocr)
+        sqls = [_sql(s) for s in session.statements]
+        assert "ON CONFLICT ON CONSTRAINT uq_ocr_result_document_dataset DO UPDATE" in sqls[0]
+        assert sqls[1].startswith("UPDATE") and "document" in sqls[1]
+
+    @pytest.mark.asyncio
+    async def test_sans_ocr_pas_d_ocr_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def bulk(_db: Any, _doc: Any, payloads: Any) -> Any:
+            return SimpleNamespace(created=payloads, skipped=[])
+
+        session = self._brancher(monkeypatch, bulk)
+        worker = PrepopulationWorker(connector=_Espion(), pvc_root=Path("/inexistant"))
+        await worker._persist(1, 4, [{"field_spec_id": 1}], None)
+        assert len(session.statements) == 1 and _sql(session.statements[0]).startswith("UPDATE")
+
+    @pytest.mark.asyncio
+    async def test_ocr_result_porte_fournisseur_modele_et_json(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def bulk(_db: Any, _doc: Any, payloads: Any) -> Any:
+            return SimpleNamespace(created=payloads, skipped=[])
+
+        session = self._brancher(monkeypatch, bulk)
+        connector = _Espion()
+        connector.model = "mistral-ocr-2505"  # type: ignore[attr-defined]
+        worker = PrepopulationWorker(connector=connector, pvc_root=Path("/inexistant"))
+        await worker._persist(1, 4, [{"field_spec_id": 1}], await _ocr("demandeur.nom"))
+        params = session.statements[0].compile(dialect=postgresql.dialect()).params
+        assert params["provider"] == "MOCK"
+        assert params["model"] == "mistral-ocr-2505"
+        assert params["raw_json"]["smartdoc_version"] == "0.3"
+
+    @pytest.mark.asyncio
+    async def test_champs_refuses_n_ecrit_ni_ocr_result_ni_statut(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def bulk(*_a: Any) -> Any:
+            raise FieldSpecMismatch([9], 1)
+
+        session = self._brancher(monkeypatch, bulk)
+        worker = PrepopulationWorker(connector=_Espion(), pvc_root=Path("/inexistant"))
+        with pytest.raises(PrepopulationError):
+            await worker._persist(1, 4, [{"field_spec_id": 9}], await _ocr("demandeur.nom"))
+        assert session.statements == []

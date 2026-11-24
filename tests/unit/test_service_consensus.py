@@ -166,6 +166,52 @@ async def test_resolve_disputed_fields() -> None:
     assert result["fields_resolved"] == 0
 
 
+@pytest.mark.asyncio
+async def test_resolve_votes_every_field_even_after_a_disputed_one() -> None:
+    """Un champ en litige ne doit pas empecher de trancher les suivants.
+
+    Regression : `all(_apply_vote(...) for df in fields)` s'arretait au premier litige ; les
+    champs d'apres restaient PENDING (consensus_reached False), et un arbitre devait alors tous
+    les revoir.
+    """
+    db = AsyncMock()
+    dataset = MagicMock()
+    dataset.required_operators = 2
+    document = MagicMock()
+    document.status = DocumentStatus.IN_PROGRESS.value
+    db.get = AsyncMock(side_effect=[dataset, document])
+
+    submitted_result = MagicMock()
+    submitted_result.scalar_one.return_value = 2
+
+    disputed, agreed_a, agreed_b = _field(), _field(), _field()
+    disputed.id, agreed_a.id, agreed_b.id = 1, 2, 3
+    fields_result = MagicMock()
+    fields_result.scalars.return_value.all.return_value = [disputed, agreed_a, agreed_b]
+
+    proposals_result = MagicMock()
+    proposals_result.scalars.return_value.all.return_value = [
+        MagicMock(document_field_id=1, value="A"),
+        MagicMock(document_field_id=1, value="B"),  # tie on the FIRST field
+        MagicMock(document_field_id=2, value="X"),
+        MagicMock(document_field_id=2, value="X"),
+        MagicMock(document_field_id=3, value="Y"),
+        MagicMock(document_field_id=3, value="Y"),
+    ]
+    db.execute = AsyncMock(side_effect=[submitted_result, fields_result, proposals_result])
+
+    result = await _resolve(1, 1, db)
+
+    assert disputed.status == DocumentFieldStatus.DISPUTED.value
+    assert agreed_a.status == DocumentFieldStatus.VALIDATED.value
+    assert agreed_a.consensus_reached is True
+    assert agreed_a.resolved_value == "X"
+    assert agreed_b.status == DocumentFieldStatus.VALIDATED.value
+    assert result["fields_disputed"] == 1
+    assert result["fields_resolved"] == 2
+    assert document.status == DocumentStatus.IN_PROGRESS.value  # not fully validated
+
+
 # ---------------------------------------------------------------------------
 # try_resolve
 # ---------------------------------------------------------------------------

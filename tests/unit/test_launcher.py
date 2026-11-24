@@ -1,11 +1,20 @@
 """Tests unitaires launcher.py"""
 
 import io
-from typing import Any, Dict
+from types import SimpleNamespace
+from typing import Any, Dict, List
 
 import pytest
 
 import launcher
+
+
+@pytest.fixture(autouse=True)
+def upgrade_calls(monkeypatch: pytest.MonkeyPatch) -> List[int]:
+    """Aucun test ne migre pour de vrai : l'appel est enregistre."""
+    calls: List[int] = []
+    monkeypatch.setattr("adam_core.db.migrate.upgrade_head", lambda: calls.append(1))
+    return calls
 
 
 def test_api_starts_uvicorn_on_configured_host_and_port(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -142,3 +151,32 @@ def test_all_lets_children_stop_on_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert launcher.main(["all"]) == 0
     assert not api.terminated and not worker.terminated
+
+
+def test_migrate_target_upgrades_the_schema(upgrade_calls: List[int]) -> None:
+    assert launcher.main(["migrate"]) == 0
+    assert upgrade_calls == [1]
+
+
+def test_all_migrates_before_starting_children(
+    monkeypatch: pytest.MonkeyPatch, upgrade_calls: List[int]
+) -> None:
+    started_after_upgrade: List[bool] = []
+    _patch_children(monkeypatch, _FakeProcess(0), _FakeProcess(0))
+    real_popen = launcher.subprocess.Popen
+
+    def popen(*args: Any, **kwargs: Any) -> Any:
+        started_after_upgrade.append(upgrade_calls == [1])
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr("launcher.subprocess.Popen", popen)
+    assert launcher.main(["all"]) == 0
+    assert started_after_upgrade == [True, True]
+
+
+def test_api_and_worker_never_migrate(
+    monkeypatch: pytest.MonkeyPatch, upgrade_calls: List[int]
+) -> None:
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: None)
+    launcher.main(["api"])
+    assert upgrade_calls == []

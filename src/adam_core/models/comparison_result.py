@@ -8,7 +8,7 @@ d'ici.
 Confidentialite : la valeur selon la sensibilite du champ
 ----------------------------------------------------------
 Les documents portent des IBAN et des NIR, concentres sur une minorite de
-champs. La regle, appliquee par le worker et portee par field_spec.sensitive :
+champs. La regle, appliquee par le worker et portee par field_spec.is_sensitive :
 
     champ non sensible   expected_value et observed_value en clair — c'est ce
                          qui rend le debogage reel possible (« qu'a lu le
@@ -20,8 +20,8 @@ champs. La regle, appliquee par le worker et portee par field_spec.sensitive :
 
 ``created_at`` est non nullable des la creation : l'ajouter plus tard datera
 toutes les lignes historiques du jour de l'ALTER, une perte irreversible. Et
-``id`` est un BigInteger : la table est la seule du domaine a croitre en
-millions de lignes par an, et le passage tardif int4 -> int8 est une reecriture
+``id`` est un BigInteger : la table fait partie des trois du domaine (avec
+document_field et field_proposal) a croitre en millions de lignes par an, et le passage tardif int4 -> int8 est une reecriture
 complete sous verrou exclusif.
 
 La cle etrangere vers document_field est en CASCADE, volontairement : la
@@ -31,7 +31,7 @@ evaluation_report, qui ne reference pas le document.
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -52,8 +52,6 @@ from adam_core.db.scoping import (
     member_test_execution_ids,
     org_test_execution_ids,
 )
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
@@ -82,7 +80,7 @@ class ComparisonResult(OrganisationScoped, ProjectScoped, Base):
         index=True,
     )
     document_field_id: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         ForeignKey("document_field.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -98,10 +96,10 @@ class ComparisonResult(OrganisationScoped, ProjectScoped, Base):
     #: hesitant.
     ocr_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
-    #: Renseignees uniquement si field_spec.sensitive est faux.
+    #: Renseignees uniquement si field_spec.is_sensitive est faux.
     expected_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     observed_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    #: Renseignees uniquement si field_spec.sensitive est vrai.
+    #: Renseignees uniquement si field_spec.is_sensitive est vrai.
     observed_hmac: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     edit_distance: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 

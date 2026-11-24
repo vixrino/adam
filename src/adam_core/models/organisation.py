@@ -1,4 +1,5 @@
-"""Table ORGANISATION : tenant de la plateforme ADAM.
+"""
+Table ORGANISATION : tenant de la plateforme NOTA.
 
 Chaque user appartient directement à une organisation via
 User.organisation_id. Pas de table de jointure USER_ORGANISATION.

@@ -1,7 +1,7 @@
 """
  scripts/seed.py
  ----------
- Seed unifie de la base ADAM.
+ Seed unifie de la base nota.
  Modes :
      - Par defaut : CERFA surendettement, schema seul. Champs et groupes
        repetables derives de adam_core.schemas.cerfa_v2, plus le lot qui va
@@ -36,7 +36,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from adam_core.core.config import CoreSettings
 from adam_core.utils.hashing import sha256_bytes
-from adam_core.db.session import create_tables, get_engine, init_engine
+from adam_core.db.base import SCHEMA_NAME
+from adam_core.db.migrate import upgrade_head
+from adam_core.db import settings_store
+from adam_core.db.session import get_engine, init_engine
 from adam_core.enums.ocr import OcrProvider, StorageMode
 from adam_core.enums.roles import PlatformRole, ProjectRole
 from adam_core.enums.status import (
@@ -70,8 +73,12 @@ from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS
 # a partir d'un vrai PDF : reprendre sa constante de resolveur garde les deux
 # chemins indiscernables en base.
 from adam_worker.prepopulation.merger import OCR_RESOLVER
+from adam_worker.benchmark.worker import TestExecutionWorker
+from adam_worker.consensus_worker import ConsensusWorker
+from adam_worker.page_image_worker import PageImageWorker
+from adam_worker.prepopulation.poller import PrepopulationWorker
 
-# Le depliage des champs du CERFA en FieldSpec — sections repetables comprises —
+# Le depliage des champs du CERFA en FieldSpec: sections repetables comprises â€”
 # vit dans seed_schema_cerfa.py, qui ne cree que le schema. Le reimporter ici
 # evite d'en tenir deux copies qui divergeraient des le prochain CERFA.
 from seed_schema_cerfa import REPEATABLE_SECTIONS, SECTION_LABELS, build_pages, build_specs
@@ -98,9 +105,23 @@ async def reset_db(session: AsyncSession) -> None:
         "organisation",
     ]
     for table in tables:
-        await session.execute(text(f'TRUNCATE TABLE "{table}" CASCADE'))
+        await session.execute(text(f'TRUNCATE TABLE "{SCHEMA_NAME}"."{table}" CASCADE'))
     await session.commit()
     print(" Tables videes")
+
+
+# Reglages modifiables a chaud (app_setting)
+#
+# Les delais des workers prennent leur valeur actuelle dans le code : la table les
+# rend visibles et modifiables par un UPDATE, sans redeploiement. Rejouable : un
+# seed relance remet ces valeurs, ce qui est voulu pour un environnement de dev.
+async def seed_settings(session: AsyncSession) -> None:
+    for worker in (PageImageWorker, ConsensusWorker, PrepopulationWorker, TestExecutionWorker):
+        await settings_store.set_value(
+            session, f"worker.{worker.__name__}.poll_interval", worker.poll_interval_seconds, "seed"
+        )
+    await session.commit()
+    print(" Reglages des workers inseres (app_setting)")
 
 
 # Infrastructure commune
@@ -108,7 +129,7 @@ async def reset_db(session: AsyncSession) -> None:
 # Les DIRES sont les directions regionales qui instruisent les dossiers de
 # surendettement : une organisation par direction, chacune avec ses agents et
 # son projet. Le decoupage rend visible ce que le seed precedent, avec ses deux
-# "Org Alpha" et "Org Beta" vides, ne montrait pas — un agent ne voit que les
+# "Org Alpha" et "Org Beta" vides, ne montrait pas â€” un agent ne voit que les
 # projets de sa direction, et c'est la premiere chose qu'une demonstration doit
 # donner a voir.
 #
@@ -159,10 +180,10 @@ PROJECT_DESCRIPTION = "Annotation des CERFA 13594*02 recus par la direction"
 #: pour savoir de quel formulaire il s'agissait.
 #:
 #: Deux noms parce que les modes du seed ne portent pas le meme formulaire. Les
-#: modes CERFA et JSON decrivent le meme formulaire — le premier depuis
-#: cerfa_v2.py, le second depuis form_demo_v0.3.json — et partagent donc le nom
-#: de lot. Le mode --form-demo, lui, decrit un formulaire synthetique —
-#: demandeur, bien, creance — qu'aucun CERFA ne reprend : lui donner un numero
+#: modes CERFA et JSON decrivent le meme formulaire, le premier depuis
+#: cerfa_v2.py, le second depuis form_demo_v0.3.json, et partagent donc le nom
+#: de lot. Le mode --form-demo, lui, decrit un formulaire synthetique,
+#: demandeur, bien, creance, qu'aucun CERFA ne reprend : lui donner un numero
 #: de CERFA serait faux.
 CERFA_DATASET_NAME = "cerfa_13594-02_v2"
 #: Le CERFA 13594*02 compte 12 pages : un PDF d'un autre nombre de pages est
@@ -261,7 +282,7 @@ HARDCODED_FIELD_SPECS = [
         1,
     ),
     ("demandeur", "Demandeur", "demandeur.civilite_m", "Monsieur", FieldValueType.BOOLEAN.value, 1),
-    ("demandeur", "Demandeur", "demandeur.civilite_mme", "Madame", FieldValueType.BOOLEAN.value, 1),
+    ("demandeur", "Demandeur", "demandeur.civilite_mme", "Mnotae", FieldValueType.BOOLEAN.value, 1),
     ("bien", "Bien", "bien.adresse", "Adresse du bien", FieldValueType.TEXT.value, 1),
     ("bien", "Bien", "bien.valeur", "Valeur du bien (EUR)", FieldValueType.NUMBER.value, 1),
     ("bien", "Bien", "bien.superficie", "Superficie (m2)", FieldValueType.NUMBER.value, 1),
@@ -381,7 +402,7 @@ async def seed_from_form_json(session: AsyncSession, project: Project, json_path
         session.add(fs)
         await session.flush()
         field_spec_index[(spec["section_id"], spec["field_key"])] = fs
-    print(f"        {len(field_specs)} FieldSpecs créés depuis {form_doc.page_count} pages")
+    print(f"        {len(field_specs)} FieldSpecs crÃ©Ã©s depuis {form_doc.page_count} pages")
     print(" [6/8] Dataset...")
     dataset = Dataset(
         project_id=project.id,
@@ -464,7 +485,7 @@ async def seed_from_form_json(session: AsyncSession, project: Project, json_path
 
 # Mode 3 : CERFA surendettement (schema reel, champs de cerfa_v2.py)
 #
-# Le mode hardcode monte un formulaire synthetique — demandeur, bien, creance —
+# Le mode hardcode monte un formulaire synthetique:  demandeur, bien, creance â€”
 # qui ne correspond a aucun CERFA. Pour une demonstration, l'ecran d'annotation
 # doit montrer les champs que l'operateur verra en production : ceux que
 # cerfa_v2.py declare page par page, avec leurs sections repetables. C'est le
@@ -485,7 +506,7 @@ CERFA_SCHEMA_VERSION = 2
 CERFA_DOSSIER: Dict[str, str] = {
     # Page 1
     "deposant.civilite_monsieur": "true",
-    "deposant.civilite_madame": "false",
+    "deposant.civilite_mnotae": "false",
     "deposant.nom_naissance": "MOREAU",
     "deposant.nom_usage": "MOREAU",
     "deposant.prenoms": "Julien Pierre",
@@ -494,7 +515,7 @@ CERFA_DOSSIER: Dict[str, str] = {
     "deposant.dept_naissance": "77",
     "deposant.pays_naissance": "France",
     "co_deposant.civilite_monsieur": "false",
-    "co_deposant.civilite_madame": "true",
+    "co_deposant.civilite_mnotae": "true",
     "co_deposant.nom_naissance": "LAMBERT",
     "co_deposant.nom_usage": "MOREAU",
     "co_deposant.prenoms": "Sophie Anne",
@@ -994,11 +1015,12 @@ async def main(
     fake_ocr: bool,
 ) -> None:
     init_engine(settings.async_database_url, echo=False)
-    await create_tables()
+    await asyncio.to_thread(upgrade_head)
     factory = async_sessionmaker(bind=get_engine(), expire_on_commit=False)
     async with factory() as session:
         if reset:
             await reset_db(session)
+        await seed_settings(session)
         _, admin, operator, project = await seed_infrastructure(session)
         if json_path:
             await seed_from_form_json(session, project, json_path)
@@ -1012,7 +1034,7 @@ async def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Seed ADAM database")
+    parser = argparse.ArgumentParser(description="Seed nota database")
     parser.add_argument("--reset", action="store_true", help="Vide les tables avant de seeder")
     parser.add_argument(
         "--json", default=None, help="Chemin vers un fichier JSON format formulaire v0.3"

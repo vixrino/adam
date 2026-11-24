@@ -16,7 +16,9 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from adam_core.benchmark.verite import empreinte_document, empreinte_verite
+from adam_core.benchmark import smartdoc_json
+from adam_core.benchmark.labellisation import ChampLabellise, labelled_document
+from adam_core.benchmark.verite import document_fingerprint, truth_fingerprint
 from adam_core.db.base import Base
 from adam_core.enums.status import (
     ComparisonDiffKind,
@@ -34,14 +36,14 @@ from adam_core.schemas.interface_contract import (
 from adam_worker.benchmark import depot as depot_module
 from adam_worker.benchmark.comparateur import (
     COMPARATEUR_VERSION,
-    categorie,
-    comparer,
-    distance_edition,
-    empreinte,
-    normaliser,
+    category,
+    compare_values,
+    levenshtein_distance,
+    fingerprint,
+    normalize_value,
 )
 from adam_worker.benchmark.depot import DepotBenchmark, ExecutionReservee
-from adam_worker.benchmark.evaluation import Agregat, ChampVerite, evaluer_document
+from adam_worker.benchmark.evaluation import Agregat, ChampVerite, evaluate_document
 from adam_worker.benchmark.worker import TestExecutionWorker
 from adam_worker.connectors.base import DocumentNonConforme, OcrConnectorError
 
@@ -53,38 +55,38 @@ CLE = "cle-de-test"
 
 class TestComparateur:
     def test_texte_normalise(self) -> None:
-        assert comparer("Mme  THÉRY", "mme thery", "TEXT") is None
+        assert compare_values("Mme  THÉRY", "mme thery", "TEXT") is None
 
     def test_dates_et_nombres_par_valeur(self) -> None:
-        assert comparer("17/09/1969", "1969-09-17", "DATE") is None
-        assert comparer("17/09/69", "1969-09-17", "DATE") is None
-        assert comparer("1 738,26", "1738.26", "NUMBER") is None
-        assert comparer("true", "oui", "BOOLEAN") is None
+        assert compare_values("17/09/1969", "1969-09-17", "DATE") is None
+        assert compare_values("17/09/69", "1969-09-17", "DATE") is None
+        assert compare_values("1 738,26", "1738.26", "NUMBER") is None
+        assert compare_values("true", "oui", "BOOLEAN") is None
 
     def test_missing_et_wrong(self) -> None:
-        manque = comparer("DUPONT", None, "TEXT")
+        manque = compare_values("DUPONT", None, "TEXT")
         assert manque is not None and manque.verdict == ComparisonVerdict.MISSING
-        faux = comparer("DUPONT", "DURAND", "TEXT")
+        faux = compare_values("DUPONT", "DURAND", "TEXT")
         assert faux is not None and faux.verdict == ComparisonVerdict.WRONG
         assert faux.edit_distance == 3
 
     def test_valeur_inventee_est_une_erreur(self) -> None:
         """Verite vide, moteur qui lit quelque chose : WRONG, pas silence."""
-        ecart = comparer(None, "1947-01-01", "DATE")
+        ecart = compare_values(None, "1947-01-01", "DATE")
         assert ecart is not None and ecart.verdict == ComparisonVerdict.WRONG
-        assert comparer(None, "", "TEXT") is None
+        assert compare_values(None, "", "TEXT") is None
 
     def test_categories(self) -> None:
-        assert categorie("FR76 3000", "FR76-3000") == ComparisonDiffKind.FORMAT
-        assert categorie("524738039", "524738030") == ComparisonDiffKind.DIGIT
-        assert categorie("DUPONT", "MARTIN") == ComparisonDiffKind.TOTAL
+        assert category("FR76 3000", "FR76-3000") == ComparisonDiffKind.FORMAT
+        assert category("524738039", "524738030") == ComparisonDiffKind.DIGIT
+        assert category("DUPONT", "MARTIN") == ComparisonDiffKind.TOTAL
 
     def test_distance_et_empreinte(self) -> None:
-        assert distance_edition("chat", "chats") == 1
-        assert empreinte("FR76 3000", CLE) == empreinte("fr76  3000", CLE)
-        assert empreinte("FR76 3000", CLE) != empreinte("FR76 3000", "autre-cle")
-        assert empreinte(None, CLE) is None
-        assert normaliser("  ", "TEXT") is None
+        assert levenshtein_distance("chat", "chats") == 1
+        assert fingerprint("FR76 3000", CLE) == fingerprint("fr76  3000", CLE)
+        assert fingerprint("FR76 3000", CLE) != fingerprint("FR76 3000", "autre-cle")
+        assert fingerprint(None, CLE) is None
+        assert normalize_value("  ", "TEXT") is None
 
 
 # -- Evaluation d'un document ---------------------------------------------------------
@@ -139,7 +141,7 @@ class TestEvaluation:
     def test_seuls_les_champs_verifies_sont_juges(self) -> None:
         verite = [_champ(1, "DUPONT"), _champ(2, "Jean", verifie=False, cle="prenoms")]
         ocr = _ocr(_kv("deposant.nom", "DURAND"), _kv("deposant.prenoms", "Paul"))
-        resultat = evaluer_document(verite, ocr, 9, CLE)
+        resultat = evaluate_document(verite, ocr, 9, CLE)
         assert resultat.fields_compared == 2
         assert resultat.fields_human_verified == 1
         assert [e["document_field_id"] for e in resultat.ecarts] == [1001]
@@ -150,11 +152,11 @@ class TestEvaluation:
 
     def test_champ_sensible_rien_en_clair(self) -> None:
         verite = [_champ(1, "FR7630001", sensible=True, section="gestion_budget", cle="iban")]
-        ecart = evaluer_document(
+        ecart = evaluate_document(
             verite, _ocr(_kv("gestion_budget.iban", "FR7630007")), 9, CLE
         ).ecarts[0]
         assert ecart["expected_value"] is None and ecart["observed_value"] is None
-        assert ecart["observed_hmac"] == empreinte("FR7630007", CLE)
+        assert ecart["observed_hmac"] == fingerprint("FR7630007", CLE)
         assert ecart["diff_kind"] == "DIGIT"
         assert ecart["edit_distance"] == 1
 
@@ -168,7 +170,7 @@ class TestEvaluation:
             _kv("credits_consommation.reference", "ADVANZIA", "pret_1"),
             _kv("credits_consommation.reference", "DIAX", "pret_2"),
         )
-        resultat = evaluer_document(verite, ocr, 9, CLE)
+        resultat = evaluate_document(verite, ocr, 9, CLE)
         assert [(e["document_field_id"], e["verdict"]) for e in resultat.ecarts] == [
             (1002, "WRONG")
         ]
@@ -181,7 +183,7 @@ class TestEvaluation:
             KVPair(id="deposant.age", value=KVNumberValue(value=13, confidence=0.951)),
             _kv("autre.champ", "X"),
         )
-        resultat = evaluer_document(verite, ocr, 9, CLE)
+        resultat = evaluate_document(verite, ocr, 9, CLE)
         assert resultat.histogramme == {"TEXT": {"0.95": [1, 0]}, "NUMBER": {"0.95": [0, 1]}}
         assert resultat.unexpected_count == 1
 
@@ -189,12 +191,12 @@ class TestEvaluation:
         """Mistral : la confiance des KVPair est le 1.0 par defaut du contrat."""
         ocr = _ocr(_kv("deposant.nom", "DURAND"))
         ocr.metadata["confidence_fournie"] = False
-        resultat = evaluer_document([_champ(1, "DUPONT")], ocr, 9, CLE)
+        resultat = evaluate_document([_champ(1, "DUPONT")], ocr, 9, CLE)
         assert resultat.histogramme == {}
         assert resultat.ecarts[0]["ocr_confidence"] is None
 
     def test_moteur_muet_tout_verifie_est_missing(self) -> None:
-        resultat = evaluer_document([_champ(1, "DUPONT"), _champ(2, None, cle="x")], None, 9, CLE)
+        resultat = evaluate_document([_champ(1, "DUPONT"), _champ(2, None, cle="x")], None, 9, CLE)
         assert [e["verdict"] for e in resultat.ecarts] == ["MISSING"]
 
 
@@ -212,22 +214,22 @@ class _FauxDepot:
         self.annuler_apres: Optional[int] = None
         self.verifications = 0
 
-    async def interrompue(self, execution_id: int) -> bool:
+    async def interrupted(self, execution_id: int) -> bool:
         self.verifications += 1
         return self.annuler_apres is not None and self.verifications > self.annuler_apres
 
-    async def echouer_bloquees(self, delai: timedelta) -> int:
+    async def fail_stuck(self, delai: timedelta) -> int:
         return 0
 
-    async def reserver_execution(self) -> Any:
+    async def claim_execution(self) -> Any:
         execution, self.execution = self.execution, None
         return execution
 
-    async def noter_moteur(self, execution_id: int, provider: str, modele: Optional[str]) -> None:
+    async def record_engine(self, execution_id: int, provider: str, modele: Optional[str]) -> None:
         self.reservations.append((provider, modele))
 
-    async def identifier(self, execution_id: int, version: str, empreinte: str) -> None:
-        self.identite = (version, empreinte)
+    async def identify(self, execution_id: int, version: str, fingerprint: str) -> None:
+        self.identite = (version, fingerprint)
 
     async def schema(self, schema_id: int) -> Dict[str, Any]:
         return {
@@ -247,13 +249,16 @@ class _FauxDepot:
     async def documents(self, ids: List[int]) -> List[Any]:
         return [(i, 100 + i) for i in ids]
 
+    async def noms(self, ids: List[int]) -> Dict[int, str]:
+        return {i: f"doc{i}.pdf" for i in ids}
+
     async def verite(self, document_id: int) -> List[ChampVerite]:
         return self._verite
 
-    async def enregistrer_document(self, execution_id: int, ecarts: Any, compteurs: Any) -> None:
+    async def save_document(self, execution_id: int, ecarts: Any, compteurs: Any) -> None:
         self.enregistrements.append({"ecarts": ecarts, "compteurs": compteurs})
 
-    async def terminer(self, execution_id: int, statut: Any, **kwargs: Any) -> None:
+    async def finish_execution(self, execution_id: int, statut: Any, **kwargs: Any) -> None:
         self.fin = {"statut": statut, **kwargs}
 
 
@@ -372,7 +377,7 @@ class TestDepotSql:
     @staticmethod
     def _sql(instruction: Any) -> str:
         """Le SQL compile, sans le prefixe de schema (« nota. » dans nota,
-        aucun dans adam) : les memes assertions valent des deux cotes."""
+        aucun dans nota) : les memes assertions valent des deux cotes."""
         sql = str(instruction.compile(dialect=postgresql.dialect()))
         schema = Base.metadata.schema
         return sql.replace(f"{schema}.", "") if schema else sql
@@ -390,7 +395,7 @@ class TestDepotSql:
             "edit_distance": 1,
         }
         asyncio.run(
-            DepotBenchmark().enregistrer_document(
+            DepotBenchmark().save_document(
                 7, [ecart], {"documents_compared": 1, "diff_count": 1}
             )
         )
@@ -402,7 +407,7 @@ class TestDepotSql:
 
     def test_terminer_ecrit_les_agregats(self, session: _SessionEnregistreuse) -> None:
         asyncio.run(
-            DepotBenchmark().terminer(
+            DepotBenchmark().finish_execution(
                 7,
                 TestExecutionStatus.COMPLETED,
                 histogramme={"TEXT": {}},
@@ -423,14 +428,14 @@ class TestDepotSql:
     ) -> None:
         session.cloture = None
         asyncio.run(
-            DepotBenchmark().terminer(
+            DepotBenchmark().finish_execution(
                 7, TestExecutionStatus.COMPLETED, agregats={1: Agregat("deposant.nom", 2, 1)}
             )
         )
         assert len(session.instructions) == 1  # la cloture tentee, pas d'agregats
 
     def test_echouer_bloquees(self, session: _SessionEnregistreuse) -> None:
-        asyncio.run(DepotBenchmark().echouer_bloquees(timedelta(minutes=30)))
+        asyncio.run(DepotBenchmark().fail_stuck(timedelta(minutes=30)))
         sql = self._sql(session.instructions[0])
         assert "WHERE test_execution.status = " in sql and "test_execution.updated_at <" in sql
 
@@ -499,23 +504,23 @@ class TestMatrice:
         for attendu, lu, classe in cas:
             verite = [_champ(1, attendu)]
             ocr = _ocr(_kv("deposant.nom", lu)) if lu else None
-            agregat = evaluer_document(verite, ocr, 9, CLE).agregats[1]
+            agregat = evaluate_document(verite, ocr, 9, CLE).agregats[1]
             comptes = {k: getattr(agregat, k) for k in ("vp", "fp", "fn", "vn")}
             assert comptes == {k: int(k == classe) for k in comptes}, (attendu, lu)
-        agregat = evaluer_document(
+        agregat = evaluate_document(
             [_champ(1, "DUPONT")], _ocr(_kv("deposant.nom", "DURAND")), 9, CLE
         ).agregats[1]
         assert (agregat.fp, agregat.fn, agregat.substitutions) == (1, 1, 1)
 
     def test_taux_par_caractere(self) -> None:
-        agregat = evaluer_document(
+        agregat = evaluate_document(
             [_champ(1, "DUPONT")], _ocr(_kv("deposant.nom", "DUPOND")), 9, CLE
         ).agregats[1]
         assert (agregat.somme_distance, agregat.somme_longueur_attendue) == (1, 6)
 
     def test_libelles_figes(self) -> None:
         champ = _champ(1, "x", sensible=True, value_type="TEXT")
-        agregat = evaluer_document([champ], None, 9, CLE).agregats[1]
+        agregat = evaluate_document([champ], None, 9, CLE).agregats[1]
         assert (agregat.section_id, agregat.value_type, agregat.sensitive) == (
             "deposant",
             "TEXT",
@@ -525,7 +530,7 @@ class TestMatrice:
 
 class TestEmpreinteSchema:
     def test_contenu_et_non_ids(self) -> None:
-        from adam_worker.benchmark.worker import empreinte_schema
+        from adam_worker.benchmark.worker import schema_fingerprint
 
         base = {
             "pages": [{"page_number": 1, "description": "Deposant"}],
@@ -541,8 +546,8 @@ class TestEmpreinteSchema:
             "pages": base["pages"],
             "field_specs": [dict(base["field_specs"][0], value_type="NUMBER")],
         }
-        assert empreinte_schema(base) == empreinte_schema(autre_base)
-        assert empreinte_schema(base) != empreinte_schema(retype)
+        assert schema_fingerprint(base) == schema_fingerprint(autre_base)
+        assert schema_fingerprint(base) != schema_fingerprint(retype)
 
 
 # -- Moteur choisi par la recette -------------------------------------------------------
@@ -640,19 +645,19 @@ class TestMoteurDeLaRecette:
         return depot.fin
 
     def test_verite_corrigee_depuis_l_export_signalee(self) -> None:
-        a_l_export = {"1": empreinte_document([(1, None, "DUPONT")])}
+        a_l_export = {"1": document_fingerprint([(1, None, "DUPONT")])}
         fin = self._passer(a_l_export, [_champ(1, "DUPOND")])
         assert "verite humaine modifiee depuis l'export : documents [1]" in fin["message"]
 
     def test_verite_inchangee_rien_a_signaler(self) -> None:
-        a_l_export = {"1": empreinte_document([(1, None, "DUPONT")])}
+        a_l_export = {"1": document_fingerprint([(1, None, "DUPONT")])}
         # Un champ jamais relu n'entre pas dans l'empreinte.
         fin = self._passer(a_l_export, [_champ(1, "DUPONT"), _champ(2, "x", verifie=False)])
         assert fin["message"] is None
 
     def test_empreinte_de_la_verite_notee_sur_l_execution(self) -> None:
         fin = self._passer(None, [_champ(1, "DUPONT")])
-        attendue = empreinte_verite({1: empreinte_document([(1, None, "DUPONT")])})
+        attendue = truth_fingerprint({1: document_fingerprint([(1, None, "DUPONT")])})
         assert fin["verite_hash"] == attendue
 
 
@@ -673,18 +678,18 @@ class TestFabriqueDeMoteur:
 
     def test_config_vide_rend_le_moteur_du_worker(self) -> None:
         from adam_core.benchmark.recette import ConfigOcr
-        from adam_worker.connectors import connector_pour_recette
+        from adam_worker.connectors import connector_for_recipe
 
         defaut = _FauxConnecteur([])
-        assert connector_pour_recette(ConfigOcr(), self._settings(), defaut) == (defaut, False)
+        assert connector_for_recipe(ConfigOcr(), self._settings(), defaut) == (defaut, False)
 
     def test_mistral_avec_modele_et_consigne_de_la_recette(self) -> None:
         from adam_core.benchmark.recette import ConfigOcr
-        from adam_worker.connectors import connector_pour_recette
+        from adam_worker.connectors import connector_for_recipe
         from adam_worker.connectors.mistral import _CONSIGNE
 
         config = ConfigOcr(provider="mistral", model="ocr-2", prompt="Lis les cases.")
-        connecteur, a_fermer = connector_pour_recette(config, self._settings(), None)  # type: ignore[arg-type]
+        connecteur, a_fermer = connector_for_recipe(config, self._settings(), None)  # type: ignore[arg-type]
         assert a_fermer is True
         assert (connecteur.model, connecteur.annotation_model) == ("ocr-2", "annot-env")
         assert connecteur.consigne == "Lis les cases." != _CONSIGNE
@@ -692,9 +697,9 @@ class TestFabriqueDeMoteur:
 
     def test_mock_demande(self) -> None:
         from adam_core.benchmark.recette import ConfigOcr
-        from adam_worker.connectors import connector_pour_recette
+        from adam_worker.connectors import connector_for_recipe
 
-        connecteur, _ = connector_pour_recette(ConfigOcr(provider="MOCK"), self._settings(), None)  # type: ignore[arg-type]
+        connecteur, _ = connector_for_recipe(ConfigOcr(provider="MOCK"), self._settings(), None)  # type: ignore[arg-type]
         assert connecteur.name == "mock"
 
     def test_consigne_envoyee_au_modele_d_annotation(self) -> None:
@@ -735,11 +740,112 @@ def test_documents_absents_signales() -> None:
     assert "documents de la recette absents de la base : [2]" in depot.fin["message"]
 
 
+class TestSmartdocJson:
+    """Moteur SMARTDOC_JSON : des JSON deposes, relies aux documents par leur nom."""
+
+    def _worker(self, tmp_path: Path, fichiers: Dict[str, SmartdocDocument], champs: Any) -> Any:
+        racine = tmp_path / smartdoc_json.dossier(7)
+        racine.mkdir(parents=True)
+        for nom, doc in fichiers.items():
+            (racine / nom).write_text(doc.model_dump_json(), encoding="utf-8")
+        (racine / smartdoc_json.META).write_text('{"libelle": "smartdoc 2.3"}', encoding="utf-8")
+        execution = ExecutionReservee(
+            id=7,
+            recipe_id=3,
+            recipe_status="LOCKED",
+            document_ids=[1, 2],
+            schema_id=5,
+            config={"ocr": {"provider": "SMARTDOC_JSON"}},
+        )
+        depot = _FauxDepot(execution, champs)
+        worker = TestExecutionWorker(depot, _FauxConnecteur([]), pvc_root=tmp_path, cle_hmac=CLE)
+        return depot, worker
+
+    def test_compare_les_json_par_nom_et_signale_le_document_sans_json(
+        self, tmp_path: Path
+    ) -> None:
+        depot, worker = self._worker(
+            tmp_path, {"DOC1.json": _ocr(_kv("deposant.nom", "DURAND"))}, [_champ(1, "DUPONT")]
+        )
+        asyncio.run(worker.poll())
+
+        assert depot.reservations == [("SMARTDOC_JSON", "smartdoc 2.3")]
+        assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
+        assert depot.fin["agregats"][1].compared == 1 and depot.fin["agregats"][1].diff_count == 1
+        assert "sans JSON SMARTDOC : [2]" in depot.fin["message"]
+        # Le document sans JSON est traite (la progression aboutit), jamais compte faux.
+        assert [e["compteurs"]["documents_traites"] for e in depot.enregistrements] == [1, 1]
+
+    def test_json_non_conforme_est_une_lecture_ratee(self, tmp_path: Path) -> None:
+        depot, worker = self._worker(tmp_path, {}, [_champ(1, "DUPONT")])
+        racine = tmp_path / smartdoc_json.dossier(7)
+        (racine / "doc1.json").write_text('{"pas": "smartdoc"}', encoding="utf-8")
+        (racine / "doc2.json").write_text("{", encoding="utf-8")
+        asyncio.run(worker.poll())
+        assert depot.fin["statut"] == TestExecutionStatus.COMPLETED
+        assert "non conformes par le moteur : [1, 2]" in depot.fin["message"]
+
+    def test_aucun_json_fait_echouer(self, tmp_path: Path) -> None:
+        depot, worker = self._worker(tmp_path, {}, [])
+        asyncio.run(worker.poll())
+        assert depot.fin["statut"] == TestExecutionStatus.FAILED
+        assert "aucun JSON" in depot.fin["message"]
+
+    def test_la_cle_ignore_casse_et_extensions(self) -> None:
+        assert smartdoc_json.cle("Doc 1.PDF.json") == smartdoc_json.cle("doc 1.pdf")
+        assert smartdoc_json.cle("x/doc.json") == "doc"
+
+
+class TestLabellisation:
+    def test_pages_sections_valeurs_typees_et_rejouable(self) -> None:
+        champs = [
+            ChampLabellise(1, "dep", "Deposant", "dep.nom", "Nom", "TEXT", None, "Jean"),
+            ChampLabellise(1, "dep", "Deposant", "dep.revenu", "Revenu", "NUMBER", None, "1 738,26"),
+            ChampLabellise(2, "pret", "Prets", "pret.ok", "Ok", "BOOLEAN", "1", "oui"),
+            ChampLabellise(2, "pret", "Prets", "pret.vide", "Vide", "TEXT", "1", None),
+        ]
+        brut = labelled_document(
+            document_id=3, file_name="a.pdf", page_count=2, champs=champs, export_id=8
+        )
+        doc = SmartdocDocument.model_validate(brut)
+        assert doc.page_count == 2 and doc.metadata["export_id"] == 8
+        valeurs = {kv.id: kv.value for _, _, kv in doc.iter_kv_pairs()}
+        assert valeurs["dep.nom"].text == "Jean"  # type: ignore[union-attr]
+        assert valeurs["dep.revenu"].value == 1738.26  # type: ignore[union-attr]
+        assert valeurs["pret.ok"].value is True  # type: ignore[union-attr]
+        assert valeurs["pret.vide"] is None
+        # Le JSON de labellisation, rejoue comme un JSON SMARTDOC, est sans ecart.
+        verite = [
+            _champ(1, "Jean", section="dep", cle="nom"),
+            _champ(2, "1738.26", section="dep", cle="revenu", value_type="NUMBER"),
+        ]
+        resultat = evaluate_document(verite, doc, 7, CLE)
+        assert resultat.ecarts == []
+
+
+class TestFournisseurOfficiel:
+    def test_smartdoc_json_est_un_fournisseur_de_l_enum_et_de_l_openapi(self) -> None:
+        """Le Literal (donc l'enum de l'OpenAPI, donc les modeles generes du
+        front) et l'enum OcrProvider ne doivent pas diverger."""
+        from typing import get_args
+
+        from adam_core.benchmark.recette import ConfigOcr, FournisseurOcr
+        from adam_core.enums.ocr import OcrProvider
+
+        valeurs = set(get_args(FournisseurOcr))
+        assert smartdoc_json.FOURNISSEUR == "SMARTDOC_JSON" in valeurs
+        assert valeurs - {"MOCK"} <= {p.value for p in OcrProvider}
+        propriete = ConfigOcr.model_json_schema()["properties"]["provider"]
+        enum = next(a["enum"] for a in propriete["anyOf"] if "enum" in a)
+        assert set(enum) == valeurs
+
+
+
 class TestComparateurV2:
     """Retours du passage sur 10 CERFA : des ecarts de forme comptaient comme fautes."""
 
     def test_ponctuation_et_espaces_ignores(self) -> None:
-        from adam_worker.benchmark.comparateur import comparer
+        from adam_worker.benchmark.comparateur import compare_values
 
         for attendu, lu in [
             ("3F SUD, 112 BD des Dames 13002 MARSEILLE", "3F SUD 112 BD des Dames 13002 MARSEILLE"),
@@ -748,23 +854,23 @@ class TestComparateurV2:
             ("000122026725 R", "000122026725R"),
             ("Problèmes de santé importants", "Problèmes de santé importants-"),
         ]:
-            assert comparer(attendu, lu, "TEXT") is None, (attendu, lu)
+            assert compare_values(attendu, lu, "TEXT") is None, (attendu, lu)
 
     def test_vraie_erreur_toujours_vue(self) -> None:
-        from adam_worker.benchmark.comparateur import comparer
+        from adam_worker.benchmark.comparateur import compare_values
 
-        assert comparer("061189449", "061184490", "TEXT") is not None
-        assert comparer(None, "boyj@gmail.com", "TEXT") is not None
-        assert comparer(".", None, "TEXT") is None
+        assert compare_values("061189449", "061184490", "TEXT") is not None
+        assert compare_values(None, "boyj@gmail.com", "TEXT") is not None
+        assert compare_values(".", None, "TEXT") is None
 
     def test_case_vide_vaut_non(self) -> None:
-        from adam_worker.benchmark.comparateur import comparer
+        from adam_worker.benchmark.comparateur import compare_values
 
-        assert comparer(None, "false", "BOOLEAN") is None
-        assert comparer("false", None, "BOOLEAN") is None
-        assert comparer("true", None, "BOOLEAN") is not None
-        assert comparer(None, "true", "BOOLEAN") is not None
-        assert comparer("true", "false", "BOOLEAN") is not None
+        assert compare_values(None, "false", "BOOLEAN") is None
+        assert compare_values("false", None, "BOOLEAN") is None
+        assert compare_values("true", None, "BOOLEAN") is not None
+        assert compare_values(None, "true", "BOOLEAN") is not None
+        assert compare_values("true", "false", "BOOLEAN") is not None
 
     def test_matrice_suit_le_comparateur(self) -> None:
         """Execution 7 : 51 ecarts enregistres, mais 102 erreurs dans les taux."""
@@ -773,7 +879,7 @@ class TestComparateurV2:
             _champ(2, "ORCHIE.", cle="localite"),
         ]
         ocr = _ocr(_kv("deposant.locataire", "false"), _kv("deposant.localite", "ORCHIE"))
-        resultat = evaluer_document(verite, ocr, 9, CLE)
+        resultat = evaluate_document(verite, ocr, 9, CLE)
         assert resultat.ecarts == []
         case, ville = resultat.agregats[1], resultat.agregats[2]
         assert (case.vp, case.fp, case.fn, case.vn) == (0, 0, 0, 1)

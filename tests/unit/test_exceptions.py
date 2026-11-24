@@ -1,7 +1,12 @@
-"""Tests unitaires - adam_core/utils/exceptions.py"""
+"""
+Tests unitaires — adam_core/utils/exceptions.py
+"""
+
 import pytest
-from fastapi import HTTPException, FastAPI
+from fastapi import HTTPException
+from unittest.mock import MagicMock, AsyncMock
 from fastapi.testclient import TestClient
+from fastapi import FastAPI
 
 from adam_core.utils.exceptions import (
     _name,
@@ -11,12 +16,22 @@ from adam_core.utils.exceptions import (
     raise_already_exists,
     raise_conflict,
     raise_unprocessable,
+    raise_conflict_message,
+    raise_forbidden,
+    raise_locked,
+    raise_too_many_requests,
+    raise_bad_gateway,
+    raise_service_unavailable,
     http_exception_handler,
     NOT_FOUND,
     ALREADY_ARCHIVED,
     NOT_ARCHIVED,
     ALREADY_EXISTS,
 )
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 class FakeModel:
@@ -28,6 +43,11 @@ class Project:
 
 
 FakeModelNoTablename = Project
+
+
+# ---------------------------------------------------------------------------
+# _name
+# ---------------------------------------------------------------------------
 
 
 class TestName:
@@ -44,12 +64,36 @@ class TestName:
         assert _name(Lower) == "User_project"
 
 
+# ---------------------------------------------------------------------------
+# raise_not_found
+# ---------------------------------------------------------------------------
+
+
 class TestRaiseNotFound:
     def test_raises_404(self) -> None:
         with pytest.raises(HTTPException) as exc_info:
             raise_not_found(FakeModel)
         assert exc_info.value.status_code == 404
-        assert NOT_FOUND.format("Organisation") in str(exc_info.value.detail)
+
+    def test_default_detail_uses_tablename(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_not_found(FakeModel)
+        assert exc_info.value.detail == NOT_FOUND.format("Organisation")
+
+    def test_custom_detail_overrides_default(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_not_found(FakeModel, detail="identifiant inconnu")
+        assert exc_info.value.detail == "identifiant inconnu"
+
+    def test_return_type_is_no_return(self) -> None:
+        """raise_not_found ne retourne jamais — toujours une exception."""
+        with pytest.raises(HTTPException):
+            raise_not_found(FakeModel)
+
+
+# ---------------------------------------------------------------------------
+# raise_already_archived
+# ---------------------------------------------------------------------------
 
 
 class TestRaiseAlreadyArchived:
@@ -57,19 +101,171 @@ class TestRaiseAlreadyArchived:
         with pytest.raises(HTTPException) as exc_info:
             raise_already_archived(FakeModel)
         assert exc_info.value.status_code == 409
-        assert ALREADY_ARCHIVED.format("Organisation") in str(exc_info.value.detail)
+
+    def test_detail_format(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_already_archived(FakeModel)
+        assert exc_info.value.detail == ALREADY_ARCHIVED.format("Organisation")
+
+
+# ---------------------------------------------------------------------------
+# raise_not_archived
+# ---------------------------------------------------------------------------
+
+
+class TestRaiseNotArchived:
+    def test_raises_409(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_not_archived(FakeModel)
+        assert exc_info.value.status_code == 409
+
+    def test_detail_format(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_not_archived(FakeModel)
+        assert exc_info.value.detail == NOT_ARCHIVED.format("Organisation")
+
+
+# ---------------------------------------------------------------------------
+# raise_already_exists
+# ---------------------------------------------------------------------------
+
+
+class TestRaiseAlreadyExists:
+    def test_raises_409(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_already_exists(FakeModel)
+        assert exc_info.value.status_code == 409
+
+    def test_detail_format(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_already_exists(FakeModel)
+        assert exc_info.value.detail == ALREADY_EXISTS.format("Organisation")
+
+
+# ---------------------------------------------------------------------------
+# raise_conflict
+# ---------------------------------------------------------------------------
+
+
+class TestRaiseConflict:
+    def test_raises_409(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_conflict(FakeModel, "deja soumis")
+        assert exc_info.value.status_code == 409
+
+    def test_detail_includes_model_and_message(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_conflict(FakeModel, "deja soumis")
+        assert "Organisation" in exc_info.value.detail
+        assert "deja soumis" in exc_info.value.detail
+
+
+# ---------------------------------------------------------------------------
+# raise_unprocessable
+# ---------------------------------------------------------------------------
+
+
+class TestRaiseUnprocessable:
+    def test_raises_422(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_unprocessable("champ invalide")
+        assert exc_info.value.status_code == 422
+
+    def test_detail_passthrough(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_unprocessable("champ invalide")
+        assert exc_info.value.detail == "champ invalide"
+
+
+# ---------------------------------------------------------------------------
+# http_exception_handler
+# ---------------------------------------------------------------------------
 
 
 class TestHttpExceptionHandler:
-    def test_handler_returns_json(self) -> None:
-        app = FastAPI()
-        app.add_exception_handler(HTTPException, http_exception_handler)
-        client = TestClient(app)
+    def _make_request(self, path: str = "/test", method: str = "GET") -> MagicMock:
+        request = MagicMock()
+        request.method = method
+        request.url.path = path
+        return request
 
-        @app.get("/boom")
-        def boom() -> None:
-            raise HTTPException(status_code=418, detail="teapot")
+    @pytest.mark.asyncio
+    async def test_returns_json_response_with_correct_status(self) -> None:
+        request = self._make_request()
+        exc = HTTPException(status_code=404, detail="introuvable")
+        response = await http_exception_handler(request, exc)
+        assert response.status_code == 404
 
-        response = client.get("/boom")
-        assert response.status_code == 418
-        assert response.json()["detail"] == "teapot"
+    @pytest.mark.asyncio
+    async def test_response_body_contains_detail(self) -> None:
+        import json
+
+        request = self._make_request()
+        exc = HTTPException(status_code=404, detail="introuvable")
+        response = await http_exception_handler(request, exc)
+        body = json.loads(response.body)
+        assert body["detail"] == "introuvable"
+
+    @pytest.mark.asyncio
+    async def test_4xx_does_not_raise(self) -> None:
+        request = self._make_request()
+        exc = HTTPException(status_code=400, detail="bad request")
+        response = await http_exception_handler(request, exc)
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_5xx_does_not_raise(self) -> None:
+        request = self._make_request()
+        exc = HTTPException(status_code=500, detail="erreur interne")
+        response = await http_exception_handler(request, exc)
+        assert response.status_code == 500
+
+
+# ---------------------------------------------------------------------------
+# Helpers a message libre : memes status et corps que l'HTTPException qu'ils remplacent
+# ---------------------------------------------------------------------------
+
+
+class TestPlainMessageHelpers:
+    @pytest.mark.parametrize(
+        "helper, status",
+        [
+            (raise_conflict_message, 409),
+            (raise_locked, 423),
+            (raise_bad_gateway, 502),
+            (raise_service_unavailable, 503),
+        ],
+    )
+    def test_status_and_detail_are_passed_through(self, helper, status) -> None:  # type: ignore[no-untyped-def]
+        with pytest.raises(HTTPException) as exc:
+            helper("message libre")
+        assert exc.value.status_code == status
+        assert exc.value.detail == "message libre"
+
+    def test_conflict_message_has_no_model_prefix(self) -> None:
+        with pytest.raises(HTTPException) as plain:
+            raise_conflict_message("deja membre")
+        with pytest.raises(HTTPException) as prefixed:
+            raise_conflict(FakeModel, "deja membre")
+        assert plain.value.detail == "deja membre"
+        assert prefixed.value.detail == "Organisation : deja membre"
+
+    def test_forbidden_with_and_without_detail(self) -> None:
+        with pytest.raises(HTTPException) as exc:
+            raise_forbidden("Job reserve a son operateur")
+        assert (exc.value.status_code, exc.value.detail) == (403, "Job reserve a son operateur")
+        with pytest.raises(HTTPException) as bare:
+            raise_forbidden()
+        assert bare.value.status_code == 403
+        assert bare.value.detail == "Forbidden"  # le libelle HTTP standard
+
+    def test_too_many_requests_keeps_its_retry_after_header(self) -> None:
+        with pytest.raises(HTTPException) as exc:
+            raise_too_many_requests("patientez", headers={"Retry-After": "3"})
+        assert exc.value.status_code == 429
+        assert exc.value.headers == {"Retry-After": "3"}
+
+    def test_too_many_requests_without_headers(self) -> None:
+        with pytest.raises(HTTPException) as exc:
+            raise_too_many_requests("patientez")
+        assert exc.value.headers is None

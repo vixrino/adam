@@ -21,7 +21,11 @@ CONSIGNE_MAX = 8000
 
 #: Fournisseurs que le worker sait construire (adam_worker.connectors).
 #: MOCK ne lit rien : il sert aux demonstrations et aux tests de la chaine.
-FournisseurOcr = Literal["MISTRAL", "MOCK"]
+#: SMARTDOC_JSON (OcrProvider) ne lit pas non plus : il compare des JSON deposes
+#: au lancement (voir adam_core.benchmark.smartdoc_json). Un Literal, et non
+#: l'enum : c'est lui qui fait de la liste une enumeration de l'OpenAPI, donc des
+#: modeles generes cote front ; un test garde les deux alignes.
+FournisseurOcr = Literal["MISTRAL", "MOCK", "SMARTDOC_JSON"]
 
 #: Categories de champs que les seuils peuvent viser, comme par_criticite des
 #: metriques, plus « sensible » (donnees personnelles : noms, IBAN...).
@@ -43,12 +47,12 @@ class ConfigOcr(BaseModel):
 
     @field_validator("provider", mode="before")
     @classmethod
-    def _majuscules(cls, valeur: object) -> object:
+    def _uppercase(cls, valeur: object) -> object:
         return valeur.upper() if isinstance(valeur, str) else valeur
 
     @field_validator("model", "annotation_model", "prompt", mode="before")
     @classmethod
-    def _vide_vaut_defaut(cls, valeur: object) -> object:
+    def _empty_means_default(cls, valeur: object) -> object:
         """« » ou des espaces : pas de valeur, donc celle par defaut."""
         if isinstance(valeur, str) and not valeur.strip():
             return None
@@ -74,14 +78,14 @@ class ConfigRecette(BaseModel):
 
     @field_validator("seuils_par_champ", "seuils_par_categorie")
     @classmethod
-    def _taux(cls, seuils: Dict[str, float]) -> Dict[str, float]:
+    def _rate(cls, seuils: Dict[str, float]) -> Dict[str, float]:
         for cle, valeur in seuils.items():
             if not 0 <= valeur <= 1:
                 raise ValueError(f"seuil de {cle} hors de 0 a 1 : {valeur}")
         return seuils
 
 
-def config_ocr(config: Optional[Dict[str, object]]) -> ConfigOcr:
+def ocr_config(config: Optional[Dict[str, object]]) -> ConfigOcr:
     """Le moteur d'une config de recette en base, tolerant les anciennes
     recettes qui n'en ont pas."""
     return ConfigOcr.model_validate((config or {}).get("ocr") or {})

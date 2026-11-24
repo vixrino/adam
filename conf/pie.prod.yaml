@@ -15,9 +15,9 @@ pie:
   security:
     mode: KEYCLOAK
     verifier: CERT-FILE
-    value: /etc/adam/pie/sso.pem
+    value: /etc/nota/pie/sso.pem
     algorithms:
-      - RS256
+      - RS512
     log-level: INFO
 
     public-uris:
@@ -31,6 +31,8 @@ pie:
       ^\/?db-check$: ADMIN
       ^\/?organisations(.*)?$: ADMIN
       ^\/?users(.*)?$: ADMIN
+      # Zone /admin (configuration, variables d'environnement) : reservee au groupe ADMIN ; l'API exige en plus NOTA_ADMIN.
+      ^\/?(api\/v1\/)?admin(.*)?$: ADMIN
       ^\/?schemas(.*)?$: ADMIN|SUPERVISOR
       ^\/?datasets(.*)?$: ADMIN|SUPERVISOR
       ^\/?projects(.*)?$: ADMIN|SUPERVISOR|OPERATOR
@@ -38,3 +40,5 @@ pie:
       ^\/?ocr-results(.*)?$: ADMIN|SUPERVISOR|OPERATOR
       ^\/?jobs(.*)?$: ADMIN|SUPERVISOR|OPERATOR
       ^\/?files(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+      # Benchmark OCR : recettes, executions, exports (dont l'archive ZIP) et depot de JSON SMARTDOC.
+      ^\/?(api\/v1\/)?(test-recipes|test-executions|dataset-exports)(.*)?$: ADMIN|SUPERVISOR

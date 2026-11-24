@@ -13,10 +13,10 @@ import pymupdf
 
 from adam_api.services.rapport_metriques_pdf import (
     CHAMPS_AVEC_EXTRAITS,
-    extraits_a_montrer,
-    rendre_pdf,
+    excerpts_to_show,
+    render_pdf,
 )
-from adam_core.benchmark.metriques import FiltresChamps, calculer
+from adam_core.benchmark.metriques import FiltresChamps, compute
 
 EXECUTION = {
     "id": 4,
@@ -62,7 +62,7 @@ def _texte(pdf: bytes) -> str:
 
 
 def _rendre(metriques: Dict[str, Any], extraits: Any = None) -> bytes:
-    return rendre_pdf(
+    return render_pdf(
         metriques,
         recette={"id": 3},
         dataset="cerfa_13594-02_v2",
@@ -83,7 +83,7 @@ def _ecart(document_id: int, attendu: Any, lu: Any, sensible: bool = False) -> D
 
 
 def test_entete_taux_et_pied_de_page() -> None:
-    pdf = _rendre(calculer(_lignes(), EXECUTION))
+    pdf = _rendre(compute(_lignes(), EXECUTION))
     assert pdf.startswith(b"%PDF-")
     texte = _texte(pdf)
     assert "NOTA · Rapport de qualité d'extraction" in texte
@@ -101,7 +101,7 @@ def test_entete_taux_et_pied_de_page() -> None:
 
 
 def test_tableau_libelles_de_la_maquette() -> None:
-    texte = _texte(_rendre(calculer(_lignes(), EXECUTION)))
+    texte = _texte(_rendre(compute(_lignes(), EXECUTION)))
     for titre in ("Champ", "Type", "Réussite", "Échec principal"):
         assert titre in texte
     assert "Deposant" in texte  # libelle de section du schema
@@ -111,7 +111,7 @@ def test_tableau_libelles_de_la_maquette() -> None:
 
 def test_filtres_rappeles_et_champs_filtres() -> None:
     filtres = FiltresChamps(reussite_inferieure_a=0.5, types_champ=("NUMBER",))
-    texte = _texte(_rendre(calculer(_lignes(), EXECUTION, filtres=filtres)))
+    texte = _texte(_rendre(compute(_lignes(), EXECUTION, filtres=filtres)))
     assert "Filtres appliqués à ce rapport" in texte
     assert "Réussite : < 50 % · Type de champ : NOMBRE · Type d'erreur : tous ·" in texte
     assert "1 champ" in texte and "sur 4 vérifiés" in texte
@@ -119,12 +119,12 @@ def test_filtres_rappeles_et_champs_filtres() -> None:
 
 
 def test_aucun_champ() -> None:
-    m = calculer(_lignes(), EXECUTION, filtres=FiltresChamps(recherche="introuvable"))
+    m = compute(_lignes(), EXECUTION, filtres=FiltresChamps(recherche="introuvable"))
     assert "Aucun champ ne correspond aux filtres" in _texte(_rendre(m))
 
 
 def test_extraits_et_champ_sensible_masque() -> None:
-    m = calculer(_lignes(), EXECUTION)
+    m = compute(_lignes(), EXECUTION)
     extraits = {
         "deposant.nom": [_ecart(14, "Durand", "Dupont")],
         # Une valeur sensible passee par erreur ne doit jamais s'imprimer.
@@ -143,7 +143,7 @@ def test_extraits_et_champ_sensible_masque() -> None:
 
 def test_extraits_a_montrer_garde_les_pires_en_erreur() -> None:
     par_champ = [{"champ": f"a.{i}", "documents_en_erreur": i % 2} for i in range(60)]
-    choisis = extraits_a_montrer(par_champ)
+    choisis = excerpts_to_show(par_champ)
     assert len(choisis) == CHAMPS_AVEC_EXTRAITS
     assert all(int(c.split(".")[1]) % 2 for c in choisis)
 
@@ -151,7 +151,7 @@ def test_extraits_a_montrer_garde_les_pires_en_erreur() -> None:
 def test_gros_rapport_pagine() -> None:
     """642 champs en erreur : tous listes, sur plusieurs pages numerotees."""
     lignes = [_ligne(f"s{i % 12}.champ_{i}", vp=6, fp=2, fn=2, substitutions=1) for i in range(642)]
-    pdf = _rendre(calculer(lignes, EXECUTION))
+    pdf = _rendre(compute(lignes, EXECUTION))
     total = pymupdf.open("pdf", pdf).page_count
     texte = _texte(pdf)
     assert total > 10 and f"Page {total} / {total}" in texte
@@ -161,7 +161,7 @@ def test_gros_rapport_pagine() -> None:
 
 def test_cle_trop_longue_coupee_dans_sa_colonne() -> None:
     cle = "prestations_familiales.co_deposant_msa_numero_allocataire[ligne_12]"
-    pdf = _rendre(calculer([_ligne(cle, vp=1, fn=1)], EXECUTION))
+    pdf = _rendre(compute([_ligne(cle, vp=1, fn=1)], EXECUTION))
     page = pymupdf.open("pdf", pdf)[0]
     # La colonne Champ s'arrete a 392,3 px de maquette.
     limite = 392.3 * page.rect.width / 794
@@ -175,6 +175,8 @@ def test_cle_trop_longue_coupee_dans_sa_colonne() -> None:
     assert len(spans) >= 2 and all(s["bbox"][2] <= limite for s in spans)
 
 
+
+
 def test_sans_fichier_de_police_les_polices_integrees(monkeypatch: Any) -> None:
     """Un depot sans le dossier polices/ rend quand meme le PDF, en Helvetica."""
     from adam_api.services import rapport_metriques_pdf as module
@@ -185,7 +187,7 @@ def test_sans_fichier_de_police_les_polices_integrees(monkeypatch: Any) -> None:
             police.nom, "absente.ttf", police.interne, crenage=police.crenage
         )
         monkeypatch.setattr(module, nom, sans)
-    m = calculer(_lignes(), EXECUTION)
+    m = compute(_lignes(), EXECUTION)
     pdf = _rendre(m, {"deposant.nom": [_ecart(14, "Durand", "Dupont")]})
     texte = _texte(pdf)
     assert "Rapport de qualité d'extraction" in texte and "Doc #14 · page 1" in texte
@@ -195,7 +197,7 @@ def test_sans_fichier_de_police_les_polices_integrees(monkeypatch: Any) -> None:
 
 
 def test_filtre_section_par_son_libelle() -> None:
-    m = calculer(_lignes(), EXECUTION, filtres=FiltresChamps(sections=("gestion_budget",)))
+    m = compute(_lignes(), EXECUTION, filtres=FiltresChamps(sections=("gestion_budget",)))
     texte = _texte(_rendre(m))
     assert "Section : Gestion_budget" in texte  # libelle du schema, pas l'id
 
@@ -203,7 +205,7 @@ def test_filtre_section_par_son_libelle() -> None:
 def test_ligne_des_filtres_longue_passe_a_la_ligne() -> None:
     lignes = [_ligne(f"section_au_libelle_tres_long_{i}.champ", vp=1, fn=1) for i in range(6)]
     sections = tuple(f"section_au_libelle_tres_long_{i}" for i in range(6))
-    pdf = _rendre(calculer(lignes, EXECUTION, filtres=FiltresChamps(sections=sections)))
+    pdf = _rendre(compute(lignes, EXECUTION, filtres=FiltresChamps(sections=sections)))
     page = pymupdf.open("pdf", pdf)[0]
     droite = 738 * page.rect.width / 794
     spans = [
@@ -239,7 +241,7 @@ def test_extraits_longs_restent_dans_la_carte() -> None:
         "dettes.nom_adresse_creancier": [_ecart(4, adresse, "X" * 120)],
         "vehicules.loa_lld": [_ecart(4, "true", "false")],
     }
-    document = pymupdf.open("pdf", _rendre(calculer(lignes, EXECUTION), extraits))
+    document = pymupdf.open("pdf", _rendre(compute(lignes, EXECUTION), extraits))
     page = document[0]
     cartes = [
         d["rect"] for d in page.get_drawings() if d.get("items") and d["rect"].width < 200
@@ -247,12 +249,13 @@ def test_extraits_longs_restent_dans_la_carte() -> None:
     texte = page.get_text()
     assert "Oui" in texte and "Non" in texte and "true" not in texte
     assert "…" in texte  # 120 caracteres sans espace : coupes, puis tronques
-    for bloc in page.get_text("dict")["blocks"]:
-        for ligne in bloc.get("lines", []):
+    for block in page.get_text("dict")["blocks"]:
+        for ligne in block.get("lines", []):
             boite = pymupdf.Rect(ligne["bbox"])
             dans = [c for c in cartes if c.intersects(boite)]
             for carte in dans:
                 assert boite.x1 <= carte.x1 + 0.5, (ligne["spans"][0]["text"], boite, carte)
+
 
 
 def test_cle_coupee_a_ses_separateurs() -> None:
@@ -260,9 +263,9 @@ def test_cle_coupee_a_ses_separateurs() -> None:
     from adam_api.services import rapport_metriques_pdf as r
 
     largeur = r._CARTE_LARGEUR - 18
-    assert r._couper_cle("autres_prets.date_octroi[autre_pret_1]", r._FIXE, 10, largeur) == [
+    assert r._split_key("autres_prets.date_octroi[autre_pret_1]", r._FIXE, 10, largeur) == [
         "autres_prets.date_octroi",
         "[autre_pret_1]",
     ]
     # Sans separateur, on retombe sur la coupe au caractere, sans rien perdre.
-    assert "".join(r._couper_cle("a" * 80, r._FIXE, 10, largeur)) == "a" * 80
+    assert "".join(r._split_key("a" * 80, r._FIXE, 10, largeur)) == "a" * 80

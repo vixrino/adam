@@ -12,17 +12,16 @@ pas encore de ligne `user` — elle ne s'est jamais connectee — la ligne est
 creee depuis sa fiche AD, sans connexion (last_login_at vide). A sa premiere
 connexion, le matricule de son token la retrouve : elle arrive deja affectee.
 
-Droits : un administrateur NOTA (NOTA_ADMIN) partout, un administrateur metier
-(BUSINESS_ADMIN) sur les projets ou il est inscrit comme tel. La recherche est
-liee a un projet pour la meme raison : elle n'a de sens que pour y affecter
-quelqu'un, et elle expose l'annuaire de l'entreprise.
+Droits : cf. dependencies.permissions.verifier_admin_projet. La recherche est
+liee a un projet parce qu'elle n'a de sens que pour y affecter quelqu'un, et
+qu'elle expose l'annuaire de l'entreprise.
 """
 
 from __future__ import annotations
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,17 +29,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from adam_api.core.config import settings
 from adam_api.dependencies.auth import UserCaller, require_user
 from adam_api.dependencies.db import get_db
+from adam_api.dependencies.permissions import verify_project_admin
 from adam_api.services.annuaire import (
     Annuaire,
     AnnuaireDesactive,
     AnnuaireErreur,
     LimiteurRequetes,
     PersonneAnnuaire,
-    annuaire_depuis_settings,
+    directory_from_settings,
 )
-from adam_core.enums.roles import PlatformRole, ProjectRole
-from adam_core.enums.status import UserStatus
-from adam_core.models import Project, User, UserProject
+from adam_api.services.premiere_connexion import (
+    AdresseMailPrise,
+    SansAdresseMail,
+    new_user,
+    verify_address,
+)
+from adam_core.db import settings_store
+from adam_core.enums.roles import ProjectRole
+from adam_core.models import User, UserProject
+from adam_core.utils.exceptions import (
+    raise_bad_gateway,
+    raise_conflict_message,
+    raise_not_found,
+    raise_service_unavailable,
+    raise_too_many_requests,
+    raise_unprocessable,
+)
 from adam_core.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -50,15 +64,16 @@ router = APIRouter(prefix="/annuaire", tags=["Annuaire"])
 _limiteur = LimiteurRequetes(settings.ad_rate_seconds)
 
 
-def get_annuaire() -> Annuaire:
+async def get_annuaire(db: AsyncSession = Depends(get_db)) -> Annuaire:
     """Annuaire configure ; 503 s'il est desactive ou incomplet."""
+    ad_enabled = (await settings_store.load(db)).get("ad_enabled") is True or settings.ad_enabled
     try:
-        return annuaire_depuis_settings(settings)
+        return directory_from_settings(settings, ad_enabled)
     except AnnuaireDesactive as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise_service_unavailable(str(exc))
 
 
-def get_limiteur() -> LimiteurRequetes:
+def get_rate_limiter() -> LimiteurRequetes:
     return _limiteur
 
 
@@ -90,30 +105,6 @@ class AffectationOut(BaseModel):
     utilisateur_cree: bool
 
 
-async def _verifier_droit(db: AsyncSession, caller: UserCaller, project_id: int) -> Project:
-    """Projet vise, si l'appelant peut y affecter quelqu'un ; 404 / 403 sinon."""
-    project = await db.get(Project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Projet introuvable")
-    if caller.platform_role == PlatformRole.NOTA_ADMIN.value:
-        return project
-    est_admin_metier = (
-        await db.execute(
-            select(UserProject.user_id)
-            .join(User, User.id == UserProject.user_id)
-            .where(func.upper(User.matricule) == caller.matricule.upper())
-            .where(UserProject.project_id == project_id)
-            .where(UserProject.role == ProjectRole.BUSINESS_ADMIN.value)
-        )
-    ).first()
-    if est_admin_metier is None:
-        raise HTTPException(
-            status_code=403,
-            detail="Reserve aux administrateurs NOTA et aux administrateurs metier du projet",
-        )
-    return project
-
-
 @router.get("/personnes", response_model=List[PersonneOut])
 async def rechercher_personnes(
     project_id: int,
@@ -121,28 +112,26 @@ async def rechercher_personnes(
     caller: UserCaller = Depends(require_user),
     db: AsyncSession = Depends(get_db),
     annuaire: Annuaire = Depends(get_annuaire),
-    limiteur: LimiteurRequetes = Depends(get_limiteur),
+    limiteur: LimiteurRequetes = Depends(get_rate_limiter),
 ) -> List[PersonneOut]:
     """Cherche des personnes actives dans l'AD, triees par departement puis nom."""
     texte = q.strip()
     if len(texte) < settings.ad_min_chars:
-        raise HTTPException(
-            status_code=422,
-            detail=f"au moins {settings.ad_min_chars} caracteres pour chercher dans l'annuaire",
+        raise_unprocessable(
+            f"au moins {settings.ad_min_chars} caracteres pour chercher dans l'annuaire"
         )
-    await _verifier_droit(db, caller, project_id)
+    await verify_project_admin(db, caller, project_id)
     attente = limiteur.attente(caller.matricule.upper())
     if attente > 0:
-        raise HTTPException(
-            status_code=429,
-            detail="une recherche toutes les quelques secondes au plus",
+        raise_too_many_requests(
+            "une recherche toutes les quelques secondes au plus",
             headers={"Retry-After": str(max(1, round(attente)))},
         )
     try:
-        personnes = await annuaire.rechercher(texte)
-    except AnnuaireErreur as exc:
-        logger.error("recherche dans l'annuaire impossible : %s", exc)
-        raise HTTPException(status_code=502, detail="annuaire injoignable") from exc
+        personnes = await annuaire.search_people(texte)
+    except AnnuaireErreur:
+        logger.exception("recherche dans l'annuaire impossible")
+        raise_bad_gateway("annuaire injoignable")
 
     matricules = [p.matricule.upper() for p in personnes]
     inscrits = {
@@ -184,24 +173,20 @@ async def affecter_depuis_annuaire(
     annuaire: Annuaire = Depends(get_annuaire),
 ) -> AffectationOut:
     """Affecte une personne de l'AD a un projet, en creant son `user` si besoin."""
-    project = await _verifier_droit(db, caller, body.project_id)
+    project = await verify_project_admin(db, caller, body.project_id)
     try:
-        personne = await annuaire.trouver(body.matricule)
-    except AnnuaireErreur as exc:
-        logger.error("lecture de l'annuaire impossible : %s", exc)
-        raise HTTPException(status_code=502, detail="annuaire injoignable") from exc
+        personne = await annuaire.find_person(body.matricule)
+    except AnnuaireErreur:
+        logger.exception("lecture de l'annuaire impossible")
+        raise_bad_gateway("annuaire injoignable")
     if personne is None:
-        raise HTTPException(
-            status_code=404, detail="matricule inconnu de l'annuaire, ou compte desactive"
-        )
+        raise_not_found(User, "matricule inconnu de l'annuaire, ou compte desactive")
 
     user, cree = await _utilisateur(db, personne, project.organisation_id)
 
     existante = await db.get(UserProject, (user.id, project.id))
     if existante is not None:
-        raise HTTPException(
-            status_code=409, detail=f"deja membre du projet (role {existante.role})"
-        )
+        raise_conflict_message(f"deja membre du projet (role {existante.role})")
     db.add(UserProject(user_id=user.id, project_id=project.id, role=body.role.value))
     await db.flush()
     logger.info(
@@ -233,32 +218,20 @@ async def _utilisateur(
         if existant.organisation_id != organisation_id:
             # Un utilisateur appartient a une organisation : l'inscrire dans le
             # projet d'une autre serait une fuite entre clients.
-            raise HTTPException(
-                status_code=409,
-                detail="cette personne appartient a une autre organisation que le projet",
+            raise_conflict_message(
+                "cette personne appartient a une autre organisation que le projet"
             )
         return existant, False
-    if not personne.email:
-        raise HTTPException(
-            status_code=422,
-            detail="compte AD sans adresse mail : impossible de creer l'utilisateur",
-        )
-    homonyme = (
-        await db.execute(select(User.id).where(func.lower(User.email) == personne.email.lower()))
-    ).first()
-    if homonyme is not None:
+    try:
+        await verify_address(db, personne)
+    except SansAdresseMail:
+        raise_unprocessable("compte AD sans adresse mail : impossible de creer l'utilisateur")
+    except AdresseMailPrise:
         # L'adresse est unique en base : un autre matricule la porte deja.
-        raise HTTPException(
-            status_code=409,
-            detail="l'adresse mail de ce compte AD est deja portee par un autre utilisateur",
+        raise_conflict_message(
+            "l'adresse mail de ce compte AD est deja portee par un autre utilisateur"
         )
-    user = User(
-        organisation_id=organisation_id,
-        email=personne.email,
-        full_name=personne.nom_affiche,
-        matricule=personne.matricule.upper(),
-        status=UserStatus.ACTIVE.value,
-    )
+    user = new_user(personne, organisation_id)
     db.add(user)
     await db.flush()
     return user, True

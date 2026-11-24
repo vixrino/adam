@@ -15,7 +15,7 @@ import pytest
 from pydantic import ValidationError
 
 from adam_api.schemas.benchmark import ComparaisonOut, MetriquesOut
-from adam_core.benchmark.metriques import FiltresChamps, calculer, comparer
+from adam_core.benchmark.metriques import FiltresChamps, compute, compare_metrics
 
 EXECUTION = {
     "id": 1,
@@ -64,8 +64,8 @@ def _ligne(field_key: str, **autres: Any) -> Dict[str, Any]:
     return {**base, **autres}
 
 
-def _metriques(**execution: Any) -> Dict[str, Any]:
-    m = calculer(
+def _metrics(**execution: Any) -> Dict[str, Any]:
+    m = compute(
         [
             _ligne("deposant.nom", vp=8, fn=2, somme_distance=3, somme_longueur_attendue=40),
             _ligne("deposant.iban", vp=1, fp=1, fn=1, substitutions=1, sensitive=True),
@@ -84,7 +84,7 @@ def _metriques(**execution: Any) -> Dict[str, Any]:
 
 
 def test_metriques_conformes_au_contrat() -> None:
-    m = _metriques()
+    m = _metrics()
     sortie = MetriquesOut.model_validate(m).model_dump(by_alias=True)
     # Rien de perdu au passage : memes cles a la racine, et dans chaque champ.
     assert set(sortie) == set(m)
@@ -93,16 +93,16 @@ def test_metriques_conformes_au_contrat() -> None:
 
 
 def test_cle_non_declaree_refusee() -> None:
-    m = _metriques()
+    m = _metrics()
     m["global"]["nouvel_indicateur"] = 1
     with pytest.raises(ValidationError):
         MetriquesOut.model_validate(m)
 
 
 def test_comparaison_conforme_au_contrat() -> None:
-    a = _metriques()
-    b = _metriques(id=2, ocr_model_id="ocr-2 + annot-1", verite_hash="v2")
-    c = comparer(a, b)
+    a = _metrics()
+    b = _metrics(id=2, ocr_model_id="ocr-2 + annot-1", verite_hash="v2")
+    c = compare_metrics(a, b)
     sortie = ComparaisonOut.model_validate(c).model_dump(by_alias=True)
     assert set(sortie) == set(c)
     assert sortie["moteur"]["changements"] == ["modele"]

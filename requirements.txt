@@ -1,0 +1,32 @@
+# Auto-generated from pyproject.toml by scripts/export_requirements.py. Do not edit by hand.
+sqlalchemy[asyncio]==2.0.34
+alembic==1.18.4
+ldap3>=2.9.1
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+fastapi==0.163.2
+starlette==1.7.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.32
+aiofiles==25.1.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-jose[cryptography]==3.5.0
+pymupdf==2.1.0
+exa-pie==1.4.0
+exa-logger==2.3.0
+httpx==0.28.1
+
+# -r requirements.dev.txt
+# Packages used development
+pytest==9.1.0
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+pytest-env==1.7.0
+black==26.10.1
+isort==8.0.1
+pylint==4.0.9
+bandit==1.9.4
+interrogate==1.7.0
+mypy==2.1.0
+tzdata==2026.2

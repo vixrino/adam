@@ -17,7 +17,7 @@ from adam_core.db.scoping import (
     member_dataset_ids,
     org_dataset_ids,
 )
-from adam_core.enums.status import DocumentStatus
+from adam_core.enums.status import DocumentStatus, PrealimMode
 
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
@@ -29,6 +29,8 @@ class Document(OrganisationScoped, ProjectScoped, Base):
     __table_args__ = (
         # Index explicite pour purge PVC
         Index("ix_document_file_id", "file_id"),
+        # File de travail des workers : WHERE status = ... ORDER BY created_at, a chaque cycle.
+        Index("ix_document_status_created_at", "status", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -54,7 +56,7 @@ class Document(OrganisationScoped, ProjectScoped, Base):
         # NULL SQL ou objet JSON, jamais JSON null : par defaut, SQLAlchemy
         # ecrit None en JSON null, que PostgreSQL concatene a un objet en
         # tableau [null, {...}] — et GET /documents tombe alors en 500.
-        JSONB(none_as_null=True),
+        JSONB(none_as_null=True),  # type: ignore[no-untyped-call]
         nullable=True,
         comment="Métadonnées libres d'ingestion : source, lot, date de dépôt...",
     )
@@ -62,6 +64,13 @@ class Document(OrganisationScoped, ProjectScoped, Base):
         String,
         nullable=False,
         default=DocumentStatus.RECEIVED.value,
+    )
+    prealim_mode: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default=PrealimMode.OCR.value,
+        server_default=PrealimMode.OCR.value,
+        comment="ocr = attend/rejoue l'OCR ; empty = champs vides sans OCR",
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -102,16 +111,6 @@ class Document(OrganisationScoped, ProjectScoped, Base):
         "Job",
         back_populates="document",
         lazy="noload",
-    )
-    # Avancement constate, recalcule par DocumentProgressWorker. uselist=False :
-    # la cle primaire de document_progress est document_id, donc au plus une
-    # ligne. Supprime avec le document, ce n'est qu'un cache.
-    progress: Mapped[Optional["DocumentProgress"]] = relationship(  # type: ignore[name-defined]
-        "DocumentProgress",
-        back_populates="document",
-        lazy="noload",
-        uselist=False,
-        cascade="all, delete-orphan",
     )
 
     @property

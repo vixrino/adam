@@ -26,13 +26,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Tuple, cast
 
-import pymupdf
 from anyio import Path as AsyncPath
+import pymupdf
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from adam_core.enums.status import DocumentStatus
+from adam_core.enums.status import DocumentStatus, PrealimMode
 from adam_core.models import Dataset, Document, File
 from adam_core.utils.hashing import sha256_bytes
 from adam_core.utils.logging import get_logger
@@ -170,8 +170,12 @@ async def ingest_pdf(
     content: bytes,
     pvc_root: Path,
     expected_page_count: int = 0,
+    prealim_mode: str = PrealimMode.OCR.value,
 ) -> dict[str, Any]:
     """Ingere un PDF dans un dataset. Idempotent au sein du dataset.
+
+    prealim_mode : "ocr" (le worker attend le moteur OCR) ou "empty" (champs
+    vides crees sans OCR). Un doublon deja ingere garde son mode d'origine.
 
     expected_page_count > 0 impose ce nombre de pages : un PDF hors taille est
     cree en ERROR plutot qu'en RECEIVED (voir l'en-tete du module).
@@ -211,12 +215,13 @@ async def ingest_pdf(
         document_type=document_type,
         file_name=file_name,
     )
-    erreur = _controle_pages(content, expected_page_count)
+    erreur = _check_pages(content, expected_page_count)
     document = Document(
         dataset_id=dataset.id,
         file_id=file_row.id,
         file_name=file_name,
         status=(DocumentStatus.ERROR if erreur else DocumentStatus.RECEIVED).value,
+        prealim_mode=prealim_mode,
     )
     if erreur:
         document.metadata_ = {"erreur": erreur}
@@ -253,7 +258,7 @@ async def ingest_pdf(
     }
 
 
-def _controle_pages(content: bytes, expected_page_count: int) -> dict[str, Any] | None:
+def _check_pages(content: bytes, expected_page_count: int) -> dict[str, Any] | None:
     """Motif d'erreur si le PDF n'a pas le nombre de pages exige, sinon None."""
     if expected_page_count <= 0:
         return None

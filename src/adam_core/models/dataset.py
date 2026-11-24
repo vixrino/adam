@@ -43,7 +43,7 @@ class Dataset(OrganisationScoped, ProjectScoped, Base):
     ocr_provider: Mapped[str] = mapped_column(
         String(128),
         nullable=False,
-        default=OcrProvider.PULSAR.value,
+        default=OcrProvider.MISTRAL.value,
         comment="Moteur OCR : PULSAR, MISTRAL",
     )
     ocr_model_id: Mapped[Optional[str]] = mapped_column(

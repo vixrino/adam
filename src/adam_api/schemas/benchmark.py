@@ -3,9 +3,8 @@ de deux executions, executions d'un export.
 
 Les calculs (adam_core/benchmark/metriques.py) rendent des dicts ; ces modeles
 les figent pour l'IHM. ``extra="forbid"`` partout : une cle ajoutee au calcul
-sans etre declaree ici fait echouer les tests au lieu de sortir en douce, et
-une cle declaree mais disparue fait echouer la validation. Le contrat ne bouge
-donc qu'expres.
+sans etre declaree ici fait echouer les tests au lieu de sortir en douce. Les champs
+optionnels valent None par defaut ; le contrat ne bouge donc qu'expres.
 """
 
 from __future__ import annotations
@@ -38,8 +37,8 @@ class Bloc(_Strict):
     score: Optional[float] = Field(description="F1 : 2 justes / (2 justes + fausses + ...)")
     taux_lectures_justes: Optional[float] = Field(description="Precision")
     taux_valeurs_trouvees: Optional[float] = Field(description="Rappel")
-    taux_erreur: Optional[float]
-    taux_erreur_caracteres: Optional[float]
+    taux_erreur: Optional[float] = None
+    taux_erreur_caracteres: Optional[float] = None
     assez_de_donnees: bool
     fourchette_lectures_justes: Fourchette = Field(
         default=None, description="Intervalle de Wilson a 95 % ; absent pour un champ seul"
@@ -72,17 +71,17 @@ class Selection(_Strict):
 class Echantillon(_Strict):
     documents: int
     champs_au_total: int
-    champs_par_document: Optional[int]
+    champs_par_document: Optional[int] = None
     champs_verifies: int
-    part_verifiee: Optional[float]
+    part_verifiee: Optional[float] = None
     champs_exclus_par_config: int
     trop_petit: bool
 
 
 class Cout(_Strict):
-    appels_ocr: Optional[int]
-    appels_par_document: Optional[float]
-    pages_par_document: Optional[float]
+    appels_ocr: Optional[int] = None
+    appels_par_document: Optional[float] = None
+    pages_par_document: Optional[float] = None
 
 
 class ChampEnEchec(_Strict):
@@ -98,7 +97,7 @@ class CategorieEnEchec(_Strict):
 
 
 class Verdict(_Strict):
-    score_minimal: Optional[float]
+    score_minimal: Optional[float] = None
     reussi: Optional[bool] = Field(description="None : la recette ne fixe aucun seuil")
     champs_en_echec: List[ChampEnEchec]
     categories_en_echec: List[CategorieEnEchec]
@@ -108,13 +107,13 @@ class ExecutionResume(_Strict):
     id: int
     recipe_id: int
     status: str
-    ocr_provider: Optional[str]
-    ocr_model_id: Optional[str]
-    comparateur_version: Optional[str]
-    schema_hash: Optional[str]
-    verite_hash: Optional[str]
-    started_at: Optional[datetime]
-    finished_at: Optional[datetime]
+    ocr_provider: Optional[str] = None
+    ocr_model_id: Optional[str] = None
+    comparateur_version: Optional[str] = None
+    schema_hash: Optional[str] = None
+    verite_hash: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
 
 
 class RecetteResume(_Strict):
@@ -131,8 +130,8 @@ class RecetteResume(_Strict):
 
 
 class DatasetResume(_Strict):
-    id: Optional[int]
-    name: Optional[str]
+    id: Optional[int] = None
+    name: Optional[str] = None
 
 
 class MetriquesOut(_Strict):
@@ -163,8 +162,8 @@ class CoteCompare(ExecutionResume):
 
 
 class Moteur(_Strict):
-    fournisseur: Optional[str]
-    modele: Optional[str]
+    fournisseur: Optional[str] = None
+    modele: Optional[str] = None
 
 
 class MoteursCompares(_Strict):
@@ -175,30 +174,30 @@ class MoteursCompares(_Strict):
 
 
 class IndicateurCompare(_Strict):
-    a: Optional[float]
-    b: Optional[float]
+    a: Optional[float] = None
+    b: Optional[float] = None
     evolution: Optional[float] = Field(description="b - a")
 
 
 class SectionComparee(_Strict):
     libelle: str
-    taux_lectures_justes_a: Optional[float]
-    taux_lectures_justes_b: Optional[float]
-    ecart_pts: Optional[float]
+    taux_lectures_justes_a: Optional[float] = None
+    taux_lectures_justes_b: Optional[float] = None
+    ecart_pts: Optional[float] = None
 
 
 class ChampCompare(_Strict):
     champ: str
-    section: Optional[str]
-    section_libelle: Optional[str]
+    section: Optional[str] = None
+    section_libelle: Optional[str] = None
     present_a: bool
     present_b: bool
-    reussite_a: Optional[float]
-    reussite_b: Optional[float]
+    reussite_a: Optional[float] = None
+    reussite_b: Optional[float] = None
     ecart_pts: Optional[float] = Field(description="Points de pourcentage, b - a")
-    score_a: Optional[float]
-    score_b: Optional[float]
-    evolution: Optional[float]
+    score_a: Optional[float] = None
+    score_b: Optional[float] = None
+    evolution: Optional[float] = None
 
 
 class ComparaisonOut(_Strict):
@@ -239,7 +238,7 @@ class ProgressionOut(_Strict):
     dernier_signe_de_vie: Optional[datetime] = Field(
         description="Ecrit a chaque document : un passage fige se voit ici"
     )
-    message: Optional[str]
+    message: Optional[str] = None
 
 
 # -- Executions d'un export ---------------------------------------------------------
@@ -250,12 +249,12 @@ class ExecutionDeLExport(_Strict):
 
     execution_id: int
     recette: RecetteResume
-    ocr_provider: Optional[str]
-    ocr_model_id: Optional[str]
-    finished_at: Optional[datetime]
+    ocr_provider: Optional[str] = None
+    ocr_model_id: Optional[str] = None
+    finished_at: Optional[datetime] = None
     documents: int
-    score: Optional[float]
-    taux_lectures_justes: Optional[float]
-    taux_valeurs_trouvees: Optional[float]
-    taux_erreur: Optional[float]
-    reussi: Optional[bool]
+    score: Optional[float] = None
+    taux_lectures_justes: Optional[float] = None
+    taux_valeurs_trouvees: Optional[float] = None
+    taux_erreur: Optional[float] = None
+    reussi: Optional[bool] = None

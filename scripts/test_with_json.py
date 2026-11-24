@@ -3,12 +3,8 @@ Usage: python scripts/test_with_json.py mon_fichier.json
 
 Simule le flux complet (ingestion -> lecture typee) sur un fichier JSON reel,
 sans besoin de serveur ni de base de donnees.
-
-NOTE: le champ racine attendu par SmartdocDocument est "smartdoc_version".
-Si le fichier source utilise un autre nom de cle pour la version
-(n'importe quelle cle racine finissant par "_version"), elle est
-detectee et mappee automatiquement.
 """
+
 import json
 import sys
 
@@ -22,11 +18,11 @@ def main(json_path: str) -> None:
     with open(json_path, encoding="utf-8") as f:
         raw_json = json.load(f)
 
-    # Detecte automatiquement toute cle racine "*_version" si "smartdoc_version" est absent
-    if "smartdoc_version" not in raw_json:
+    # Detecte automatiquement toute cle racine "*_version" si "format_version" est absent
+    if "format_version" not in raw_json:
         for key in raw_json:
             if key.endswith("_version"):
-                raw_json["smartdoc_version"] = raw_json[key]
+                raw_json["format_version"] = raw_json[key]
                 break
 
     doc = SmartdocDocument.model_validate(raw_json)
@@ -40,7 +36,9 @@ def main(json_path: str) -> None:
         kv = kv_by_key[key]
         stored = kv.extracted_value  # ce qui serait stocke en base (string)
         parsed = parse_field_value(stored, spec["value_type"])
-        print(f"{key:15s} {spec['value_type']:10s} {stored!r:25s} {parsed!r} ({type(parsed).__name__})")
+        print(
+            f"{key:15s} {spec['value_type']:10s} {stored!r:25s} {parsed!r} ({type(parsed).__name__})"
+        )
 
 
 if __name__ == "__main__":

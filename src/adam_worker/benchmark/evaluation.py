@@ -28,10 +28,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from adam_core.schemas.interface_contract import SmartdocDocument
 from adam_worker.benchmark.comparateur import (
     _texte,
-    comparer,
-    distance_edition,
-    empreinte,
-    normaliser,
+    compare_values,
+    fingerprint,
+    levenshtein_distance,
+    normalize_value,
 )
 from adam_worker.prepopulation.merger import index_ocr_pairs, merge, semantic_key
 
@@ -90,7 +90,7 @@ class Agregat:
     value_type: Optional[str] = None
     sensitive: bool = False
 
-    def ajouter(self, autre: "Agregat") -> None:
+    def accumulate(self, autre: "Agregat") -> None:
         """Cumule les comptes d'un autre agregat du meme champ."""
         for nom in COMPTES:
             setattr(self, nom, getattr(self, nom) + getattr(autre, nom))
@@ -110,7 +110,7 @@ COMPTES = (
 )
 
 
-def _classer(agregat: Agregat, attendu: Any, lu: Any, ecart: Any) -> None:
+def _classify(agregat: Agregat, attendu: Any, lu: Any, ecart: Any) -> None:
     """Range un champ juge dans la matrice, et cumule le taux par caractere."""
     texte_attendu = _texte(str(attendu)) if attendu is not None else ""
     texte_lu = _texte(str(lu)) if lu is not None else ""
@@ -135,7 +135,7 @@ def _classer(agregat: Agregat, attendu: Any, lu: Any, ecart: Any) -> None:
         agregat.fp += 1
         agregat.fn += 1
         agregat.substitutions += 1
-        agregat.somme_distance += distance_edition(texte_attendu, texte_lu)
+        agregat.somme_distance += levenshtein_distance(texte_attendu, texte_lu)
 
 
 @dataclass
@@ -152,11 +152,11 @@ class ResultatDocument:
     histogramme: Dict[str, Dict[str, List[int]]] = field(default_factory=dict)
 
 
-def _tranche(confiance: float) -> str:
+def _bucket(confiance: float) -> str:
     return f"{round(float(confiance), 2):.2f}"
 
 
-def _hors_schema(ocr: Optional[SmartdocDocument], verite: List[ChampVerite]) -> int:
+def _out_of_schema(ocr: Optional[SmartdocDocument], verite: List[ChampVerite]) -> int:
     """Valeurs lues sous une cle qu'aucun champ du perimetre n'attend."""
     attendues: Set[Tuple[str, Optional[str]]] = set()
     for champ in verite:
@@ -170,14 +170,14 @@ def _hors_schema(ocr: Optional[SmartdocDocument], verite: List[ChampVerite]) -> 
     )
 
 
-def evaluer_document(
+def evaluate_document(
     verite: List[ChampVerite],
     ocr: Optional[SmartdocDocument],
     execution_id: int,
     cle_hmac: str,
 ) -> ResultatDocument:
     """Compare la lecture du moteur a la verite d'un document."""
-    resultat = ResultatDocument(unexpected_count=_hors_schema(ocr, verite))
+    resultat = ResultatDocument(unexpected_count=_out_of_schema(ocr, verite))
     specs = [
         {
             "id": champ.field_spec_id,
@@ -214,15 +214,15 @@ def evaluer_document(
 
         lu = lecture.get("ocr_value")
         confiance = lecture.get("ocr_confidence") if confiance_fournie else None
-        ecart = comparer(champ.attendu, lu, champ.value_type)
-        _classer(
+        ecart = compare_values(champ.attendu, lu, champ.value_type)
+        _classify(
             agregat,
-            normaliser(champ.attendu, champ.value_type),
-            normaliser(lu, champ.value_type),
+            normalize_value(champ.attendu, champ.value_type),
+            normalize_value(lu, champ.value_type),
             ecart,
         )
         if confiance is not None:
-            compte = histogramme[champ.value_type].setdefault(_tranche(confiance), [0, 0])
+            compte = histogramme[champ.value_type].setdefault(_bucket(confiance), [0, 0])
             compte[1 if ecart else 0] += 1
         if ecart is None:
             continue
@@ -238,7 +238,7 @@ def evaluer_document(
                 # Sensible : rien en clair, l'empreinte et l'ampleur seulement.
                 "expected_value": None if champ.sensitive else ecart.attendu,
                 "observed_value": None if champ.sensitive else ecart.lu,
-                "observed_hmac": empreinte(ecart.lu, cle_hmac) if champ.sensitive else None,
+                "observed_hmac": fingerprint(ecart.lu, cle_hmac) if champ.sensitive else None,
                 "edit_distance": ecart.edit_distance,
             }
         )
@@ -246,13 +246,13 @@ def evaluer_document(
     return resultat
 
 
-def fusionner_histogrammes(
+def merge_histograms(
     cumul: Dict[str, Dict[str, List[int]]], ajout: Dict[str, Dict[str, List[int]]]
 ) -> None:
     """Ajoute l'histogramme d'un document a celui de l'execution, en place."""
     for value_type, tranches in ajout.items():
-        cible = cumul.setdefault(value_type, {})
+        target_of = cumul.setdefault(value_type, {})
         for tranche, (corrects, ecarts) in tranches.items():
-            courant = cible.setdefault(tranche, [0, 0])
+            courant = target_of.setdefault(tranche, [0, 0])
             courant[0] += corrects
             courant[1] += ecarts

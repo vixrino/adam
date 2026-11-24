@@ -1,9 +1,8 @@
 """Regles metier de creation des DOCUMENT_FIELD.
 
-Ce service existe parce que la creation des champs passe par HTTP et non par un
-acces ORM direct depuis le worker : la validation de coherence entre field_spec
-et schema, et la gestion de la contrainte d'unicite, vivent ici une seule fois
-plutot que dupliquees dans chaque appelant.
+Ce service existe pour que la validation de coherence entre field_spec et schema,
+et la gestion de la contrainte d'unicite, vivent ici une seule fois plutot que
+dupliquees dans chaque appelant : les routes et PrepopulationWorker l'appellent.
 
 Deux entrees, la creation unitaire et la creation en lot, qui ne se comportent
 pas pareil face a un conflit. L'unitaire echoue en 409, l'appelant sachant ce

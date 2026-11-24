@@ -48,6 +48,16 @@ class OcrResult(OrganisationScoped, ProjectScoped, Base):
         nullable=False,
         index=True,
     )
+    provider: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        comment="Moteur OCR qui a repondu : MISTRAL, PULSAR...",
+    )
+    model: Mapped[Optional[str]] = mapped_column(
+        String,
+        nullable=True,
+        comment="Version du modele renvoyee par le fournisseur (ex. mistral-ocr-2505)",
+    )
     storage_mode: Mapped[str] = mapped_column(
         String,
         nullable=False,

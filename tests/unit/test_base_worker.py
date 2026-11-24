@@ -92,3 +92,64 @@ async def test_stop_ends_run_forever(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert worker.calls == 2
     assert worker._is_running is False
+
+
+# -- Delai lu en base (app_setting) ----------------------------------------------------
+
+
+class _SlowWorker(BaseWorker):
+    poll_interval_seconds = 7.0
+
+    async def poll(self) -> None:
+        return None
+
+
+def _store(monkeypatch: pytest.MonkeyPatch, result: object) -> None:
+    async def load(*_a: object, **_k: object) -> dict:
+        if isinstance(result, Exception):
+            raise result
+        return result  # type: ignore[return-value]
+
+    monkeypatch.setattr("adam_worker.base_worker.settings_store.load", load)
+
+
+@pytest.mark.asyncio
+async def test_interval_read_from_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    _store(monkeypatch, {"worker._SlowWorker.poll_interval": 42})
+    assert await _SlowWorker()._current_interval() == 42.0
+
+
+@pytest.mark.asyncio
+async def test_interval_is_clamped_to_one_second(monkeypatch: pytest.MonkeyPatch) -> None:
+    _store(monkeypatch, {"worker._SlowWorker.poll_interval": 0})
+    assert await _SlowWorker()._current_interval() == 1.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["abc", None, True, float("nan"), [3]])
+async def test_interval_invalid_or_missing_falls_back(
+    monkeypatch: pytest.MonkeyPatch, value: object
+) -> None:
+    _store(monkeypatch, {"worker._SlowWorker.poll_interval": value})
+    assert await _SlowWorker()._current_interval() == 7.0
+
+
+@pytest.mark.asyncio
+async def test_interval_falls_back_when_store_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _store(monkeypatch, RuntimeError("base injoignable"))
+    assert await _SlowWorker()._current_interval() == 7.0
+
+
+@pytest.mark.asyncio
+async def test_run_forever_sleeps_the_stored_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    _store(monkeypatch, {"worker._SlowWorker.poll_interval": 30})
+    slept: List[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        raise _StopLoop()
+
+    monkeypatch.setattr("adam_worker.base_worker.asyncio.sleep", fake_sleep)
+    with pytest.raises(_StopLoop):
+        await _SlowWorker().run_forever()
+    assert slept == [30.0]

@@ -34,27 +34,29 @@ Echecs
 
 from __future__ import annotations
 
-import hashlib
 from datetime import timedelta
+import hashlib
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from adam_api.core.config import settings
-from adam_core.benchmark.recette import ConfigOcr, config_ocr
-from adam_core.benchmark.schema import empreinte_schema  # reexporte : tests, scripts
-from adam_core.benchmark.verite import empreinte_document, empreinte_verite
+from adam_core.benchmark import smartdoc_json
+from adam_core.benchmark.recette import ConfigOcr, ocr_config
+from adam_core.benchmark.schema import schema_fingerprint  # reexporte : tests, scripts
+from adam_core.benchmark.verite import document_fingerprint, truth_fingerprint
 from adam_core.enums.status import TestExecutionStatus, TestRecipeStatus
 from adam_worker.base_worker import BaseWorker
 from adam_worker.benchmark.comparateur import COMPARATEUR_VERSION
 from adam_worker.benchmark.depot import DepotBenchmark, ExecutionReservee
 from adam_worker.benchmark.evaluation import (
     Agregat,
-    evaluer_document,
-    fusionner_histogrammes,
+    evaluate_document,
+    merge_histograms,
 )
-from adam_worker.connectors import connector_from_settings, connector_pour_recette
+from adam_worker.connectors import connector_for_recipe, connector_from_settings
 from adam_worker.connectors.base import BaseOcrConnector, DocumentNonConforme
 from adam_worker.connectors.modele import ModeleDocument
+from adam_worker.connectors.smartdoc_json import SmartdocJsonConnector
 from adam_worker.prepopulation.poller import default_pages_dir
 
 #: Execution RUNNING sans progres depuis ce delai : son worker est mort. Le
@@ -96,7 +98,7 @@ class TestExecutionWorker(BaseWorker):
         self.connector = connector or connector_from_settings(settings)
         #: Construit le moteur d'une recette ; injectable pour les tests.
         self.fabrique = fabrique or (
-            lambda config, defaut: connector_pour_recette(config, settings, defaut)
+            lambda config, defaut: connector_for_recipe(config, settings, defaut)
         )
         self.pvc_root = pvc_root or Path(settings.pvc_mount_path)
         self.pages_dir = pages_dir
@@ -105,21 +107,30 @@ class TestExecutionWorker(BaseWorker):
     # -- Boucle -------------------------------------------------------------
 
     async def poll(self) -> None:
-        bloquees = await self.depot.echouer_bloquees(STALE_AFTER)
+        bloquees = await self.depot.fail_stuck(STALE_AFTER)
         if bloquees:
             self.logger.warning("%s execution(s) interrompue(s) passee(s) en FAILED", bloquees)
 
-        execution = await self.depot.reserver_execution()
+        execution = await self.depot.claim_execution()
         if execution is None:
             self.logger.debug("aucune execution de test en attente")
             return
         try:
-            connecteur, a_fermer = self.fabrique(config_ocr(execution.config), self.connector)
+            config = ocr_config(execution.config)
+            connecteur: BaseOcrConnector
+            if config.provider == smartdoc_json.FOURNISSEUR:
+                # Les JSON deposes au lancement : pas de moteur a construire.
+                connecteur, a_fermer = (
+                    SmartdocJsonConnector(self.pvc_root / smartdoc_json.dossier(execution.id)),
+                    False,
+                )
+            else:
+                connecteur, a_fermer = self.fabrique(config, self.connector)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             # Moteur de la recette inconstructible (cle absente...) : l'execution
             # echoue proprement au lieu de rester RUNNING.
             self.logger.error("execution %s : moteur OCR inconstructible : %s", execution.id, exc)
-            await self.depot.terminer(
+            await self.depot.finish_execution(
                 execution.id,
                 TestExecutionStatus.FAILED,
                 message=f"moteur OCR de la recette inconstructible : {exc}",
@@ -135,18 +146,20 @@ class TestExecutionWorker(BaseWorker):
         try:
             # Dans le try : si la note echoue, le moteur est quand meme ferme
             # et l'execution passe en FAILED au lieu de rester RUNNING.
-            await self.depot.noter_moteur(
-                execution.id, connecteur.name.upper(), _modele_ocr(connecteur)
+            await self.depot.record_engine(
+                execution.id, connecteur.name.upper(), _ocr_model(connecteur)
             )
-            await self._executer(execution, connecteur)
+            await self._execute(execution, connecteur)
         except ExecutionInterrompue:
             self.logger.info("execution de test interrompue [execution_id=%s]", execution.id)
         except EchecExecution as exc:
             self.logger.error("execution %s en FAILED : %s", execution.id, exc)
-            await self.depot.terminer(execution.id, TestExecutionStatus.FAILED, message=str(exc))
+            await self.depot.finish_execution(
+                execution.id, TestExecutionStatus.FAILED, message=str(exc)
+            )
         except Exception as exc:  # pylint: disable=broad-exception-caught
             self.logger.exception("execution %s : echec inattendu", execution.id)
-            await self.depot.terminer(
+            await self.depot.finish_execution(
                 execution.id,
                 TestExecutionStatus.FAILED,
                 message=f"echec inattendu, voir les logs du worker ({type(exc).__name__})",
@@ -157,7 +170,7 @@ class TestExecutionWorker(BaseWorker):
 
     # -- Execution ----------------------------------------------------------
 
-    async def _executer(self, execution: ExecutionReservee, connecteur: BaseOcrConnector) -> None:
+    async def _execute(self, execution: ExecutionReservee, connecteur: BaseOcrConnector) -> None:
         if execution.recipe_status != TestRecipeStatus.LOCKED.value:
             raise EchecExecution(
                 f"recette {execution.recipe_id} non verrouillee ({execution.recipe_status}) : "
@@ -169,43 +182,55 @@ class TestExecutionWorker(BaseWorker):
             )
 
         schema = await self.depot.schema(execution.schema_id)
-        empreinte = empreinte_schema(schema)
-        await self.depot.identifier(execution.id, COMPARATEUR_VERSION, empreinte)
-        modele = ModeleDocument.depuis_schema(schema)
+        fingerprint = schema_fingerprint(schema)
+        await self.depot.identify(execution.id, COMPARATEUR_VERSION, fingerprint)
+        modele = ModeleDocument.from_schema(schema)
         documents = await self.depot.documents(execution.document_ids)
+        lecteur = connecteur if isinstance(connecteur, SmartdocJsonConnector) else None
+        noms = await self.depot.noms(execution.document_ids) if lecteur is not None else {}
+        if lecteur is not None and not lecteur.fichiers:
+            raise EchecExecution("aucun JSON SMARTDOC depose pour ce passage")
         if not documents:
             raise EchecExecution(f"recette {execution.recipe_id} sans document existant")
         absents = sorted(set(execution.document_ids) - {d for d, _ in documents})
         if absents:
             # Comptes traites d'emblee : sans cela la progression, rapportee
             # aux documents de la recette, n'atteindrait jamais le total.
-            await self.depot.enregistrer_document(
-                execution.id, [], {"documents_traites": len(absents)}
-            )
+            await self.depot.save_document(execution.id, [], {"documents_traites": len(absents)})
 
         histogramme: Dict[str, Dict[str, List[int]]] = {}
         agregats: Dict[int, Agregat] = {}
         non_conformes: List[int] = []
         sans_images: List[int] = []
+        sans_json: List[int] = []
         #: Empreinte de la verite de chaque document juge.
         verites: Dict[int, str] = {}
 
         for document_id, file_id in documents:
             # Entre deux documents : un document entame va au bout, ses appels
             # OCR sont deja payes.
-            if await self.depot.interrompue(execution.id):
+            if await self.depot.interrupted(execution.id):
                 raise ExecutionInterrompue()
-            images = self._images(file_id)
-            if not images:
+            images = [] if lecteur is not None else self._images(file_id)
+            if not images and lecteur is None:
                 # Pages jamais rendues : c'est un defaut d'ingestion, pas une
                 # lecture ratee. Le compter MISSING imputerait au moteur une
                 # erreur qui n'est pas la sienne.
                 sans_images.append(document_id)
-                await self.depot.enregistrer_document(execution.id, [], {"documents_traites": 1})
+                await self.depot.save_document(execution.id, [], {"documents_traites": 1})
                 continue
             appels_avant = int(getattr(connecteur, "appels", 0))
             try:
-                ocr = await connecteur.extract(images, modele)
+                if lecteur is not None:
+                    ocr = lecteur.read(noms.get(document_id, ""))
+                    if ocr is None:
+                        # Pas de JSON : le moteur externe n'a rien rendu pour ce
+                        # document, ce n'est pas une lecture ratee mesurable.
+                        sans_json.append(document_id)
+                        await self.depot.save_document(execution.id, [], {"documents_traites": 1})
+                        continue
+                else:
+                    ocr = await connecteur.extract(images, modele)
             except DocumentNonConforme:
                 # Le moteur n'a pas su lire ce document comme le formulaire :
                 # c'est une lecture ratee, mesuree comme telle.
@@ -218,11 +243,11 @@ class TestExecutionWorker(BaseWorker):
             appels = int(getattr(connecteur, "appels", 0)) - appels_avant
 
             verite = await self.depot.verite(document_id)
-            verites[document_id] = empreinte_document(
+            verites[document_id] = document_fingerprint(
                 (c.field_spec_id, c.group_id, c.attendu) for c in verite if c.verifie
             )
-            resultat = evaluer_document(verite, ocr, execution.id, self.cle_hmac)
-            await self.depot.enregistrer_document(
+            resultat = evaluate_document(verite, ocr, execution.id, self.cle_hmac)
+            await self.depot.save_document(
                 execution.id,
                 resultat.ecarts,
                 {
@@ -236,10 +261,10 @@ class TestExecutionWorker(BaseWorker):
                     "pages_processed": len(images),
                 },
             )
-            fusionner_histogrammes(histogramme, resultat.histogramme)
+            merge_histograms(histogramme, resultat.histogramme)
             for field_spec_id, agregat in resultat.agregats.items():
                 if field_spec_id in agregats:
-                    agregats[field_spec_id].ajouter(agregat)
+                    agregats[field_spec_id].accumulate(agregat)
                 else:
                     agregats[field_spec_id] = agregat
             self.logger.info(
@@ -255,7 +280,7 @@ class TestExecutionWorker(BaseWorker):
             # Supprimes depuis l'export (droit a l'effacement...) : le passage
             # porte sur moins de documents que la recette, et doit le dire.
             constats.append(f"documents de la recette absents de la base : {absents}")
-        if execution.schema_hash_export and execution.schema_hash_export != empreinte:
+        if execution.schema_hash_export and execution.schema_hash_export != fingerprint:
             # Le schema a change depuis l'export : la verite et la lecture ne
             # portent plus tout a fait sur les memes champs qu'a l'export.
             constats.append("schema du dataset modifie depuis l'export")
@@ -269,16 +294,18 @@ class TestExecutionWorker(BaseWorker):
                 constats.append(f"verite humaine modifiee depuis l'export : documents {modifies}")
         if non_conformes:
             constats.append(f"documents juges non conformes par le moteur : {non_conformes}")
+        if sans_json:
+            constats.append(f"documents sans JSON SMARTDOC : {sans_json}")
         if sans_images:
             constats.append(f"documents ecartes, images de page absentes : {sans_images}")
         message = " ; ".join(constats) or None
-        await self.depot.terminer(
+        await self.depot.finish_execution(
             execution.id,
             TestExecutionStatus.COMPLETED,
             histogramme=histogramme,
             agregats=agregats,
             message=message,
-            verite_hash=empreinte_verite(verites),
+            verite_hash=truth_fingerprint(verites),
         )
         self.logger.info("execution de test terminee [execution_id=%s]", execution.id)
 
@@ -288,7 +315,7 @@ class TestExecutionWorker(BaseWorker):
         return sorted(dossier.glob("*.png")) if dossier.is_dir() else []
 
 
-def _modele_ocr(connecteur: BaseOcrConnector) -> Optional[str]:
+def _ocr_model(connecteur: BaseOcrConnector) -> Optional[str]:
     """Identifiant du moteur, copie sur l'execution : modele OCR et, pour
     Mistral, modele d'annotation — les deux font la lecture."""
     modeles = [getattr(connecteur, attribut, None) for attribut in ("model", "annotation_model")]

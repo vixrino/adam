@@ -14,7 +14,7 @@ Comme par l'API, la recette part d'un export du dataset (dataset_export) : le
 script fige d'abord ces documents dans un export, puis cree la recette sur
 tout l'export.
 
-Le paquet *_core (nota_core ou adam_core) est trouve sous src/ : le script
+Le paquet *_core (adam_core ) est trouve sous src/ : le script
 tourne tel quel dans les deux depots, depuis la racine du depot (.env).
 
 Usage :
@@ -166,14 +166,14 @@ async def creer(
             # A la seconde : deux lancements dans la meme minute ne se heurtent
             # pas sur l'unicite des noms.
             nom_recette = nom or f"recette {maintenant:%Y-%m-%d %H:%M:%S}"
-            schema = await schema_benchmark.schema_en_dict(db, dataset.schema_id)
+            schema = await schema_benchmark.schema_to_dict(db, dataset.schema_id)
             export = export_existant or modeles.DatasetExport(
                 dataset_id=dataset_id,
                 schema_id=dataset.schema_id,
-                schema_hash=schema_benchmark.empreinte_schema(schema),
+                schema_hash=schema_benchmark.schema_fingerprint(schema),
                 verite_empreintes={
                     str(d): e
-                    for d, e in (await verite_benchmark.empreintes_documents(db, documents)).items()
+                    for d, e in (await verite_benchmark.document_fingerprints(db, documents)).items()
                 },
                 name=f"export pour {nom_recette}",
                 document_ids=documents,

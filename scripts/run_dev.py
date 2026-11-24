@@ -1,7 +1,10 @@
 """
-Point d'entree DEV uniquement.
-Usage: python scripts/run_dev.py
+Point d'entrée DEV uniquement, ne jamais utiliser en STAGING/PROD.
+
+Usage :
+    python scripts/run_dev.py
 """
+
 import uvicorn
 
 from adam_api.core.config import settings

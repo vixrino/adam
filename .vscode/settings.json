@@ -1,0 +1,12 @@
+{
+  "sonarlint.connectedMode.connections.sonarqube": [
+    {
+      "connectionId": "nota-local",
+      "serverUrl": "http://localhost:9000"
+    }
+  ],
+  "sonarlint.connectedMode.project": {
+    "connectionId": "nota-local",
+    "projectKey": "nota-back"
+  }
+}

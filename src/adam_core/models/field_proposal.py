@@ -6,7 +6,7 @@ index sur (document_field_id, step) pour la recherche IHM.
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
@@ -27,9 +27,9 @@ class FieldProposal(OrganisationScoped, ProjectScoped, Base):
 
     __table_args__ = (Index("ix_field_proposal_field_step", "document_field_id", "step"),)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     document_field_id: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         ForeignKey("document_field.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -46,7 +46,7 @@ class FieldProposal(OrganisationScoped, ProjectScoped, Base):
         default=JobStep.VALIDATION.value,
         comment="Étape à laquelle la proposition a été soumise",
     )
-    value_type: Mapped[Optional[str]] = mapped_column(
+    value_type: Mapped[str] = mapped_column(
         String,
         nullable=False,
         default=FieldValueType.TEXT.value,

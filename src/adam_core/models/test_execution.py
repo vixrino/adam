@@ -1,33 +1,7 @@
-"""Table TEST_EXECUTION : un passage d'une recette contre le moteur OCR.
-
-C'est la seule entite du domaine qui n'est reconstituable d'aucune autre :
-quand le passage a eu lieu, contre quel moteur, et ce qu'il a constate en
-totaux. ``ocr_provider`` et ``ocr_model_id`` sont copies au lancement plutot
-que lus sur le dataset, dont la configuration change apres coup. ``started_at``
-est le vrai axe temporel : Mistral s'ameliore derriere un model_id stable, un
-identifiant constant ne date rien.
-
-La comparaison se fait EN MEMOIRE dans le worker : le connecteur est appele,
-sa sortie est comparee a la verite, et seuls les ecarts sont ecrits. Aucune
-table de production (ocr_result, document_field) n'est touchee — un benchmark
-ne doit jamais modifier la donnee qu'il mesure.
-
-``confidence_histogram`` porte la distribution de la confiance OCR chez les
-champs corrects ET chez les faux (JSONB, ~100 tranches par type de valeur).
-C'est la seule information definitivement perdue si elle n'est pas ecrite au
-fil du run, les champs corrects ne produisant aucune ligne : elle repond a
-« a partir de quel seuil de confiance l'auto-validation est-elle sure », la
-question qui chiffre l'economie de relecture humaine.
-
-``fields_human_verified`` compte les champs du perimetre portant au moins une
-field_proposal. C'est le denominateur honnete du rapport : les champs jamais
-regardes par un humain ont resolved_value == ocr_value par construction
-(cf. services/consensus.py), et les compter mesurerait le moteur contre
-lui-meme.
-"""
+"""Table TEST_EXECUTION : un passage d'une recette contre le moteur OCR."""
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
@@ -42,8 +16,6 @@ from adam_core.db.scoping import (
 )
 from adam_core.enums.status import TestExecutionStatus
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
     from sqlalchemy.sql.elements import ColumnElement
 
@@ -51,8 +23,6 @@ if TYPE_CHECKING:
 class TestExecution(OrganisationScoped, ProjectScoped, Base):
     __tablename__ = "test_execution"
 
-    # pytest collecte les classes prefixees Test* importees dans un module de
-    # test ; ce marqueur l'en dissuade.
     __test__ = False
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

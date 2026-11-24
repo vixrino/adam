@@ -19,7 +19,7 @@ Lance un banc d'essai OCR de bout en bout, en une commande :
 Les appels OCR sont reels si OCR_MOCK_ENABLED=false : ils coutent. --dry-run
 montre ce qui serait lance sans rien ecrire ni appeler.
 
-Le paquet *_core est trouve sous src/ : le script tourne tel quel dans adam et
+Le paquet *_core est trouve sous src/ : le script tourne tel quel
 dans nota, depuis la racine du depot (.env).
 
 Usage :
@@ -59,7 +59,7 @@ TERMINES = ("COMPLETED", "FAILED")
 
 
 def _prefixe() -> str:
-    """'adam' ou 'nota', d'apres le paquet *_core present sous src/."""
+    """'nota', d'apres le paquet *_core present sous src/."""
     cores = sorted(p.name for p in SRC.glob("*_core") if (p / "models").is_dir())
     if len(cores) != 1:
         raise SystemExit(f"attendu un *_core sous src/, trouve {cores}")
@@ -252,7 +252,7 @@ async def _anterieures_en_attente(execution_id: int) -> List[int]:
         )
 
 
-async def _executer(execution_id: int) -> str:
+async def _execute(execution_id: int) -> str:
     worker_mod = _module("worker.benchmark.worker")
     worker = worker_mod.TestExecutionWorker()
     avant = await _anterieures_en_attente(execution_id)
@@ -297,11 +297,11 @@ async def _resultat(execution_id: int, sortie: Path) -> None:
     pdf = None
     async with session_mod.get_async_session() as db:
         if filtres is not None:
-            metriques = await router._metriques(  # pylint: disable=protected-access
+            metriques = await router._metrics(  # pylint: disable=protected-access
                 db, execution_id, False, filtres
             )
         else:
-            metriques = await router._metriques(  # pylint: disable=protected-access
+            metriques = await router._metrics(  # pylint: disable=protected-access
                 db, execution_id, False
             )
         if hasattr(router, "metriques_pdf") and filtres is not None:
@@ -383,9 +383,9 @@ async def _comparer(a: int, b: int) -> None:
     router = _module("api.routers.benchmark")
     metriques = _module("core.benchmark.metriques")
     async with _module("core.db.session").get_async_session() as db:
-        resultat = metriques.comparer(
-            await router._metriques(db, a, True),  # pylint: disable=protected-access
-            await router._metriques(db, b, True),  # pylint: disable=protected-access
+        resultat = metriques.compare_metrics(
+            await router._metrics(db, a, True),  # pylint: disable=protected-access
+            await router._metrics(db, b, True),  # pylint: disable=protected-access
         )
     print(f"\nCOMPARAISON {a} -> {b}")
     print(f"  comparable : {'oui' if resultat['comparable'] else 'NON'}")
@@ -451,7 +451,7 @@ async def lancer(args: argparse.Namespace) -> None:
         if execution_id is None:
             return
 
-    statut = await _executer(execution_id)
+    statut = await _execute(execution_id)
     if statut != "COMPLETED":
         raise SystemExit(1)
     await _resultat(execution_id, args.sortie or Path(f"rapport_test_{execution_id}.pdf"))

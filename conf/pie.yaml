@@ -9,33 +9,49 @@
 # correspond l'emporte, du plus specifique au plus general.
 pie:
   security:
-    mode: KEYCLOAK
+    mode: FBI
     verifier: NO-VERIFIER
     algorithms:
       - RS256
-    log-level: DEBUG
+    log-level: INFO
 
     # Routes techniques : ni token ni role.
     # /openapi.json est charge par la page Swagger sans en-tete Authorization.
-    # /static est declare par anticipation du Swagger hors ligne (assets deja
-    # presents dans adam_api/static, pas encore cables sur docs_url).
     public-uris:
-      - ^\/?health$
+      - ^\/?health(.*)?$
       - ^\/?docs(.*)?$
       - ^\/?redoc(.*)?$
       - ^\/?openapi\.json$
-      - ^\/?static(.*)?$
+      # - ^\/?static(.*)?$
 
     # Filtre grossier par zone. Le controle fin (methode HTTP, appartenance au
     # projet, cloisonnement par organisation) reste porte par l'API.
+    # uris-by-roles:
+    #   ^\\/?db-check$: ADMIN
+    #   ^\\/?api\\/v1\\/organisations(.*)?$: ADMIN
+    #   ^\\/?api\\/v1\\/users\\/me$: ADMIN|SUPERVISOR|OPERATOR
+    #   ^\\/?api\\/v1\\/users(.*)?$: ADMIN
+    #   ^\\/?api\\/v1\\/schemas(.*)?$: ADMIN|SUPERVISOR
+    #   ^\\/?api\\/v1\\/datasets(.*)?$: ADMIN|SUPERVISOR
+    #   ^\\/?api\\/v1\\/projects(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+    #   ^\\/?api\\/v1\\/documents(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+    #   ^\\/?api\\/v1\\/ocr-results(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+    #   ^\\/?api\\/v1\\/jobs(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+    #   ^\\/?api\\/v1\\/files(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+
     uris-by-roles:
-      ^\/?db-check$: ADMIN
-      ^\/?organisations(.*)?$: ADMIN
-      ^\/?users(.*)?$: ADMIN
-      ^\/?schemas(.*)?$: ADMIN|SUPERVISOR
-      ^\/?datasets(.*)?$: ADMIN|SUPERVISOR
-      ^\/?projects(.*)?$: ADMIN|SUPERVISOR|OPERATOR
-      ^\/?documents(.*)?$: ADMIN|SUPERVISOR|OPERATOR
-      ^\/?ocr-results(.*)?$: ADMIN|SUPERVISOR|OPERATOR
-      ^\/?jobs(.*)?$: ADMIN|SUPERVISOR|OPERATOR
-      ^\/?files(.*)?$: ADMIN|SUPERVISOR|OPERATOR
+      ^\/?db-check$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      ^\/?api\/v1\/admin(.*)?$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      ^\/?api\/v1\/organisations(.*)?$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      # /users/me avant /users : tout utilisateur appelle /users/me a la connexion.
+      ^\/?api\/v1\/users\/me$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      ^\/?api\/v1\/users(.*)?$: T1_DV_GG_SMARTDOC-ADMINS
+      ^\/?api\/v1\/annuaire(.*)?$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      ^\/?api\/v1\/schemas(.*)?$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      ^\/?api\/v1\/datasets(.*)?$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      ^\/?api\/v1\/projects(.*)?$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      ^\/?api\/v1\/documents(.*)?$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      ^\/?api\/v1\/ocr-results(.*)?$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      ^\/?api\/v1\/jobs(.*)?$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      ^\/?api\/v1\/files(.*)?$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS
+      ^\/?api\/v1\/(test-recipes|test-executions|dataset-exports)(.*)?$: T1_DV_GG_SMARTDOC-ADMINS|T1_DV_GG_SMARTDOC-USERS

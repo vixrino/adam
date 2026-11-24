@@ -29,13 +29,13 @@ la distance d'edition (son ampleur) et la categorie de l'ecart sont rendus.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 import hashlib
 import hmac
 import re
-import unicodedata
-from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Optional
+import unicodedata
 
 from adam_core.enums.status import ComparisonDiffKind, ComparisonVerdict, FieldValueType
 from adam_core.utils.field_parser import parse_field_value
@@ -88,12 +88,12 @@ def _date(valeur: str) -> Any:
     return _texte(valeur)
 
 
-def _lettres_chiffres(valeur: str) -> str:
+def _letters_digits(valeur: str) -> str:
     """Forme d'un texte compare : lettres et chiffres seuls, sans accents."""
     return "".join(c for c in _texte(valeur) if c.isalnum())
 
 
-def normaliser(valeur: Optional[str], value_type: Optional[str]) -> Any:
+def normalize_value(valeur: Optional[str], value_type: Optional[str]) -> Any:
     """Forme comparable d'une valeur ; None pour une valeur absente ou vide."""
     if valeur is None or not str(valeur).strip():
         return None
@@ -104,18 +104,18 @@ def normaliser(valeur: Optional[str], value_type: Optional[str]) -> Any:
     if type_ in (FieldValueType.NUMBER.value, FieldValueType.BOOLEAN.value):
         parsee = parse_field_value(brut, type_)
         return parsee if parsee != brut else _texte(brut)
-    return _lettres_chiffres(brut) or None
+    return _letters_digits(brut) or None
 
 
-def _egaux(attendu: Any, lu: Any) -> bool:
+def _equal(attendu: Any, lu: Any) -> bool:
     if isinstance(attendu, bool) or isinstance(lu, bool):
-        return attendu == lu
+        return bool(attendu == lu)
     if isinstance(attendu, (int, float)) and isinstance(lu, (int, float)):
         return abs(float(attendu) - float(lu)) <= _TOLERANCE
     return bool(attendu == lu)
 
 
-def distance_edition(a: str, b: str) -> int:
+def levenshtein_distance(a: str, b: str) -> int:
     """Distance de Levenshtein, en O(len(a) * len(b)) — des valeurs de champ."""
     if len(a) < len(b):
         a, b = b, a
@@ -130,7 +130,7 @@ def distance_edition(a: str, b: str) -> int:
     return precedente[-1]
 
 
-def categorie(attendu: str, lu: str) -> ComparisonDiffKind:
+def category(attendu: str, lu: str) -> ComparisonDiffKind:
     """Nature d'un ecart WRONG, publiable meme pour un champ sensible."""
     if attendu.lower() == lu.lower():
         return ComparisonDiffKind.CASE
@@ -149,12 +149,12 @@ def categorie(attendu: str, lu: str) -> ComparisonDiffKind:
     return ComparisonDiffKind.TOTAL
 
 
-def comparer(
+def compare_values(
     attendu: Optional[str], lu: Optional[str], value_type: Optional[str]
 ) -> Optional[Ecart]:
     """L'ecart entre la verite et la lecture, ou None si elles concordent."""
-    forme_attendue = normaliser(attendu, value_type)
-    forme_lue = normaliser(lu, value_type)
+    forme_attendue = normalize_value(attendu, value_type)
+    forme_lue = normalize_value(lu, value_type)
     if (value_type or "").upper() == FieldValueType.BOOLEAN.value and {
         forme_attendue,
         forme_lue,
@@ -165,20 +165,20 @@ def comparer(
         return None
     if forme_attendue is not None and forme_lue is None:
         return Ecart(ComparisonVerdict.MISSING, None, attendu, None, None)
-    if forme_attendue is not None and _egaux(forme_attendue, forme_lue):
+    if forme_attendue is not None and _equal(forme_attendue, forme_lue):
         return None
     texte_attendu = str(attendu or "").strip()
     texte_lu = str(lu or "").strip()
     return Ecart(
         verdict=ComparisonVerdict.WRONG,
-        diff_kind=categorie(texte_attendu, texte_lu) if texte_attendu else ComparisonDiffKind.TOTAL,
+        diff_kind=category(texte_attendu, texte_lu) if texte_attendu else ComparisonDiffKind.TOTAL,
         attendu=attendu,
         lu=lu,
-        edit_distance=distance_edition(_texte(texte_attendu), _texte(texte_lu)),
+        edit_distance=levenshtein_distance(_texte(texte_attendu), _texte(texte_lu)),
     )
 
 
-def empreinte(valeur: Optional[str], cle: str) -> Optional[str]:
+def fingerprint(valeur: Optional[str], cle: str) -> Optional[str]:
     """HMAC-SHA256 de la valeur lue, normalisee : deux lectures identiques d'un
     meme IBAN donnent la meme empreinte, sans que l'IBAN soit stocke."""
     if valeur is None or not cle:

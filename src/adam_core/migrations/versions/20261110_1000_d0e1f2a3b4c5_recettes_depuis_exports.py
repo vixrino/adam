@@ -9,21 +9,19 @@ figee, c'est en creer la version suivante, sous le meme nom.
 - test_recipe : dataset_export_id, tout_l_export, version, recette_racine_id ;
   l'unicite (dataset_id, name) devient (dataset_id, name, version).
 
-Le schema Postgres est nomme explicitement, celui des modeles
-(Base.metadata.schema : « nota » dans nota, aucun dans adam) : la migration ne
-depend pas d'un search_path que env.py poserait ou non.
+
 """
 
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
+import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 from adam_core.db.base import Base
 
 revision: str = "d0e1f2a3b4c5"
-down_revision: Union[str, None] = "c9d0e1f2a3b4"
+down_revision: Union[str, None] = "ab2743943078"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

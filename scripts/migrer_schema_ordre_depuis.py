@@ -113,22 +113,22 @@ async def migrer(appliquer: bool) -> None:
                 )
                 nouvelles: Dict[str, Any] = {}
                 for cle in statuts:
-                    cible = attendus[(_SECTION, None, cle)]
+                    target_of = attendus[(_SECTION, None, cle)]
                     spec = champs.get((_SECTION, None, cle))
                     if spec is None:
                         spec = FieldSpec(
                             schema_id=schema_id,
-                            page=cible["page"],
+                            page=target_of["page"],
                             section_id=_SECTION,
                             section_label=ancienne.section_label,
                             group_id=None,
                             field_key=cle,
-                            display_label=cible["display_label"],
-                            description=cible["description"],
-                            value_type=cible["value_type"],
+                            display_label=target_of["display_label"],
+                            description=target_of["description"],
+                            value_type=target_of["value_type"],
                             required=False,
                             sensitive=False,
-                            display_order=cible["display_order"],
+                            display_order=target_of["display_order"],
                         )
                         db.add(spec)
                         compte["champs de schema crees"] += 1
@@ -163,15 +163,15 @@ async def migrer(appliquer: bool) -> None:
                 .all()
             )
             for spec in actuels:
-                cible = attendus.get((spec.section_id, spec.group_id, spec.field_key))
-                if cible is None:
+                target_of = attendus.get((spec.section_id, spec.group_id, spec.field_key))
+                if target_of is None:
                     compte["champs hors cerfa_v2.py (laisses tels quels)"] += 1
                     continue
                 avant = (spec.display_order, spec.page, spec.display_label, spec.description)
-                spec.display_order = cible["display_order"]
-                spec.page = cible["page"]
-                spec.display_label = cible["display_label"]
-                spec.description = cible["description"]
+                spec.display_order = target_of["display_order"]
+                spec.page = target_of["page"]
+                spec.display_label = target_of["display_label"]
+                spec.description = target_of["description"]
                 if avant != (spec.display_order, spec.page, spec.display_label, spec.description):
                     compte["champs remis en ordre ou renommes"] += 1
             compte["schemas"] += 1

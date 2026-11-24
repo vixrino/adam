@@ -18,17 +18,17 @@ from fastapi.testclient import TestClient
 from adam_api.dependencies.auth import UserCaller, require_user
 from adam_api.dependencies.db import get_db
 from adam_api.routers import annuaire as annuaire_module
-from adam_api.routers.annuaire import get_annuaire, get_limiteur, router
+from adam_api.routers.annuaire import get_annuaire, get_rate_limiter, router
 from adam_api.services.annuaire import (
     AnnuaireErreur,
     AnnuaireLdap,
     LimiteurRequetes,
     PersonneAnnuaire,
-    dans_ou_exclue,
-    echapper,
-    filtre_matricule,
-    filtre_recherche,
-    personne_depuis_attributs,
+    in_or_excluded,
+    escape_ldap,
+    employee_id_filter,
+    search_filter,
+    person_from_attributes,
 )
 
 DANIEL = PersonneAnnuaire(
@@ -47,64 +47,64 @@ DANIEL = PersonneAnnuaire(
 class TestFiltres:
     def test_une_saisie_ne_peut_pas_modifier_le_filtre(self) -> None:
         """`*)(objectClass=*` cherche ces caracteres, il ne rouvre pas le filtre."""
-        filtre = filtre_recherche("*)(objectClass=*")
+        filtre = search_filter("*)(objectClass=*")
         assert "\\2a\\29\\28objectClass=\\2a" in filtre
-        assert echapper("a*b(c)\\") == r"a\2ab\28c\29\5c"
+        assert escape_ldap("a*b(c)\\") == r"a\2ab\28c\29\5c"
 
     def test_les_comptes_desactives_sont_exclus(self) -> None:
-        for filtre in (filtre_recherche("dan"), filtre_matricule("I21080M")):
+        for filtre in (search_filter("dan"), employee_id_filter("I21080M")):
             assert "(!(userAccountControl:1.2.840.113556.1.4.803:=2))" in filtre
             assert "(objectCategory=person)" in filtre
 
     def test_chaque_mot_doit_correspondre(self) -> None:
-        filtre = filtre_recherche("Daniel Fer")
+        filtre = search_filter("Daniel Fer")
         assert filtre.count("(|(sAMAccountName=") == 2
         assert "(sn=Fer*)" in filtre and "(displayName=*Daniel*)" in filtre
 
     def test_matricule_exact(self) -> None:
-        assert "(sAMAccountName=I21080M)" in filtre_matricule(" I21080M ")
+        assert "(sAMAccountName=I21080M)" in employee_id_filter(" I21080M ")
 
     def test_personne_depuis_attributs(self) -> None:
-        personne = personne_depuis_attributs(
+        personne = person_from_attributes(
             {
                 "sAMAccountName": "i21080m",
                 "givenName": "Daniel",
                 "sn": "Ferreira",
                 "mail": ["daniel@exemple.fr"],
                 "department": "SOLAPS",
-                "displayName": [],
+                "displayName": "FERREIRA Daniel (EXT)",
             }
         )
         assert personne is not None
-        assert personne.nom_affiche == "Daniel Ferreira"
+        assert personne.nom_affiche == "Daniel FERREIRA"
         assert personne.email == "daniel@exemple.fr"
-        assert personne_depuis_attributs({"sn": "sans matricule"}) is None
-
+        assert person_from_attributes({"sn": "sans matricule"}) is None
 
 class TestExclusions:
     def test_prefixe_exclu_dans_le_filtre(self) -> None:
-        for filtre in (filtre_recherche("dan", ["OT2"]), filtre_matricule("I21080M", ["OT2"])):
+        for filtre in (search_filter("dan", ["OT2"]), employee_id_filter("I21080M", ["OT2"])):
             assert "(!(sAMAccountName=OT2*))" in filtre
-        assert "(!(" + "sAMAccountName" not in filtre_recherche("dan").replace(
+        assert "(!(" + "sAMAccountName" not in search_filter("dan").replace(
             "(!(userAccountControl", ""
         )
 
     def test_suffixe_exclu_dans_le_filtre(self) -> None:
         for filtre in (
-            filtre_recherche("dan", suffixes_exclus=["OT2"]),
-            filtre_matricule("I21080M", suffixes_exclus=["OT2"]),
+            search_filter("dan", suffixes_exclus=["OT2"]),
+            employee_id_filter("I21080M", suffixes_exclus=["OT2"]),
         ):
             assert "(!(sAMAccountName=*OT2))" in filtre
 
     def test_prefixe_echappe(self) -> None:
-        assert "(!(sAMAccountName=a\\2a*))" in filtre_recherche("dan", ["a*"])
+        assert "(!(sAMAccountName=a\\2a*))" in search_filter("dan", ["a*"])
 
     def test_unite_d_organisation_exclue(self) -> None:
         dn = "CN=Admin,OU=OT2,OU=T2,DC=ADBDFINT,DC=PRIVATE"
-        assert dans_ou_exclue(dn, ["ot2"]) is True
-        assert dans_ou_exclue("CN=x,OU=OT2BIS,OU=T2,DC=A", ["OT2"]) is False
-        assert dans_ou_exclue("CN=x,OU=T2,DC=A", ["OT2"]) is False
-        assert dans_ou_exclue(dn, []) is False
+        assert in_or_excluded(dn, ["ot2"]) is True
+        assert in_or_excluded("CN=x,OU=OT2BIS,OU=T2,DC=A", ["OT2"]) is False
+        assert in_or_excluded("CN=x,OU=T2,DC=A", ["OT2"]) is False
+        assert in_or_excluded(dn, []) is False
+
 
 
 class TestLimiteur:
@@ -208,32 +208,34 @@ class TestAnnuaireLdapMock:
 
     @pytest.mark.asyncio
     async def test_recherche_et_lecture_par_matricule(self, annuaire: AnnuaireLdap) -> None:
-        trouvees = await annuaire.rechercher("Ferreira")
+        trouvees = await annuaire.search_people("Ferreira")
         assert [p.matricule for p in trouvees] == ["I21080M"]
         assert trouvees[0].departement == "SOLAPS"
-        personne = await annuaire.trouver("I21080M")
+        personne = await annuaire.find_person("I21080M")
         assert personne is not None and personne.email == "daniel@exemple.fr"
+
 
     @pytest.mark.asyncio
     async def test_comptes_ot2_exclus(self, annuaire: AnnuaireLdap) -> None:
         """Le compte OT2 est sous la base : sans exclusion, il remonte."""
-        assert "OT2I21080M" in [p.matricule for p in await annuaire.rechercher("Dan")]
+        assert "OT2I21080M" in [p.matricule for p in await annuaire.search_people("Dan")]
         annuaire.ou_exclues = ["OT2"]
-        assert "OT2I21080M" not in [p.matricule for p in await annuaire.rechercher("Dan")]
+        assert "OT2I21080M" not in [p.matricule for p in await annuaire.search_people("Dan")]
         annuaire.ou_exclues = []
         annuaire.prefixes_exclus = ["OT2"]
-        assert "OT2I21080M" not in [p.matricule for p in await annuaire.rechercher("Dan")]
-        assert await annuaire.trouver("OT2I21080M") is None
+        assert "OT2I21080M" not in [p.matricule for p in await annuaire.search_people("Dan")]
+        assert await annuaire.find_person("OT2I21080M") is None
         # Matricule qui FINIT par OT2 : exclu par suffixe.
         annuaire.prefixes_exclus = []
-        assert "I21080MOT2" in [p.matricule for p in await annuaire.rechercher("Dan")]
+        assert "I21080MOT2" in [p.matricule for p in await annuaire.search_people("Dan")]
         annuaire.suffixes_exclus = ["OT2"]
-        assert "I21080MOT2" not in [p.matricule for p in await annuaire.rechercher("Dan")]
-        assert await annuaire.trouver("I21080MOT2") is None
+        assert "I21080MOT2" not in [p.matricule for p in await annuaire.search_people("Dan")]
+        assert await annuaire.find_person("I21080MOT2") is None
+
 
     @pytest.mark.asyncio
     async def test_matricule_inconnu_rend_none(self, annuaire: AnnuaireLdap) -> None:
-        assert await annuaire.trouver("X99999") is None
+        assert await annuaire.find_person("X99999") is None
 
     # L'exclusion des comptes desactives n'est pas testee ici : le serveur MOCK
     # de ldap3 n'evalue pas la regle bit a bit propre a l'AD
@@ -250,13 +252,13 @@ class _AnnuaireFactice:
         self.erreur = erreur
         self.recherches: List[str] = []
 
-    async def rechercher(self, texte: str) -> List[PersonneAnnuaire]:
+    async def search_people(self, texte: str) -> List[PersonneAnnuaire]:
         if self.erreur:
             raise AnnuaireErreur("injoignable")
         self.recherches.append(texte)
         return self.personnes
 
-    async def trouver(self, matricule: str) -> Optional[PersonneAnnuaire]:
+    async def find_person(self, matricule: str) -> Optional[PersonneAnnuaire]:
         return next((p for p in self.personnes if p.matricule == matricule.upper()), None)
 
 
@@ -281,7 +283,7 @@ def _client(
     app.dependency_overrides[require_user] = lambda: caller
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_annuaire] = lambda: annuaire
-    app.dependency_overrides[get_limiteur] = lambda: limiteur or LimiteurRequetes(0)
+    app.dependency_overrides[get_rate_limiter] = lambda: limiteur or LimiteurRequetes(0)
     return TestClient(app)
 
 
@@ -415,16 +417,56 @@ class TestAffectation:
         )
         assert r.status_code == 404
 
-    def test_compte_sans_mail_422(self) -> None:
+    def test_compte_sans_mail_recoit_une_adresse_generee(self) -> None:
         sans_mail = PersonneAnnuaire("V1", "Sans Mail", None, None, None, None)
         db = _db(_resultat(scalar=None))
+
+        def add(objet: Any) -> None:
+            if objet.__class__.__name__ == "User":
+                objet.id = 99
+
+        db.add = MagicMock(side_effect=add)
         r = _client(caller=ADMIN, db=db, annuaire=_AnnuaireFactice([sans_mail])).post(
             "/annuaire/affectations", json={"project_id": 7, "matricule": "V1"}
         )
-        assert r.status_code == 422
+        assert r.status_code == 201, r.text
+        assert db.add.call_args_list[0].args[0].email == "V1@banque-france.fr"
 
-    def test_annuaire_desactive_503(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_annuaire_desactive_503(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(annuaire_module.settings, "ad_enabled", False)
+        monkeypatch.setattr(
+            annuaire_module.settings_store, "load", AsyncMock(return_value={"ad_enabled": False})
+        )
         with pytest.raises(Exception) as exc:
-            get_annuaire()
+            await get_annuaire(AsyncMock())
         assert getattr(exc.value, "status_code", None) == 503
+
+    async def test_annuaire_desactive_par_defaut_sans_la_cle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(annuaire_module.settings, "ad_enabled", False)
+        monkeypatch.setattr(annuaire_module.settings_store, "load", AsyncMock(return_value={}))
+        with pytest.raises(Exception) as exc:
+            await get_annuaire(AsyncMock())
+        assert getattr(exc.value, "status_code", None) == 503
+
+    @pytest.mark.parametrize(
+        "env, base, attendu",
+        [(False, False, False), (False, True, True), (True, False, True), (True, True, True)],
+    )
+    async def test_annuaire_actif_si_env_ou_app_setting(
+        self, monkeypatch: pytest.MonkeyPatch, env: bool, base: bool, attendu: bool
+    ) -> None:
+        monkeypatch.setattr(annuaire_module.settings, "ad_enabled", env)
+        monkeypatch.setattr(
+            annuaire_module.settings_store, "load", AsyncMock(return_value={"ad_enabled": base})
+        )
+        vus: List[bool] = []
+
+        def annuaire(_settings: Any, enabled: bool) -> object:
+            vus.append(enabled)
+            return object()
+
+        monkeypatch.setattr(annuaire_module, "directory_from_settings", annuaire)
+        await get_annuaire(AsyncMock())
+        assert vus == [attendu]

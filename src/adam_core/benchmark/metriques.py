@@ -56,9 +56,9 @@ Garde-fous
 
 from __future__ import annotations
 
-import math
 from collections import defaultdict
 from dataclasses import dataclass
+import math
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 #: En dessous, un taux est publie mais marque « effectif insuffisant ».
@@ -100,21 +100,21 @@ def wilson(succes: int, total: int, z: float = 1.96) -> Optional[Tuple[float, fl
     return (round(max(0.0, centre - marge), 4), round(min(1.0, centre + marge), 4))
 
 
-def _sommer(lignes: Iterable[Mapping[str, Any]]) -> Dict[str, int]:
-    c = {nom: 0 for nom in _COMPTES}
+def _sum_up(lignes: Iterable[Mapping[str, Any]]) -> Dict[str, int]:
+    c = dict.fromkeys(_COMPTES, 0)
     for ligne in lignes:
         for nom in _COMPTES:
             c[nom] += int(ligne.get(nom) or 0)
     return c
 
 
-def bloc(lignes: Iterable[Mapping[str, Any]], fourchettes: bool = True) -> Dict[str, Any]:
+def block(lignes: Iterable[Mapping[str, Any]], fourchettes: bool = True) -> Dict[str, Any]:
     """Indicateurs d'un ensemble de champs (global, une section, un type...).
 
     ``fourchettes`` faux pour un champ seul : 618 intervalles de confiance sur
     quelques valeurs chacun alourdiraient la reponse sans rien dire.
     """
-    c = _sommer(lignes)
+    c = _sum_up(lignes)
     vp, fp, fn = c["vp"], c["fp"], c["fn"]
     fausses = c["substitutions"]
     inventees = fp - fausses
@@ -130,13 +130,11 @@ def bloc(lignes: Iterable[Mapping[str, Any]], fourchettes: bool = True) -> Dict[
         "manquees": fn - fausses,
         "inventees": inventees,
         "vides": c["vn"],
-        "score": _arrondi(_ratio(2 * vp, 2 * vp + fp + fn)),
-        "taux_lectures_justes": _arrondi(_ratio(vp, vp + fp)),
-        "taux_valeurs_trouvees": _arrondi(_ratio(vp, vp + fn)),
-        "taux_erreur": _arrondi(_ratio(valeurs - vp, valeurs)),
-        "taux_erreur_caracteres": _arrondi(
-            _ratio(c["somme_distance"], c["somme_longueur_attendue"])
-        ),
+        "score": _round(_ratio(2 * vp, 2 * vp + fp + fn)),
+        "taux_lectures_justes": _round(_ratio(vp, vp + fp)),
+        "taux_valeurs_trouvees": _round(_ratio(vp, vp + fn)),
+        "taux_erreur": _round(_ratio(valeurs - vp, valeurs)),
+        "taux_erreur_caracteres": _round(_ratio(c["somme_distance"], c["somme_longueur_attendue"])),
         "assez_de_donnees": valeurs >= EFFECTIF_MINIMAL,
     }
     if fourchettes:
@@ -145,27 +143,27 @@ def bloc(lignes: Iterable[Mapping[str, Any]], fourchettes: bool = True) -> Dict[
     return resultat
 
 
-def _arrondi(valeur: Optional[float]) -> Optional[float]:
+def _round(valeur: Optional[float]) -> Optional[float]:
     return round(valeur, 6) if valeur is not None else None
 
 
-def _criticite(ligne: Mapping[str, Any]) -> str:
+def _criticality(ligne: Mapping[str, Any]) -> str:
     """Critique : donnee personnelle ou montant, dont l'erreur coute le plus."""
     if ligne.get("sensitive") or str(ligne.get("value_type") or "").upper() == "NUMBER":
         return "critique"
     return "standard"
 
 
-def _par(
+def _by(
     lignes: Sequence[Mapping[str, Any]], cle: Callable[[Mapping[str, Any]], Any]
 ) -> Dict[str, Dict[str, Any]]:
     groupes: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
     for ligne in lignes:
         groupes[str(cle(ligne))].append(ligne)
-    return {nom: bloc(groupe) for nom, groupe in sorted(groupes.items())}
+    return {nom: block(groupe) for nom, groupe in sorted(groupes.items())}
 
 
-def _avec_libelles(
+def _with_labels(
     sections: Dict[str, Dict[str, Any]], lignes: Sequence[Mapping[str, Any]]
 ) -> Dict[str, Dict[str, Any]]:
     """Ajoute a chaque section son libelle du schema (« Co-deposant »), sinon son id."""
@@ -179,26 +177,26 @@ def _avec_libelles(
     return sections
 
 
-def _exclu(field_key: str, exclus: Sequence[str]) -> bool:
+def _excluded(field_key: str, exclus: Sequence[str]) -> bool:
     return any(field_key.startswith(prefixe) for prefixe in exclus)
 
 
-def _seuil_du_champ(field_key: str, seuils: Mapping[str, float]) -> Optional[float]:
+def _field_threshold(field_key: str, seuils: Mapping[str, float]) -> Optional[float]:
     """Seuil le plus specifique : cle exacte, sinon le plus long prefixe."""
     candidats = [p for p in seuils if field_key == p or field_key.startswith(p)]
     return float(seuils[max(candidats, key=len)]) if candidats else None
 
 
-def _a_des_erreurs(champ: Mapping[str, Any]) -> bool:
+def _has_errors(champ: Mapping[str, Any]) -> bool:
     return bool(champ["fausses"] or champ["manquees"] or champ["inventees"])
 
 
-def detail_champ(champ: Mapping[str, Any]) -> Dict[str, Any]:
+def field_detail(champ: Mapping[str, Any]) -> Dict[str, Any]:
     """Reussite, documents en erreur et echec principal d'un champ."""
     erreurs = {nom: int(champ[compte]) for nom, compte in TYPES_ERREUR.items()}
     en_erreur = sum(erreurs.values())
     return {
-        "reussite": _arrondi(_ratio(int(champ["justes"]), int(champ["valeurs_jugees"]))),
+        "reussite": _round(_ratio(int(champ["justes"]), int(champ["valeurs_jugees"]))),
         "documents_en_erreur": en_erreur,
         # max garde le premier a egalite : l'ordre de TYPES_ERREUR decide.
         "echec_principal": max(erreurs, key=lambda nom: erreurs[nom]) if en_erreur else None,
@@ -225,7 +223,7 @@ class FiltresChamps:
     #: section_id.
     sections: Tuple[str, ...] = ()
 
-    def actifs(self) -> Dict[str, Any]:
+    def active(self) -> Dict[str, Any]:
         """Les filtres renseignes, pour les rappeler a l'ecran et dans le PDF."""
         tous = {
             "recherche": self.recherche or None,
@@ -256,7 +254,7 @@ class FiltresChamps:
         return True
 
 
-def calculer(
+def compute(
     lignes: Sequence[Mapping[str, Any]],
     execution: Mapping[str, Any],
     config: Optional[Mapping[str, Any]] = None,
@@ -280,9 +278,9 @@ def calculer(
     """
     config = config or {}
     exclus = list(config.get("champs_exclus") or [])
-    retenues = [ligne for ligne in lignes if not _exclu(str(ligne.get("field_key", "")), exclus)]
+    retenues = [ligne for ligne in lignes if not _excluded(str(ligne.get("field_key", "")), exclus)]
 
-    global_ = bloc(retenues)
+    global_ = block(retenues)
     par_champ = [
         {
             "champ": ligne.get("field_key"),
@@ -292,12 +290,12 @@ def calculer(
             "section_libelle": ligne.get("section_label") or ligne.get("section_id"),
             "type": ligne.get("value_type"),
             "sensible": bool(ligne.get("sensitive")),
-            **bloc([ligne], fourchettes=False),
+            **block([ligne], fourchettes=False),
         }
         for ligne in retenues
     ]
     for champ in par_champ:
-        champ.update(detail_champ(champ))
+        champ.update(field_detail(champ))
     # Les pires champs d'abord : c'est ce qu'on regarde. A reussite egale, celui
     # qui echoue sur le plus de documents.
     par_champ.sort(
@@ -309,12 +307,12 @@ def calculer(
         )
     )
     # Le verdict porte sur tous les champs, avant le filtre d'affichage.
-    par_categorie = _par(retenues, _criticite)
+    par_categorie = _by(retenues, _criticality)
     sensibles = [ligne for ligne in retenues if ligne.get("sensitive")]
     if sensibles:
-        par_categorie["sensible"] = bloc(sensibles)
+        par_categorie["sensible"] = block(sensibles)
     verdict = _verdict(global_, par_champ, config, par_categorie)
-    en_erreur = [champ for champ in par_champ if _a_des_erreurs(champ)]
+    en_erreur = [champ for champ in par_champ if _has_errors(champ)]
     filtres = filtres or FiltresChamps()
     affiches = [c for c in (par_champ if tous_les_champs else en_erreur) if filtres.garde(c)]
 
@@ -336,17 +334,17 @@ def calculer(
             "finished_at": execution.get("finished_at"),
         },
         "global": global_,
-        "par_type": _par(retenues, lambda ligne: ligne.get("value_type") or "?"),
-        "par_criticite": _par(retenues, _criticite),
-        "par_section": _avec_libelles(
-            _par(retenues, lambda ligne: ligne.get("section_id") or "?"), retenues
+        "par_type": _by(retenues, lambda ligne: ligne.get("value_type") or "?"),
+        "par_criticite": _by(retenues, _criticality),
+        "par_section": _with_labels(
+            _by(retenues, lambda ligne: ligne.get("section_id") or "?"), retenues
         ),
-        "par_page": _par(retenues, lambda ligne: ligne.get("page") or "?"),
+        "par_page": _by(retenues, lambda ligne: ligne.get("page") or "?"),
         "par_champ": affiches,
         "champs_sans_erreur": len(par_champ) - len(en_erreur),
         # « 6 champs sur 40 verifies » : ce que par_champ montre, sur quoi.
         "selection": {
-            "filtres": filtres.actifs(),
+            "filtres": filtres.active(),
             "champs": len(affiches),
             "champs_verifies": len(par_champ),
         },
@@ -359,23 +357,21 @@ def calculer(
             "champs_verifies": verifies,
             # Champs regardes par un humain, sur le total : sous 1, une partie
             # de la verite manque, et les taux ne valent que pour elle.
-            "part_verifiee": _arrondi(_ratio(verifies, perimetre)),
+            "part_verifiee": _round(_ratio(verifies, perimetre)),
             "champs_exclus_par_config": len(lignes) - len(retenues),
             "trop_petit": documents < DOCUMENTS_MINIMUM,
         },
         "cout": {
             "appels_ocr": execution.get("ocr_calls_made"),
-            "appels_par_document": _arrondi(
+            "appels_par_document": _round(
                 _ratio(int(execution.get("ocr_calls_made") or 0), documents)
             ),
-            "pages_par_document": _arrondi(
+            "pages_par_document": _round(
                 _ratio(int(execution.get("pages_processed") or 0), documents)
             ),
         },
         "verdict": verdict,
-        "avertissements": _avertissements(
-            global_, documents, verifies, perimetre, execution, retenues
-        ),
+        "avertissements": _warnings(global_, documents, verifies, perimetre, execution, retenues),
     }
 
 
@@ -396,15 +392,15 @@ def _verdict(
     seuils = config.get("seuils_par_champ") or {}
     seuils_categorie = config.get("seuils_par_categorie") or {}
     categories_en_echec = []
-    for categorie, seuil_categorie in sorted(seuils_categorie.items()):
-        taux_categorie = (categories or {}).get(categorie, {}).get("taux_erreur")
+    for category, seuil_categorie in sorted(seuils_categorie.items()):
+        taux_categorie = (categories or {}).get(category, {}).get("taux_erreur")
         if taux_categorie is not None and taux_categorie > float(seuil_categorie):
             categories_en_echec.append(
-                {"categorie": categorie, "taux_erreur": taux_categorie, "seuil": seuil_categorie}
+                {"categorie": category, "taux_erreur": taux_categorie, "seuil": seuil_categorie}
             )
     champs_en_echec = []
     for champ in par_champ:
-        seuil = _seuil_du_champ(str(champ["champ"]), seuils)
+        seuil = _field_threshold(str(champ["champ"]), seuils)
         taux = champ["taux_erreur"]
         if seuil is not None and taux is not None and taux > seuil:
             champs_en_echec.append({"champ": champ["champ"], "taux_erreur": taux, "seuil": seuil})
@@ -425,7 +421,7 @@ def _verdict(
     }
 
 
-def _avertissements(
+def _warnings(
     global_: Mapping[str, Any],
     documents: int,
     verifies: int,
@@ -468,7 +464,7 @@ def _points(x: Optional[float], y: Optional[float]) -> Optional[float]:
     return round((y - x) * 100, 1) if x is not None and y is not None else None
 
 
-def _raisons_perimetre(
+def _scope_reasons(
     ea: Mapping[str, Any], eb: Mapping[str, Any], ra: Mapping[str, Any], rb: Mapping[str, Any]
 ) -> List[str]:
     """Ce qui empeche de dire que a et b ont lu les memes documents."""
@@ -486,7 +482,7 @@ def _raisons_perimetre(
     return []
 
 
-def _raisons_config(ra: Mapping[str, Any], rb: Mapping[str, Any]) -> List[str]:
+def _config_reasons(ra: Mapping[str, Any], rb: Mapping[str, Any]) -> List[str]:
     """Ce qui, dans la config des recettes, change les indicateurs eux-memes.
 
     calculer() retire les champs exclus avant tout calcul : deux recettes qui
@@ -498,7 +494,7 @@ def _raisons_config(ra: Mapping[str, Any], rb: Mapping[str, Any]) -> List[str]:
     return []
 
 
-def _moteurs(ea: Mapping[str, Any], eb: Mapping[str, Any]) -> Dict[str, Any]:
+def _engines(ea: Mapping[str, Any], eb: Mapping[str, Any]) -> Dict[str, Any]:
     """Le moteur de chaque cote et ce qui change : ce que la comparaison mesure."""
     changements = [
         libelle
@@ -513,7 +509,7 @@ def _moteurs(ea: Mapping[str, Any], eb: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
-def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
+def compare_metrics(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
     """Compare deux resultats de calculer(tous_les_champs=True) : b par rapport a a.
 
     a est la reference (colonne « Ref. » de la page), b le passage analyse.
@@ -539,7 +535,7 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
     ra, rb = a.get("recette") or {}, b.get("recette") or {}
     ea = {**a["execution"], "documents": a["echantillon"]["documents"], "recette": ra}
     eb = {**b["execution"], "documents": b["echantillon"]["documents"], "recette": rb}
-    raisons = _raisons_perimetre(ea, eb, ra, rb) + _raisons_config(ra, rb)
+    raisons = _scope_reasons(ea, eb, ra, rb) + _config_reasons(ra, rb)
     raisons += [
         f"{libelle} differente"
         for cle, libelle in (
@@ -616,7 +612,7 @@ def comparer(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
         "b": eb,
         "comparable": not raisons,
         "raisons": raisons,
-        "moteur": _moteurs(ea, eb),
+        "moteur": _engines(ea, eb),
         "global": {
             nom: {
                 "a": a["global"][nom],

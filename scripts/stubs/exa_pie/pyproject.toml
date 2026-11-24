@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exa-pie"
+version = "1.4.0"
+description = "Sandbox stub of the internal exa-pie connector. Never ships to the official repo."
+dependencies = ["starlette"]
+
+[tool.setuptools.packages.find]
+include = ["exa_pie*"]

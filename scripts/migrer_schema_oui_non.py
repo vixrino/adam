@@ -28,7 +28,7 @@ Sans --appliquer, rien n'est ecrit : le script dit ce qu'il ferait. Tout se
 fait dans une transaction ; une erreur n'ecrit rien. Rejoue, il ne trouve
 plus de paire et ne fait rien.
 
-Le paquet *_core est trouve sous src/ : le script tourne tel quel dans adam et
+Le paquet *_core est trouve sous src/ : le script tourne tel quel
 dans nota, depuis la racine du depot (.env). cerfa_v2.py doit etre a jour.
 
 Usage :

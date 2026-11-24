@@ -1,4 +1,5 @@
 """Tests unitaires des schémas Pydantic — aucune base de données requise."""
+
 from datetime import datetime, timezone
 
 import pytest
@@ -258,11 +259,10 @@ class TestDocumentOut:
 
 class TestDocumentFieldInPageOut:
     def test_optional_fields(self):
-        f = DocumentFieldInPageOut(id=1, status="PENDING", consensus_reached=False)
+        f = DocumentFieldInPageOut(id=1, status="PENDING")
         assert f.field_key is None
         assert f.ocr_value is None
         assert f.resolved_value is None
-        assert f.consensus_reached is False
 
     def test_full(self):
         f = DocumentFieldInPageOut(
@@ -271,10 +271,8 @@ class TestDocumentFieldInPageOut:
             ocr_value="Martin",
             resolved_value="MARTIN",
             status="CORRECTED",
-            consensus_reached=True,
         )
         assert f.resolved_value == "MARTIN"
-        assert f.consensus_reached is True
 
 
 class TestDocumentSectionOut:
@@ -283,7 +281,7 @@ class TestDocumentSectionOut:
         assert s.fields == []
 
     def test_with_fields(self):
-        field = DocumentFieldInPageOut(id=1, status="PENDING", consensus_reached=False)
+        field = DocumentFieldInPageOut(id=1, status="PENDING")
         s = DocumentSectionOut(id="s1", fields=[field])
         assert len(s.fields) == 1
 
@@ -309,7 +307,7 @@ class TestDocumentFullOut:
         assert d.file is None
 
     def test_with_nested_pages(self):
-        field = DocumentFieldInPageOut(id=1, status="PENDING", consensus_reached=False)
+        field = DocumentFieldInPageOut(id=1, status="PENDING")
         section = DocumentSectionOut(id="s1", fields=[field])
         page = DocumentPageOut(page_number=1, sections=[section])
         d = DocumentFullOut(id=1, file_name="x.pdf", status="RECEIVED", pages=[page])
@@ -396,11 +394,13 @@ class TestDocumentFieldOut:
 
 class TestDocumentFieldPatchOut:
     def test_valid(self):
-        p = DocumentFieldPatchOut(id=1, status="CORRECTED", resolved_value="OK")
+        p = DocumentFieldPatchOut(
+            id=1, status="CORRECTED", resolved_value="OK", consensus_reached=True
+        )
         assert p.resolved_value == "OK"
 
     def test_no_value(self):
-        p = DocumentFieldPatchOut(id=2, status="PENDING")
+        p = DocumentFieldPatchOut(id=2, status="PENDING", consensus_reached=False)
         assert p.resolved_value is None
 
 
@@ -516,7 +516,9 @@ class TestIngestionOut:
         items = [
             FileIngestionItemOut(file_name="a.pdf", status="created", document_id=1, file_id=1),
             FileIngestionItemOut(file_name="b.pdf", status="rejected", reason="non-PDF"),
-            FileIngestionItemOut(file_name="c.pdf", status="already_exists", file_id=2),
+            FileIngestionItemOut(
+                file_name="c.pdf", status="already_exists", file_id=2, file_reused=True
+            ),
         ]
         o = IngestionOut(
             dataset_id=1, received=3, created=1, already_exists=1, rejected=1, results=items

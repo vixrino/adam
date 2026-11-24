@@ -12,8 +12,8 @@ explicitement, comme d0e1f2a3b4c5.
 
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
+import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 from adam_core.db.base import Base
@@ -33,7 +33,9 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
     op.add_column(
-        "test_execution", sa.Column("verite_hash", sa.String(), nullable=True), schema=SCHEMA
+        "test_execution",
+        sa.Column("verite_hash", sa.String(), nullable=True),
+        schema=SCHEMA,
     )
 
 

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from adam_api.dependencies.db import get_db
+from adam_core.db import settings_store
 from adam_core.enums.ocr import StorageMode
 from adam_core.enums.status import DocumentFieldStatus, DocumentStatus
 from adam_core.models import Dataset, Document, DocumentField, FieldSpec, OcrResult
@@ -20,6 +21,10 @@ from adam_core.utils.exceptions import raise_not_found, raise_unprocessable
 from adam_core.utils.logging import get_logger
 
 router = APIRouter(prefix="/ocr-results", tags=["OCR"])
+# L'etat du moteur est lu par l'IHM (popin d'upload) : monte avec get_caller, alors que le
+# reste de /ocr-results est reserve aux services. A inclure AVANT `router`, dont
+# /{ocr_result_id} lirait « status » comme un identifiant.
+status_router = APIRouter(prefix="/ocr-results", tags=["OCR"])
 logger = get_logger(__name__)
 
 
@@ -53,6 +58,26 @@ async def list_ocr_results(
         )
         for r in rows
     ]
+
+
+class OcrStatusOut(BaseModel):
+    enabled: bool = Field(description="Cle ocr_enabled de app_setting (vrai par defaut).")
+    reachable: Optional[bool] = Field(
+        default=None,
+        description="Dernier ping du worker de pre-alimentation ; null tant qu'il n'a pas sonde.",
+    )
+
+
+@status_router.get("/status", response_model=OcrStatusOut)
+async def get_ocr_status(db: AsyncSession = Depends(get_db)) -> OcrStatusOut:
+    """Etat du moteur OCR, pour que l'IHM propose un mode a l'upload quand il est coupe."""
+    store = await settings_store.load(db)
+    last_ping = store.get(settings_store.OCR_STATUS_KEY)
+    reachable = last_ping.get("reachable") if isinstance(last_ping, dict) else None
+    return OcrStatusOut(
+        enabled=store.get("ocr_enabled", True) is not False,
+        reachable=reachable if isinstance(reachable, bool) else None,
+    )
 
 
 @router.get("/{ocr_result_id}", response_model=OcrResultDetailOut)
@@ -103,6 +128,8 @@ async def post_ocr_result(
         dataset_id=payload.dataset_id,
         storage_mode=payload.storage_mode,
         raw_json=payload.raw_json,
+        provider=dataset.ocr_provider,
+        model=dataset.ocr_model_id,
     )
     db.add(ocr)
     await db.flush()

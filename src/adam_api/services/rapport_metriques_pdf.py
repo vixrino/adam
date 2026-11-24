@@ -20,11 +20,11 @@ Un champ sensible ne montre jamais de valeur, meme si on lui en passait une.
 
 from __future__ import annotations
 
+from datetime import datetime
 import html
 import math
-import re
-from datetime import datetime
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 import pymupdf
@@ -70,11 +70,11 @@ class _Police:
         return self._font
 
     @property
-    def ascendant(self) -> float:
+    def ascent(self) -> float:
         """Hauteur au-dessus de la ligne de base, en fraction de la taille."""
         return float(self.font.ascender)
 
-    def glyphes(self, texte: str) -> str:
+    def glyphs(self, texte: str) -> str:
         """Identifiants des glyphes, en hexadecimal, pour l'operateur TJ."""
         return "".join(f"{self.font.has_glyph(ord(c)):04x}" for c in texte)
 
@@ -126,7 +126,7 @@ class _Police:
             # insert_htmlbox retire les espaces de tete : on les remet a la main.
             tete = len(texte) - len(corps)
             decalage = sum(simples[:tete])
-            lettres = _faconner(self, corps, taille)
+            lettres = _shape(self, corps, taille)
             if len(lettres) == len(corps) and all(
                 c == o or 0xE000 <= ord(c) <= 0xF8FF for (c, _), o in zip(lettres, corps)
             ):
@@ -158,7 +158,7 @@ def _archive(police: _Police) -> pymupdf.Archive:
     return archive
 
 
-def _faconner(police: _Police, texte: str, taille: float) -> List[Tuple[str, float]]:
+def _shape(police: _Police, texte: str, taille: float) -> List[Tuple[str, float]]:
     """(lettre, abscisse) de chaque lettre, telle que HarfBuzz la place."""
     document = pymupdf.open()
     try:
@@ -170,8 +170,8 @@ def _faconner(police: _Police, texte: str, taille: float) -> List[Tuple[str, flo
         page.insert_htmlbox(_BROUILLON, html.escape(texte), css=css, archive=_archive(police))
         return [
             (c["c"], float(c["origin"][0]))
-            for bloc in page.get_text("rawdict")["blocks"]
-            for ligne in bloc.get("lines", [])
+            for block in page.get_text("rawdict")["blocks"]
+            for ligne in block.get("lines", [])
             for span in ligne["spans"]
             for c in span["chars"]
         ]
@@ -316,7 +316,7 @@ class _Page:
         if police.nom not in self._polices:
             self.page.insert_font(fontname=police.nom, fontbuffer=police.font.buffer)
             self._polices.add(police.nom)
-        base = (y + round(police.ascendant * taille)) * _K
+        base = (y + round(police.ascent * taille)) * _K
         if not police.crenage or len(texte) < 2:
             morceaux: List[Tuple[float, str]] = [(0.0, texte)]
             largeur = police.largeur(texte, taille)
@@ -333,7 +333,7 @@ class _Page:
                 self.forme.text_cont += (
                     f"\nq\nBT\n1 0 0 1 {(x + debut) * _K:g} {hauteur - base:g} Tm\n"
                     f"/{police.nom} {taille * _K:g} Tf {teinte} rg "
-                    f"[<{police.glyphes(morceau)}>]TJ\nET\nQ\n"
+                    f"[<{police.glyphs(morceau)}>]TJ\nET\nQ\n"
                 )
         return largeur
 
@@ -349,7 +349,7 @@ class _Page:
         self.forme.commit()
 
 
-def _couper(texte: str, police: _Police, taille: float, largeur: float) -> List[str]:
+def _split(texte: str, police: _Police, taille: float, largeur: float) -> List[str]:
     """Coupe au caractere (word-break: break-all) pour tenir dans la largeur."""
     lignes: List[str] = []
     courante, occupee = "", 0.0
@@ -368,14 +368,14 @@ def _couper(texte: str, police: _Police, taille: float, largeur: float) -> List[
 _COUPURES_CLE = (re.compile(r"(?<=\.)|(?=\[)"), re.compile(r"(?<=_)"))
 
 
-def _couper_cle(
+def _split_key(
     texte: str, police: _Police, taille: float, largeur: float, niveau: int = 0
 ) -> List[str]:
     """Coupe une cle de champ a ses separateurs plutot qu'au milieu d'un mot :
     « autres_prets.date_octroi[autre_pret_1] » se coupe avant le « [ », plus en
     « ...[autre_pre » / « t_1] »."""
     if niveau >= len(_COUPURES_CLE):
-        return _couper(texte, police, taille, largeur)
+        return _split(texte, police, taille, largeur)
     lignes: List[str] = []
     courante = ""
     for morceau in (m for m in _COUPURES_CLE[niveau].split(texte) if m):
@@ -384,24 +384,24 @@ def _couper_cle(
             continue
         if courante:
             lignes.append(courante)
-        coupes = _couper_cle(morceau, police, taille, largeur, niveau + 1)
+        coupes = _split_key(morceau, police, taille, largeur, niveau + 1)
         lignes += coupes[:-1]
         courante = coupes[-1]
     return lignes + [courante] if courante or not lignes else lignes
 
 
-def _nombre(n: Any) -> str:
+def _number(n: Any) -> str:
     return f"{int(n or 0):,}".replace(",", " ")
 
 
-def _pourcent(taux: Optional[float]) -> str:
+def _percent(taux: Optional[float]) -> str:
     return "—" if taux is None else f"{round(taux * 100)} %"
 
 
 # -- Blocs de la premiere page ---------------------------------------------------------
 
 
-def _entete(
+def _header(
     p: _Page,
     metriques: Mapping[str, Any],
     dataset: Optional[str],
@@ -416,7 +416,7 @@ def _entete(
     )
     moteur = execution.get("ocr_provider") or execution.get("ocr_model_id") or "inconnu"
     lignes = (
-        f"Moteur : {moteur} · {_nombre(documents)} document{'s' if documents > 1 else ''}",
+        f"Moteur : {moteur} · {_number(documents)} document{'s' if documents > 1 else ''}",
         f"Édité le {edite_le.strftime('%d/%m/%Y')}",
     )
     for i, ligne in enumerate(lignes):
@@ -425,7 +425,7 @@ def _entete(
     return 105
 
 
-def _anneau(p: _Page, cx: float, cy: float, taux: Optional[float]) -> None:
+def _ring(p: _Page, cx: float, cy: float, taux: Optional[float]) -> None:
     """Anneau de 72 px : la part bleue part de midi, dans le sens horaire."""
     rayon, epaisseur = 31.5, 9.0
     centre = pymupdf.Point(cx * _K, cy * _K)
@@ -443,13 +443,13 @@ def _anneau(p: _Page, cx: float, cy: float, taux: Optional[float]) -> None:
         forme.finish(color=_BLEU, width=epaisseur * _K, closePath=False, lineCap=0)
 
 
-def _taux(p: _Page, y: float, metriques: Mapping[str, Any]) -> float:
+def _rate(p: _Page, y: float, metriques: Mapping[str, Any]) -> float:
     g = metriques["global"]
     p.rect(_GAUCHE, y, _DROITE - _GAUCHE, 98, fond=_FOND, bord=_BORD, rayon=5)
     # Le champ qui porte le nom du libelle : la page lit le meme.
     taux = g.get("taux_lectures_justes")
-    _anneau(p, 109, y + 49, taux)
-    texte = _pourcent(taux)
+    _ring(p, 109, y + 49, taux)
+    texte = _percent(taux)
     p.texte(109 - _GRAS.largeur(texte, 16) / 2, y + 39, texte, _GRAS, 16, _TEXTE)
     # Sur tout ce que le moteur a ecrit : justes, fausses et inventees.
     ecrites = int(g["justes"]) + int(g["fausses"]) + int(g["inventees"])
@@ -459,7 +459,7 @@ def _taux(p: _Page, y: float, metriques: Mapping[str, Any]) -> float:
         (
             ("Taux de lectures justes", _GRAS, _TEXTE),
             (
-                f" · {_nombre(g['justes'])} lus correctement sur {_nombre(ecrites)}",
+                f" · {_number(g['justes'])} lus correctement sur {_number(ecrites)}",
                 _REGULIER,
                 _TEXTE,
             ),
@@ -468,12 +468,12 @@ def _taux(p: _Page, y: float, metriques: Mapping[str, Any]) -> float:
     )
     marge = g.get("fourchette_lectures_justes")
     if marge:
-        ligne = f"Marge d'incertitude : {_pourcent(marge[0])} à {_pourcent(marge[1])}"
+        ligne = f"Marge d'incertitude : {_percent(marge[0])} à {_percent(marge[1])}"
         p.texte(161, y + 50, ligne, _REGULIER, 12, _GRIS)
     return y + 98
 
 
-def _libelle_filtres(selection: Mapping[str, Any], sections: Mapping[str, Any]) -> List[str]:
+def _filter_labels(selection: Mapping[str, Any], sections: Mapping[str, Any]) -> List[str]:
     f = selection.get("filtres") or {}
     seuil = f.get("reussite_inferieure_a")
     types = ", ".join(_TYPES.get(t.upper(), t) for t in f.get("types_champ", []))
@@ -481,7 +481,7 @@ def _libelle_filtres(selection: Mapping[str, Any], sections: Mapping[str, Any]) 
         _ETIQUETTES[t][0] if t in _ETIQUETTES else t for t in f.get("types_erreur", [])
     )
     morceaux = [
-        f"Réussite : < {_pourcent(seuil)}" if seuil is not None else "Réussite : toutes",
+        f"Réussite : < {_percent(seuil)}" if seuil is not None else "Réussite : toutes",
         f"Type de champ : {types or 'tous'}",
         f"Type d'erreur : {erreurs or 'tous'}",
     ]
@@ -498,11 +498,11 @@ def _filtres(p: _Page, y: float, metriques: Mapping[str, Any]) -> float:
     elle deborde (plusieurs sections choisies, par exemple)."""
     selection = metriques.get("selection") or {}
     champs = int(selection.get("champs", len(metriques.get("par_champ") or [])))
-    verifies = _nombre(selection.get("champs_verifies", 0))
+    verifies = _number(selection.get("champs_verifies", 0))
     # Chaque groupe reste sur une ligne ; « N champs sur M verifies » est le dernier.
     largeur_max = _DROITE - 15 - 71
     groupes: List[List[Tuple[str, _Police]]] = []
-    for filtre in _libelle_filtres(selection, metriques.get("par_section") or {}):
+    for filtre in _filter_labels(selection, metriques.get("par_section") or {}):
         texte = f"{filtre} · "
         if _REGULIER.largeur(texte, 11.5) <= largeur_max:
             groupes.append([(texte, _REGULIER)])
@@ -515,7 +515,7 @@ def _filtres(p: _Page, y: float, metriques: Mapping[str, Any]) -> float:
             groupes.append([(valeur + fin, _REGULIER)])
     groupes.append(
         [
-            (f"{_nombre(champs)} champ{'s' if champs > 1 else ''}", _GRAS),
+            (f"{_number(champs)} champ{'s' if champs > 1 else ''}", _GRAS),
             (f" sur {verifies} vérifiés", _REGULIER),
         ]
     )
@@ -539,7 +539,7 @@ def _filtres(p: _Page, y: float, metriques: Mapping[str, Any]) -> float:
 # -- Tableau des champs ----------------------------------------------------------------
 
 
-def _entete_tableau(p: _Page, y: float) -> float:
+def _table_header(p: _Page, y: float) -> float:
     haut = y + 0.5
     p.rect(_COLONNES[0], haut, _COLONNES[-1] - _COLONNES[0], _ENTETE_TABLEAU, fond=_BLEU)
     for i, titre in enumerate(("Champ", "Type", "Réussite", "Échec principal")):
@@ -549,19 +549,19 @@ def _entete_tableau(p: _Page, y: float) -> float:
     return haut + _ENTETE_TABLEAU
 
 
-def _lignes_cle(champ: Champ) -> List[str]:
+def _key_lines(champ: Champ) -> List[str]:
     largeur = _COLONNES[1] - _COLONNES[0] - 2 * _PADDING
-    return _couper_cle(str(champ["champ"]), _FIXE, 10.5, largeur)
+    return _split_key(str(champ["champ"]), _FIXE, 10.5, largeur)
 
 
-def _hauteur_ligne(champ: Champ) -> float:
+def _row_height(champ: Champ) -> float:
     """41 px pour une cle sur une ligne : 7 + 14 (cle) + 12 (section) + 8."""
-    return 7 + 14 * len(_lignes_cle(champ)) + 12 + 8
+    return 7 + 14 * len(_key_lines(champ)) + 12 + 8
 
 
-def _ligne_tableau(p: _Page, y: float, champ: Champ) -> float:
-    lignes = _lignes_cle(champ)
-    hauteur = _hauteur_ligne(champ)
+def _table_row(p: _Page, y: float, champ: Champ) -> float:
+    lignes = _key_lines(champ)
+    hauteur = _row_height(champ)
     x = _COLONNES[0] + _PADDING + 0.5
     for i, morceau in enumerate(lignes):
         p.texte(x, y + 7 + 14 * i, morceau, _FIXE, 10.5, _TEXTE)
@@ -570,12 +570,12 @@ def _ligne_tableau(p: _Page, y: float, champ: Champ) -> float:
     # Les autres cellules sont centrees verticalement (vertical-align: middle).
     # Ligne de base mesuree sur la maquette : y + 24 pour une ligne de 41 px.
     base = y + (hauteur - 41) / 2 + 24
-    haut_texte = base - round(11.5 * _REGULIER.ascendant)
+    haut_texte = base - round(11.5 * _REGULIER.ascent)
     type_ = str(champ.get("type") or "").upper()
     libelle_type = _TYPES.get(type_, type_ or "—")
     p.texte(_COLONNES[1] + _PADDING, haut_texte, libelle_type, _REGULIER, 11.5, _TEXTE)
     p.texte(
-        _COLONNES[2] + _PADDING, haut_texte, _pourcent(champ.get("reussite")), _GRAS, 11.5, _TEXTE
+        _COLONNES[2] + _PADDING, haut_texte, _percent(champ.get("reussite")), _GRAS, 11.5, _TEXTE
     )
     echec = champ.get("echec_principal")
     if echec in _ETIQUETTES:
@@ -587,7 +587,7 @@ def _ligne_tableau(p: _Page, y: float, champ: Champ) -> float:
         # Meme ligne de base que le texte de la cellule.
         p.texte(
             x_etiquette + 9,
-            base - round(11 * _DEMI_GRAS.ascendant),
+            base - round(11 * _DEMI_GRAS.ascent),
             libelle,
             _DEMI_GRAS,
             11,
@@ -615,8 +615,8 @@ def _valeur(ecart: Mapping[str, Any], cle: str, booleen: bool = False) -> str:
     return str(valeur)
 
 
-def _lignes_carte(champ: Champ) -> List[str]:
-    return _couper_cle(str(champ["champ"]), _FIXE, 10, _CARTE_LARGEUR - 18)
+def _card_lines(champ: Champ) -> List[str]:
+    return _split_key(str(champ["champ"]), _FIXE, 10, _CARTE_LARGEUR - 18)
 
 
 #: Libelles des valeurs d'une carte ; les valeurs s'alignent apres le plus long.
@@ -625,11 +625,11 @@ _LIBELLES_VALEURS = (("Attendu :", "expected_value"), ("Lu :", "observed_value")
 _LIGNES_PAR_VALEUR = 3
 
 
-def _retrait_valeurs() -> float:
+def _value_indent() -> float:
     return max(_REGULIER.largeur(f"{libelle} ", 10) for libelle, _ in _LIBELLES_VALEURS)
 
 
-def _couper_mots(texte: str, police: _Police, taille: float, largeur: float) -> List[str]:
+def _split_words(texte: str, police: _Police, taille: float, largeur: float) -> List[str]:
     """Coupe aux espaces ; un mot plus long que la ligne est coupe au caractere."""
     lignes: List[str] = []
     courante = ""
@@ -640,20 +640,20 @@ def _couper_mots(texte: str, police: _Police, taille: float, largeur: float) -> 
             continue
         if courante:
             lignes.append(courante)
-        morceaux = _couper(mot, police, taille, largeur)
+        morceaux = _split(mot, police, taille, largeur)
         lignes += morceaux[:-1]
         courante = morceaux[-1]
     return lignes + [courante] if courante or not lignes else lignes
 
 
-def _booleen(champ: Mapping[str, Any]) -> bool:
+def _boolean(champ: Mapping[str, Any]) -> bool:
     return champ.get("type") == "BOOLEAN" or champ.get("value_type") == "BOOLEAN"
 
 
-def _lignes_valeur(ecart: Mapping[str, Any], cle: str, booleen: bool = False) -> List[str]:
+def _value_lines(ecart: Mapping[str, Any], cle: str, booleen: bool = False) -> List[str]:
     """La valeur coupee pour tenir dans la carte, apres le libelle."""
-    largeur = _CARTE_LARGEUR - 18 - _retrait_valeurs()
-    lignes = _couper_mots(_valeur(ecart, cle, booleen), _GRAS, 10, largeur)
+    largeur = _CARTE_LARGEUR - 18 - _value_indent()
+    lignes = _split_words(_valeur(ecart, cle, booleen), _GRAS, 10, largeur)
     if len(lignes) > _LIGNES_PAR_VALEUR:
         lignes = lignes[:_LIGNES_PAR_VALEUR]
         derniere = lignes[-1]
@@ -663,7 +663,7 @@ def _lignes_valeur(ecart: Mapping[str, Any], cle: str, booleen: bool = False) ->
     return lignes
 
 
-def _hauteur_carte(champ: Champ, ecart: Optional[Champ] = None) -> float:
+def _card_height(champ: Champ, ecart: Optional[Champ] = None) -> float:
     """9 + 13 par ligne de cle + 5 + 12 (document) + 5 + 13 par ligne de valeur
     (attendu puis lu, 3 de plus entre eux) + 9 : 73 px quand tout tient sur
     une ligne.
@@ -673,17 +673,17 @@ def _hauteur_carte(champ: Champ, ecart: Optional[Champ] = None) -> float:
     position), la carte se resserre d'autant.
     """
     valeurs = (
-        sum(len(_lignes_valeur(ecart, cle, _booleen(champ))) for _, cle in _LIBELLES_VALEURS)
+        sum(len(_value_lines(ecart, cle, _boolean(champ))) for _, cle in _LIBELLES_VALEURS)
         if ecart is not None
         else len(_LIBELLES_VALEURS)
     )
-    return 9 + 13 * len(_lignes_carte(champ)) + 5 + 12 + 5 + 13 * valeurs + 3 + 9
+    return 9 + 13 * len(_card_lines(champ)) + 5 + 12 + 5 + 13 * valeurs + 3 + 9
 
 
-def _carte(p: _Page, x: float, y: float, hauteur: float, champ: Champ, ecart: Champ) -> None:
+def _card(p: _Page, x: float, y: float, hauteur: float, champ: Champ, ecart: Champ) -> None:
     p.rect(x, y, _CARTE_LARGEUR, hauteur, bord=_BORD, rayon=5)
     interieur = x + 9
-    lignes = _lignes_carte(champ)
+    lignes = _card_lines(champ)
     for i, morceau in enumerate(lignes):
         p.texte(interieur, y + 9 + 13 * i, morceau, _FIXE, 10, _TEXTE)
     bas = y + 9 + 13 * len(lignes) + 5
@@ -692,10 +692,10 @@ def _carte(p: _Page, x: float, y: float, hauteur: float, champ: Champ, ecart: Ch
     # Attendu puis Lu, chacun sur ses lignes, la valeur alignee apres le
     # libelle le plus long : sur une seule ligne, une adresse sortait de la carte.
     y_valeur = bas + 17
-    retrait = interieur + _retrait_valeurs()
+    retrait = interieur + _value_indent()
     for libelle, cle in _LIBELLES_VALEURS:
         p.texte(interieur, y_valeur, libelle, _REGULIER, 10, _GRIS)
-        for morceau in _lignes_valeur(ecart, cle, _booleen(champ)):
+        for morceau in _value_lines(ecart, cle, _boolean(champ)):
             p.texte(retrait, y_valeur, morceau, _GRAS, 10, _TEXTE)
             y_valeur += 13
         y_valeur += 3
@@ -727,7 +727,7 @@ class _Mise:
         self.y += 17 + apres
 
 
-def _tableau(m: _Mise, champs: Sequence[Champ]) -> None:
+def _table(m: _Mise, champs: Sequence[Champ]) -> None:
     if not champs:
         m.titre("Champs en erreur", 6)
         m.page.texte(_GAUCHE, m.y, "Aucun champ ne correspond aux filtres.", _REGULIER, 11.5, _GRIS)
@@ -736,14 +736,14 @@ def _tableau(m: _Mise, champs: Sequence[Champ]) -> None:
     titre = "Champs en erreur"
     restants = list(champs)
     while restants:
-        if not m.tient(17 + 6 + 0.5 + _ENTETE_TABLEAU + _hauteur_ligne(restants[0])):
+        if not m.tient(17 + 6 + 0.5 + _ENTETE_TABLEAU + _row_height(restants[0])):
             m.nouvelle_page()
         m.titre(titre, 6)
         debut = m.y
-        m.y = _entete_tableau(m.page, m.y)
+        m.y = _table_header(m.page, m.y)
         filets = []
-        while restants and m.tient(_hauteur_ligne(restants[0])):
-            m.y = _ligne_tableau(m.page, m.y, restants.pop(0))
+        while restants and m.tient(_row_height(restants[0])):
+            m.y = _table_row(m.page, m.y, restants.pop(0))
             filets.append(m.y - 0.5)
         # Bordure du tableau, puis les filets des lignes par-dessus : en CSS,
         # ils coupent les bordures laterales et remplacent celle du bas.
@@ -755,10 +755,10 @@ def _tableau(m: _Mise, champs: Sequence[Champ]) -> None:
             titre = "Champs en erreur (suite)"
 
 
-def _extraits(m: _Mise, cartes: Sequence[Tuple[Champ, Champ]]) -> None:
+def _excerpts(m: _Mise, cartes: Sequence[Tuple[Champ, Champ]]) -> None:
     rangees = [cartes[i : i + 3] for i in range(0, len(cartes), 3)]
     for index, rangee in enumerate(rangees):
-        hauteur = max(_hauteur_carte(champ, ecart) for champ, ecart in rangee)
+        hauteur = max(_card_height(champ, ecart) for champ, ecart in rangee)
         avec_titre = index == 0
         if not m.tient((17 + 8 if avec_titre else 0) + hauteur):
             m.nouvelle_page()
@@ -768,11 +768,11 @@ def _extraits(m: _Mise, cartes: Sequence[Tuple[Champ, Champ]]) -> None:
             m.titre(f"Extraits de documents en erreur{suite}", 8)
         for colonne, (champ, ecart) in enumerate(rangee):
             x = _GAUCHE + colonne * (_CARTE_LARGEUR + _CARTE_ECART)
-            _carte(m.page, x, m.y, hauteur, champ, ecart)
+            _card(m.page, x, m.y, hauteur, champ, ecart)
         m.y += hauteur + _CARTE_ECART
 
 
-def _pieds(document: pymupdf.Document, metriques: Mapping[str, Any]) -> None:
+def _footers(document: pymupdf.Document, metriques: Mapping[str, Any]) -> None:
     execution = metriques["execution"]
     gauche = (
         f"Généré par NOTA · comparateur v{execution.get('comparateur_version') or '—'} · "
@@ -788,7 +788,7 @@ def _pieds(document: pymupdf.Document, metriques: Mapping[str, Any]) -> None:
         p.fin()
 
 
-def rendre_pdf(
+def render_pdf(
     metriques: Mapping[str, Any],
     *,
     recette: Mapping[str, Any],
@@ -808,29 +808,29 @@ def rendre_pdf(
     """
     document = pymupdf.open()
     m = _Mise(document)
-    m.y = _entete(m.page, metriques, dataset, recette, edite_le) + _ESPACE
-    m.y = _taux(m.page, m.y, metriques) + _ESPACE
+    m.y = _header(m.page, metriques, dataset, recette, edite_le) + _ESPACE
+    m.y = _rate(m.page, m.y, metriques) + _ESPACE
     m.y = _filtres(m.page, m.y, metriques) + _ESPACE
     champs: Sequence[Champ] = metriques.get("par_champ") or []
-    _tableau(m, champs)
+    _table(m, champs)
     m.y += _ESPACE
     cartes = [
         (champ, extraits[champ["champ"]][0]) for champ in champs if extraits.get(champ["champ"])
     ][:CHAMPS_AVEC_EXTRAITS]
-    _extraits(m, cartes)
+    _excerpts(m, cartes)
     m.page.fin()
-    _pieds(document, metriques)
+    _footers(document, metriques)
     document.subset_fonts()
     sortie: bytes = document.tobytes(garbage=4, deflate=True)
     document.close()
     return sortie
 
 
-def extraits_a_montrer(par_champ: Sequence[Champ]) -> List[str]:
+def excerpts_to_show(par_champ: Sequence[Champ]) -> List[str]:
     """Les champs dont le PDF montre un extrait : les pires, en erreur."""
     return [c["champ"] for c in par_champ if c.get("documents_en_erreur")][:CHAMPS_AVEC_EXTRAITS]
 
 
-def dict_ecarts(ecarts: Sequence[Any]) -> List[Dict[str, Any]]:
+def discrepancy_dict(ecarts: Sequence[Any]) -> List[Dict[str, Any]]:
     """EcartOut -> dict, pour rendre_pdf."""
     return [e.model_dump() if hasattr(e, "model_dump") else dict(e) for e in ecarts]

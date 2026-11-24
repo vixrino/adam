@@ -28,8 +28,8 @@ id="credits_consommation.reference" et group_id="pret_2", la forme du contrat
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
+import re
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from adam_core.enums.status import FieldValueType
@@ -53,19 +53,19 @@ class ModeleDocument:
     #: absente d'ici est un champ simple : elle est sa propre cle semantique.
     instances: Mapping[str, Tuple[str, str]] = field(default_factory=dict)
 
-    def cible(self, cle_appel: str) -> Tuple[str, Optional[str]]:
+    def target_of(self, cle_appel: str) -> Tuple[str, Optional[str]]:
         """(cle semantique, group_id) que remplit une propriete de la reponse."""
         if cle_appel in self.instances:
             return self.instances[cle_appel]
         return cle_appel, None
 
     @property
-    def nombre_pages(self) -> int:
+    def page_total(self) -> int:
         """Nombre de pages du formulaire, d'apres les pages decrites et les champs."""
         return max([*self.pages, *self.champs], default=0)
 
     @classmethod
-    def depuis_schema(cls, schema: Mapping[str, Any]) -> "ModeleDocument":
+    def from_schema(cls, schema: Mapping[str, Any]) -> "ModeleDocument":
         """Construit le modele depuis un schema tel que GET /schemas/{id} le rend."""
         pages = {
             int(p["page_number"]): str(p["description"])
@@ -81,7 +81,7 @@ class ModeleDocument:
             if not group_id:
                 page.setdefault(cle, propriete(spec))
                 continue
-            cle_appel = cle_d_appel(cle, group_id)
+            cle_appel = call_key(cle, group_id)
             page.setdefault(cle_appel, propriete(spec, group_id))
             instances[cle_appel] = (cle, group_id)
         return cls(
@@ -92,7 +92,7 @@ class ModeleDocument:
         )
 
 
-def cle_d_appel(cle: str, group_id: str) -> str:
+def call_key(cle: str, group_id: str) -> str:
     """Nom de propriete d'une instance : l'instance s'insere apres la section.
 
     "credits_consommation.reference" + "pret_2" donne
@@ -111,8 +111,10 @@ def propriete(spec: Mapping[str, Any], group_id: Optional[str] = None) -> FieldD
     """
     description = spec.get("description") or spec.get("display_label") or spec["field_key"]
     if group_id:
-        numero = re.search(r"(\d+)$", group_id)
-        ligne = f"ligne n° {numero.group(1)} du tableau" if numero else f"instance {group_id}"
+        numero = _trailing_number(group_id)
+        ligne = (
+            f"ligne n° {numero} du tableau" if numero else f"instance {group_id}"
+        )  # sans .group(1)
         description = f"{description} ({ligne})"
     value_type = str(spec.get("value_type") or FieldValueType.TEXT.value).upper()
     if value_type == FieldValueType.BOOLEAN.value:
@@ -122,3 +124,11 @@ def propriete(spec: Mapping[str, Any], group_id: Optional[str] = None) -> FieldD
     if value_type in (FieldValueType.DATE.value, FieldValueType.DATETIME.value):
         return {"description": description, "type": "string", "format": "date"}
     return {"description": description, "type": "string"}
+
+
+def _trailing_number(group_id: str) -> str | None:
+    """Chiffres finaux de group_id (« enfant_1 » -> « 1 »), ou None."""
+    start = len(group_id)
+    while start > 0 and group_id[start - 1].isdecimal():
+        start -= 1
+    return group_id[start:] or None

@@ -35,6 +35,7 @@ router = APIRouter(prefix="/files", tags=["Files"])
 
 # Schemas Pydantic
 
+
 class FileIn(BaseModel):
     file_path: str
     sha256_checksum: str = Field(min_length=64, max_length=64)
@@ -50,6 +51,7 @@ class FilePatch(BaseModel):
 
 
 # GET
+
 
 @router.get("", response_model=List[FileOut])
 async def list_files(
@@ -84,15 +86,30 @@ async def get_file(file_id: int, db: AsyncSession = Depends(get_db)) -> FileDeta
 
 
 @router.get("/{file_id}/content")
-async def get_file_content(file_id: int, db: AsyncSession = Depends(get_db)) -> FileResponse:
-    """Retourne les octets bruts du fichier physique (PDF), pour visualisation/telechargement."""
+async def get_file_content(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """
+    Retourne les octets bruts du fichier physique (PDF),
+    pour visualisation/téléchargement.
+    """
+
     file = await db.get(File, file_id)
+
     if not file:
         raise_not_found(File)
+
     abs_path = Path(settings.pvc_mount_path) / file.file_path
+
     if not await AsyncPath(abs_path).is_file():
         raise_not_found(File, "Fichier absent du PVC")
-    return FileResponse(abs_path, media_type=file.mime_type, filename=abs_path.name)
+
+    return FileResponse(
+        abs_path,
+        media_type=file.mime_type,
+        filename=abs_path.name,
+    )
 
 
 @router.get("/{file_id}/documents", response_model=List[DocumentOut])
@@ -106,6 +123,7 @@ async def get_file_documents(file_id: int, db: AsyncSession = Depends(get_db)) -
 
 
 # POST
+
 
 @router.post("", response_model=FileCreatedOut, status_code=201)
 async def create_file(
@@ -147,6 +165,7 @@ async def create_file(
 
 
 # PATCH
+
 
 @router.patch("/{file_id}", response_model=FilePatchOut)
 async def patch_file(

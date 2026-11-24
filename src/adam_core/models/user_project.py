@@ -33,6 +33,7 @@ class UserProject(OrganisationScoped, ProjectScoped, Base):
         Integer,
         ForeignKey("project.id", ondelete="CASCADE"),
         primary_key=True,
+        index=True,  # membres d'un projet ; la PK composite commence par user_id
     )
     role: Mapped[str] = mapped_column(
         String,

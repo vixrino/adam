@@ -67,7 +67,7 @@ CAS = [
 
 
 def _prefixe() -> str:
-    """'adam' ou 'nota', d'apres le paquet *_core present sous src/."""
+    """'nota', d'apres le paquet *_core present sous src/."""
     cores = sorted(p.name for p in SRC.glob("*_core") if (p / "models").is_dir())
     if len(cores) != 1:
         raise SystemExit(f"attendu un *_core sous src/, trouve {cores}")
@@ -227,12 +227,12 @@ async def _benchmark(file_id: int, detectees: List[str], pvc: Path) -> None:
     await worker.poll()
 
 
-async def _metriques(execution_id: int) -> Dict[str, Any]:
+async def _metrics(execution_id: int) -> Dict[str, Any]:
     p = _prefixe()
     router = importlib.import_module(f"{p}_api.routers.benchmark")
     session_mod = importlib.import_module(f"{p}_core.db.session")
     async with session_mod.get_async_session() as db:
-        return await router._metriques(db, execution_id, True)
+        return await router._metrics(db, execution_id, True)
 
 
 async def _derniere_execution() -> Tuple[int, str]:
@@ -301,7 +301,7 @@ def main() -> None:
     if not statut.endswith("COMPLETED"):
         raise SystemExit(f"execution {execution_id} en {statut} : voir les logs du worker")
     session_mod.init_engine(core.async_database_url)
-    resultat = asyncio.run(_metriques(execution_id))
+    resultat = asyncio.run(_metrics(execution_id))
     sortie = Path(args.sortie)
     sortie.write_text(
         json.dumps(resultat, ensure_ascii=False, indent=2, default=str), encoding="utf-8"

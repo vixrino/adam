@@ -53,7 +53,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from adam_core.core.config import CoreSettings
-from adam_core.db.session import create_tables, get_engine, init_engine
+from adam_core.db.migrate import upgrade_head
+from adam_core.db.session import get_engine, init_engine
 from adam_core.enums.status import FieldValueType, ProjectStatus
 from adam_core.models import DocSchema, FieldSpec, Organisation, Project, SchemaPage
 from adam_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS, CERFA_V2_PAGE_TITLES
@@ -174,7 +175,6 @@ def build_pages(schema_id: int) -> List[SchemaPage]:
         for page, description in sorted(CERFA_V2_PAGE_TITLES.items())
     ]
 
-
 def _numeros(section_id: str, page: int, count: int) -> range:
     """Numeros des lignes d'une section repetable sur une page.
 
@@ -205,11 +205,12 @@ def _porte(champs: Mapping[str, Any], section_id: str) -> bool:
     return any(cle.partition(".")[0] == section_id for cle in champs)
 
 
+
 def build_specs() -> List[Dict[str, Any]]:
     """Deplie CERFA_V2_PAGE_FIELDS en une liste de FieldSpec a creer.
 
     Une section repetable produit N fois ses champs, un group_id par instance.
-    Une section simple les produit une fois, group_id a None — c'est la valeur
+    Une section simple les produit une fois, group_id a None, c'est la valeur
     qui distingue "champ unique" de "premiere instance d'un groupe", et non un
     group_id conventionnel comme "1", qui obligerait chaque lecteur a savoir
     que 1 signifie parfois "unique".
@@ -397,7 +398,7 @@ async def seed_schema(session: AsyncSession, replace: bool, organisation_slug: s
 
 async def main(replace: bool, organisation_slug: str) -> None:
     init_engine(settings.async_database_url, echo=False)
-    await create_tables()
+    await asyncio.to_thread(upgrade_head)
     factory = async_sessionmaker(bind=get_engine(), expire_on_commit=False)
     async with factory() as session:
         await seed_schema(session, replace=replace, organisation_slug=organisation_slug)

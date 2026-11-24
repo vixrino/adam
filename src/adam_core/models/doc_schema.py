@@ -5,9 +5,9 @@ Un schéma est versionné et partagé entre datasets et recettes de test.
 """
 
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from adam_core.db.base import Base
@@ -34,6 +34,19 @@ class DocSchema(OrganisationScoped, ProjectScoped, Base):
         String,
         nullable=False,
         comment="Identifiant du type de document",
+    )
+    # Verrou explicite pose par un utilisateur : fige le contenu du schema.
+    locked: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    # PDF specimen sur lequel dessiner les zones des field_specs (pas de dataset requis)
+    specimen_file_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("file.id", ondelete="SET NULL"),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -70,6 +83,11 @@ class DocSchema(OrganisationScoped, ProjectScoped, Base):
     datasets: Mapped[list["Dataset"]] = relationship(  # type: ignore[name-defined]
         "Dataset",
         back_populates="schema",
+        lazy="noload",
+    )
+    specimen_file: Mapped[Optional["File"]] = relationship(  # type: ignore[name-defined]
+        "File",
+        foreign_keys=[specimen_file_id],
         lazy="noload",
     )
 

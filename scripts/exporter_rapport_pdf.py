@@ -7,8 +7,6 @@ GET /test-executions/{id}/metriques.pdf, directement sur la base du .env.
 
 Lecture seule : aucune ecriture en base.
 
-Le paquet *_core est trouve sous src/ : le script tourne tel quel dans adam et
-dans nota, depuis la racine du depot.
 
 Usage :
     python scripts/exporter_rapport_pdf.py                  # liste les executions finies
@@ -32,7 +30,7 @@ sys.path.insert(0, str(SRC))
 
 
 def _prefixe() -> str:
-    """'adam' ou 'nota', d'apres le paquet *_core present sous src/."""
+    """'nota', d'apres le paquet *_core present sous src/."""
     cores = sorted(p.name for p in SRC.glob("*_core") if (p / "models").is_dir())
     if len(cores) != 1:
         raise SystemExit(f"attendu un *_core sous src/, trouve {cores}")

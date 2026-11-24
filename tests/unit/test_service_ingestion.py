@@ -378,7 +378,6 @@ async def test_sans_nombre_de_pages_configure_aucun_controle(tmp_path: Path) -> 
     assert result["status"] == "created"
     assert document.status == "RECEIVED"
 
-
 def test_metadata_none_s_ecrit_en_null_sql() -> None:
     """La colonne metadata ne contient que NULL ou un objet JSON : None doit
     partir en NULL SQL, pas en JSON null, que PostgreSQL concatene a un objet

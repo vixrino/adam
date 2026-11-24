@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from adam_core.models import DocSchema, FieldSpec, SchemaPage
 
 
-async def schema_en_dict(db: AsyncSession, schema_id: int) -> Dict[str, Any]:
+async def schema_to_dict(db: AsyncSession, schema_id: int) -> Dict[str, Any]:
     """Le schema sous la forme de GET /schemas/{id}, pour ModeleDocument."""
     nom = (await db.execute(select(DocSchema.name).where(DocSchema.id == schema_id))).scalar_one()
     pages = (
@@ -57,7 +57,7 @@ async def schema_en_dict(db: AsyncSession, schema_id: int) -> Dict[str, Any]:
     }
 
 
-def empreinte_schema(schema: Mapping[str, Any]) -> str:
+def schema_fingerprint(schema: Mapping[str, Any]) -> str:
     """Empreinte du schema tel qu'il pilote l'extraction et la comparaison.
 
     Faite du contenu, pas des ids : le meme schema en base de dev et en base de

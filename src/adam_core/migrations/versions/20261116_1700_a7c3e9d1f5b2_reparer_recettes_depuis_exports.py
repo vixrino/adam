@@ -10,16 +10,14 @@ qui existe deja. Sur une base saine, elle ne fait rien.
   leurs cles etrangeres et leurs index ;
 - unicite (dataset_id, name) remplacee par (dataset_id, name, version).
 
-Le paquet *_core est deduit du chemin du fichier : la migration se copie telle
-quelle d'adam a nota.
 """
 
 import importlib
 from pathlib import Path
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
+import sqlalchemy as sa
 
 # .../src/<paquet>_core/migrations/versions/ce_fichier.py
 Base = importlib.import_module(f"{Path(__file__).resolve().parents[2].name}.db.base").Base
@@ -33,7 +31,7 @@ SCHEMA = Base.metadata.schema
 
 
 def _schema() -> str:
-    """Schema des modeles, ou le schema courant de la connexion (adam)."""
+    """Schema des modeles, ou le schema courant de la connexion."""
     if SCHEMA:
         return SCHEMA
     return str(op.get_bind().execute(sa.text("SELECT current_schema()")).scalar())
