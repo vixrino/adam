@@ -45,7 +45,11 @@ def main() -> None:
     url = core.migration_database_url.replace("+asyncpg", "+psycopg2")
     print(f"Base : {core.postgres_db}   schema : {schema}\n")
 
-    with create_engine(url).connect() as conn:
+    # Un role nomme comme le schema (nota) le rend schema par defaut ("$user") :
+    # Alembic le verrait sous le nom None et le filtre l'ecarterait. Le schema
+    # par defaut est fixe a la connexion, ou SQLAlchemy le lit une fois pour toutes.
+    engine = create_engine(url, connect_args={"options": "-c search_path=public"})
+    with engine.connect() as conn:
         print("== tables alembic_version")
         lieux = (
             conn.execute(
