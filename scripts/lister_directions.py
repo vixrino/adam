@@ -118,20 +118,92 @@ def rapport(departements: Counter, slugs: Sequence[str], defaut: str, min_compte
     return lignes
 
 
-def _annuaire(ldap: Any, settings: Any) -> Any:
-    """annuaire_depuis_settings(settings) dans adam ; nota y ajoute `enabled`
-    (l'interrupteur de l'IHM) : ce script lit l'AD quel que soit l'interrupteur."""
+#: Parametre du client -> reglage AD de l'environnement (adam et nota).
+_REGLAGES = {
+    "host": "ad_host",
+    "port": "ad_port",
+    "use_ssl": "ad_use_ssl",
+    "bind_dn": "ad_bind_dn",
+    "password": "ad_password",
+    "base_dn": "ad_base_dn",
+    "ca_bundle": "ad_ca_bundle",
+    "timeout_seconds": "ad_timeout_seconds",
+    "limite": "ad_search_limit",
+    "prefixes_exclus": "ad_exclude_prefixes",
+    "suffixes_exclus": "ad_exclude_suffixes",
+    "ou_exclues": "ad_exclude_ous",
+}
+
+
+def _appeler(fabrique: Any, settings: Any) -> Any:
+    """Appelle une fabrique (fonction ou classe) avec ce qu'elle demande :
+    les settings, enabled=True (l'interrupteur de l'IHM : ce script lit l'AD
+    quel que soit l'interrupteur), ou les reglages AD un par un."""
     import inspect
 
-    fabrique = ldap.annuaire_depuis_settings
-    extras: Dict[str, Any] = {}
-    for nom, param in list(inspect.signature(fabrique).parameters.items())[1:]:
-        if param.default is not inspect.Parameter.empty:
+    args: Dict[str, Any] = {}
+    for nom, param in inspect.signature(fabrique).parameters.items():
+        if nom in ("settings", "config", "reglages"):
+            args[nom] = settings
+        elif nom == "enabled":
+            args[nom] = True
+        elif nom in _REGLAGES or hasattr(settings, f"ad_{nom}"):
+            valeur = getattr(settings, _REGLAGES.get(nom, f"ad_{nom}"))
+            if nom.endswith(("exclus", "exclues")) and isinstance(valeur, str):
+                valeur = [v.strip() for v in valeur.split(",") if v.strip()]
+            args[nom] = valeur
+        elif param.default is inspect.Parameter.empty and param.kind not in (
+            param.VAR_POSITIONAL,
+            param.VAR_KEYWORD,
+        ):
+            raise TypeError(f"parametre {nom!r} inconnu")
+    return fabrique(**args)
+
+
+def _annuaire(ldap: Any, settings: Any) -> Any:
+    """Le client AD du code en place, quel que soit le nom de sa fabrique.
+
+    adam : annuaire_depuis_settings(settings) ; nota y a ajoute `enabled`, puis
+    l'a remplacee. On essaie les fonctions du module qui parlent d'annuaire,
+    puis la classe qui sait `trouver` et ouvrir une `_connexion`."""
+    import inspect
+
+    candidats = [
+        f
+        for nom, f in inspect.getmembers(ldap, inspect.isfunction)
+        if f.__module__ == ldap.__name__
+        and "annuaire" in nom.lower()
+        and not nom.startswith("_")
+        and any(p in inspect.signature(f).parameters for p in ("settings", "config", "reglages"))
+    ] + [
+        c
+        for _, c in inspect.getmembers(ldap, inspect.isclass)
+        if c.__module__ == ldap.__name__ and hasattr(c, "trouver") and hasattr(c, "_connexion")
+    ]
+    erreurs = []
+    for fabrique in candidats:
+        try:
+            client = _appeler(fabrique, settings)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            erreurs.append(f"  {fabrique.__name__}{inspect.signature(fabrique)} : {exc}")
             continue
-        if nom != "enabled":
-            raise SystemExit(f"annuaire_depuis_settings{inspect.signature(fabrique)} : parametre {nom!r} inconnu")
-        extras[nom] = True
-    return fabrique(settings, **extras)
+        if hasattr(client, "trouver") and hasattr(client, "_connexion"):
+            return client
+        erreurs.append(f"  {fabrique.__name__} : renvoie {type(client).__name__}, pas un client AD")
+
+    contenu = [
+        f"  {nom}{inspect.signature(obj) if callable(obj) else ''}"
+        for nom, obj in inspect.getmembers(ldap)
+        if not nom.startswith("__")
+        and (inspect.isfunction(obj) or inspect.isclass(obj))
+        and getattr(obj, "__module__", "") == ldap.__name__
+    ]
+    raise SystemExit(
+        f"aucun moyen d'ouvrir l'annuaire dans {ldap.__name__}.\n"
+        + ("essais :\n" + "\n".join(erreurs) + "\n" if erreurs else "")
+        + "contenu du module (a me coller) :\n"
+        + "\n".join(contenu)
+    )
 
 
 def main() -> None:
