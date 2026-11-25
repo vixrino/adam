@@ -118,6 +118,22 @@ def rapport(departements: Counter, slugs: Sequence[str], defaut: str, min_compte
     return lignes
 
 
+def _annuaire(ldap: Any, settings: Any) -> Any:
+    """annuaire_depuis_settings(settings) dans adam ; nota y ajoute `enabled`
+    (l'interrupteur de l'IHM) : ce script lit l'AD quel que soit l'interrupteur."""
+    import inspect
+
+    fabrique = ldap.annuaire_depuis_settings
+    extras: Dict[str, Any] = {}
+    for nom, param in list(inspect.signature(fabrique).parameters.items())[1:]:
+        if param.default is not inspect.Parameter.empty:
+            continue
+        if nom != "enabled":
+            raise SystemExit(f"annuaire_depuis_settings{inspect.signature(fabrique)} : parametre {nom!r} inconnu")
+        extras[nom] = True
+    return fabrique(settings, **extras)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--min-comptes", type=int, default=5, help="Masquer les mots plus rares")
@@ -128,7 +144,7 @@ def main() -> None:
 
     ldap = _module("api.services.annuaire")
     settings = _module("api.core.config").settings
-    annuaire = ldap.annuaire_depuis_settings(settings)
+    annuaire = _annuaire(ldap, settings)
     annuaire.timeout_seconds = max(annuaire.timeout_seconds, 60)
 
     departements = lire_departements(annuaire, ldap)
