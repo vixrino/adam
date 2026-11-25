@@ -17,8 +17,8 @@ Usage :
     python scripts/seed_study.py load study.json --pdf-dir ./pdfs --project-id 1
     python scripts/seed_study.py load study.json --pdf-dir ./pdfs --project-id 1 --dry-run
 
-Une planilha .xlsx demande openpyxl, hors des dependances du projet :
-    uv run --with openpyxl python scripts/seed_study.py convert etude.xlsx -o study.json
+Le .xlsx est lu avec la bibliotheque standard (zip + XML) : pas d'openpyxl,
+que le depot Python interne ne fournit pas.
 
 Chaque `load` cree un nouveau dataset. Un PDF deja en base (meme empreinte) n'est
 pas recopie : son File est reutilise.
@@ -234,23 +234,116 @@ def normalize(
 Table = Tuple[List[str], List[List[str]]]
 
 
-def _read_xlsx(path: Path) -> Tuple[Table, Dict[int, Table]]:
-    try:
-        import openpyxl
-    except ImportError:
-        sys.exit(
-            "openpyxl manquant : uv run --with openpyxl python scripts/seed_study.py ... "
-            "(ou fournir un .tsv)"
+_XL = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+_REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+#: Formats de nombre predefinis d'Excel : dates, et heures seules.
+_DATE_FMT_IDS = set(range(14, 23)) | {45, 46, 47}
+_TIME_FMT_IDS = {18, 19, 20, 21, 45, 46, 47}
+
+
+def _col_index(ref: str) -> int:
+    """'C12' -> 2."""
+    n = 0
+    for ch in ref:
+        if not ch.isalpha():
+            break
+        n = n * 26 + ord(ch.upper()) - 64
+    return n - 1
+
+
+def _xlsx_sheets(path: Path) -> List[Tuple[str, List[List[Any]]]]:
+    """(titre, lignes de valeurs) par onglet, valeurs calculees comme data_only."""
+    import posixpath
+    import zipfile
+    from datetime import timedelta
+    from xml.etree import ElementTree as ET
+
+    with zipfile.ZipFile(path) as z:
+        noms = set(z.namelist())
+
+        def xml(nom: str) -> Any:
+            return ET.fromstring(z.read(nom))
+
+        partages: List[str] = []
+        if "xl/sharedStrings.xml" in noms:
+            for si in xml("xl/sharedStrings.xml").iter(f"{_XL}si"):
+                partages.append("".join(t.text or "" for t in si.iter(f"{_XL}t")))
+
+        #: par style de cellule : None (nombre), "date" ou "heure"
+        styles_date: List[Optional[str]] = []
+        if "xl/styles.xml" in noms:
+            styles = xml("xl/styles.xml")
+            perso = {
+                int(f.get("numFmtId")): (f.get("formatCode") or "").lower()
+                for f in styles.iter(f"{_XL}numFmt")
+            }
+            xfs = styles.find(f"{_XL}cellXfs")
+            for xf in xfs if xfs is not None else []:
+                fid = int(xf.get("numFmtId", "0"))
+                code = re.sub(r'"[^"]*"|\[[^]]*\]', "", perso.get(fid, ""))
+                if fid in _TIME_FMT_IDS or (re.search(r"[hs]", code) and not re.search(r"[dy]", code)):
+                    styles_date.append("heure")
+                elif fid in _DATE_FMT_IDS or re.search(r"[dy]", code):
+                    styles_date.append("date")
+                else:
+                    styles_date.append(None)
+
+        classeur = xml("xl/workbook.xml")
+        base_1904 = any(
+            (p.get("date1904") or "").lower() in {"1", "true"}
+            for p in classeur.iter(f"{_XL}workbookPr")
         )
-    book = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        origine = datetime(1904, 1, 1) if base_1904 else datetime(1899, 12, 30)
+        liens = {
+            r.get("Id"): r.get("Target")
+            for r in xml("xl/_rels/workbook.xml.rels")
+        }
+
+        onglets = []
+        for feuille in classeur.iter(f"{_XL}sheet"):
+            cible = liens[feuille.get(_REL)]
+            chemin = cible.lstrip("/") if cible.startswith("/") else posixpath.join("xl", cible)
+            lignes: List[List[Any]] = []
+            for row in xml(posixpath.normpath(chemin)).iter(f"{_XL}row"):
+                valeurs: List[Any] = []
+                for c in row.iter(f"{_XL}c"):
+                    t, v = c.get("t"), c.find(f"{_XL}v")
+                    if t == "inlineStr":
+                        val: Any = "".join(x.text or "" for x in c.iter(f"{_XL}t"))
+                    elif v is None or v.text is None:
+                        val = None
+                    elif t == "s":
+                        val = partages[int(v.text)]
+                    elif t == "b":
+                        val = v.text == "1"
+                    elif t in ("str", "e"):
+                        val = v.text
+                    else:
+                        val = float(v.text)
+                        style = int(c.get("s", "0"))
+                        genre = styles_date[style] if style < len(styles_date) else None
+                        if genre == "heure":
+                            val = (datetime.min + timedelta(days=val % 1)).time()
+                        elif genre == "date":
+                            val = origine + timedelta(days=val)
+                    ref = c.get("r")
+                    col = _col_index(ref) if ref else len(valeurs)
+                    valeurs.extend([None] * (col - len(valeurs)))
+                    valeurs.append(val)
+                lignes.append(valeurs)
+            onglets.append((feuille.get("name") or "", lignes))
+        return onglets
+
+
+def _read_xlsx(path: Path) -> Tuple[Table, Dict[int, Table]]:
     index: Optional[Table] = None
     pages: Dict[int, Table] = {}
-    for sheet in book.worksheets:
-        rows = [[_clean(c) for c in row] for row in sheet.iter_rows(values_only=True)]
+    for titre, brutes in _xlsx_sheets(path):
+        rows = [[_clean(c) for c in row] for row in brutes]
         rows = [r for r in rows if any(r)]
         if not rows:
             continue
-        m = re.match(r"\s*page\s*(\d+)", sheet.title, re.I)
+        m = re.match(r"\s*page\s*(\d+)", titre, re.I)
         if m:
             pages[int(m.group(1))] = (rows[0], rows[1:])
         elif "doc_id" in rows[0] and "file_name" in rows[0]:
