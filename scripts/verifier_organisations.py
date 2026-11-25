@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lister_directions import _annuaire, _module, organisation_de  # noqa: E402
+from lister_directions import ClientAD, _module, organisation_de  # noqa: E402
 from seed_organisations import ORGANISATIONS  # noqa: E402
 
 
@@ -58,7 +58,7 @@ async def verifier(matricules: List[str]) -> int:
     session_mod = _module("core.db.session")
     settings = _module("api.core.config").settings
     defaut = (getattr(settings, "ad_organisation_defaut", "") or "").strip().lower()
-    annuaire = _annuaire(_module("api.services.annuaire"), settings)
+    annuaire = ClientAD(settings)
 
     session_mod.init_engine(_module("core.core.config").CoreSettings().async_database_url)
     factory = async_sessionmaker(bind=session_mod.get_engine(), expire_on_commit=False)

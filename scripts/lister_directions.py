@@ -11,10 +11,12 @@ des organisations ; le plus a gauche gagne. Le script affiche donc :
 2. ce que donnerait la liste actuelle d'ORGANISATIONS : combien de comptes
    chaque organisation recevrait, et combien tomberaient sur
    AD_ORGANISATION_DEFAUT.
-Les valeurs distinctes de `department` sont ecrites dans departements.csv.
+--csv ecrit en plus les valeurs distinctes de `department` (donnees internes).
 
 Une seule recherche paginee, attribut `department` seul, avec le compte de
 service et les exclusions de l'annuaire (AD_EXCLUDE_*). Aucun nom n'est lu.
+Le client LDAP n'utilise que les reglages AD_* : il ne depend pas du code de
+l'annuaire (dont les noms changent d'une version de nota a l'autre).
 
 Usage :
     uv run python scripts/lister_directions.py
@@ -54,36 +56,121 @@ def organisation_de(departement: str, slugs: Iterable[str]) -> Optional[str]:
     return None
 
 
-def lire_departements(annuaire: Any, ldap: Any) -> Counter:
-    from ldap3 import SUBTREE
+#: Comptes de personnes actifs : 2 = ACCOUNTDISABLE dans userAccountControl.
+PERSONNES_ACTIVES = (
+    "(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2))"
+)
 
-    filtre = f"(&{ldap._PERSONNES_ACTIVES}" + ldap._exclusions(
-        annuaire.prefixes_exclus, annuaire.suffixes_exclus
-    ) + ")"
-    connexion = annuaire._connexion()
-    if not connexion.bind():
-        raise SystemExit(f"liaison au compte de service refusee : {connexion.result}")
-    comptes: Counter = Counter()
-    try:
+
+def echapper(valeur: str) -> str:
+    """Valeur litterale dans un filtre LDAP (RFC 4515)."""
+    remplacements = {"\\": r"\5c", "*": r"\2a", "(": r"\28", ")": r"\29", "\0": r"\00"}
+    return "".join(remplacements.get(c, c) for c in valeur)
+
+
+def _liste(valeur: Any) -> List[str]:
+    if isinstance(valeur, str):
+        return [v.strip() for v in valeur.split(",") if v.strip()]
+    return [str(v).strip() for v in (valeur or []) if str(v).strip()]
+
+
+class ClientAD:
+    """Client LDAP construit sur les seuls reglages AD_* : ne depend pas du code
+    de l'annuaire, dont les noms changent d'une version a l'autre."""
+
+    def __init__(self, settings: Any, timeout: int = 60) -> None:
+        def reglage(nom: str, defaut: Any = None) -> Any:
+            return getattr(settings, nom, defaut)
+
+        manquants = [
+            n.upper() for n in ("ad_host", "ad_bind_dn", "ad_password", "ad_base_dn") if not reglage(n)
+        ]
+        if manquants:
+            raise SystemExit(f"reglages AD absents de l'environnement : {', '.join(manquants)}")
+        self.host = reglage("ad_host")
+        self.port = int(reglage("ad_port", 636))
+        self.use_ssl = bool(reglage("ad_use_ssl", True))
+        self.bind_dn = reglage("ad_bind_dn")
+        self._password = reglage("ad_password")
+        self.base_dn = reglage("ad_base_dn")
+        self.ca_bundle = reglage("ad_ca_bundle", "") or None
+        self.timeout = max(int(reglage("ad_timeout_seconds", 5)), timeout)
+        self.prefixes_exclus = _liste(reglage("ad_exclude_prefixes", ""))
+        self.suffixes_exclus = _liste(reglage("ad_exclude_suffixes", ""))
+        self.ou_exclues = _liste(reglage("ad_exclude_ous", ""))
+
+    def filtre(self, condition: str = "") -> str:
+        exclusions = "".join(
+            [f"(!(sAMAccountName={echapper(p)}*))" for p in self.prefixes_exclus]
+            + [f"(!(sAMAccountName=*{echapper(s)}))" for s in self.suffixes_exclus]
+        )
+        return f"(&{PERSONNES_ACTIVES}{exclusions}{condition})"
+
+    def exclue(self, dn: Optional[str]) -> bool:
+        if not dn or not self.ou_exclues:
+            return False
+        composants = {c.strip().upper() for c in dn.split(",")}
+        return any(f"OU={ou.upper()}" in composants for ou in self.ou_exclues)
+
+    def _connexion(self) -> Any:
+        import ssl
+
+        from ldap3 import NONE, SIMPLE, Connection, Server, Tls
+
+        tls = Tls(validate=ssl.CERT_REQUIRED, ca_certs_file=self.ca_bundle) if self.use_ssl else None
+        serveur = Server(
+            self.host, port=self.port, use_ssl=self.use_ssl, tls=tls, get_info=NONE,
+            connect_timeout=self.timeout,
+        )
+        connexion = Connection(
+            serveur, user=self.bind_dn, password=self._password, authentication=SIMPLE,
+            receive_timeout=self.timeout, read_only=True,
+        )
+        if not connexion.bind():
+            raise SystemExit(f"liaison au compte de service refusee : {connexion.result}")
+        return connexion
+
+    def _entrees(self, connexion: Any, filtre: str) -> Iterable[Dict[str, Any]]:
+        from ldap3 import SUBTREE
+
         for entree in connexion.extend.standard.paged_search(
-            annuaire.base_dn,
-            filtre,
-            search_scope=SUBTREE,
-            attributes=["department"],
-            paged_size=500,
-            generator=True,
+            self.base_dn, filtre, search_scope=SUBTREE, attributes=["department"],
+            paged_size=500, generator=True,
         ):
-            if entree.get("type") != "searchResEntry":
-                continue
-            if ldap.dans_ou_exclue(entree.get("dn"), annuaire.ou_exclues):
-                continue
-            valeur = entree.get("attributes", {}).get("department")
-            if isinstance(valeur, list):
-                valeur = valeur[0] if valeur else None
-            comptes[" ".join(str(valeur).split()) if valeur else ""] += 1
-    finally:
-        connexion.unbind()
-    return comptes
+            if entree.get("type") == "searchResEntry" and not self.exclue(entree.get("dn")):
+                yield entree
+
+    @staticmethod
+    def _departement(entree: Dict[str, Any]) -> str:
+        valeur = entree.get("attributes", {}).get("department")
+        if isinstance(valeur, list):
+            valeur = valeur[0] if valeur else None
+        return " ".join(str(valeur).split()) if valeur else ""
+
+    def departements(self) -> Counter:
+        connexion = self._connexion()
+        try:
+            return Counter(self._departement(e) for e in self._entrees(connexion, self.filtre()))
+        finally:
+            connexion.unbind()
+
+    async def trouver(self, matricule: str) -> Optional[Any]:
+        """La personne au matricule donne (department seul), ou None."""
+        import asyncio
+        from types import SimpleNamespace
+
+        def chercher() -> Optional[Any]:
+            connexion = self._connexion()
+            try:
+                filtre = self.filtre(f"(sAMAccountName={echapper(matricule.strip())})")
+                trouvees = list(self._entrees(connexion, filtre))
+            finally:
+                connexion.unbind()
+            if len(trouvees) != 1:
+                return None
+            return SimpleNamespace(departement=self._departement(trouvees[0]) or None)
+
+        return await asyncio.to_thread(chercher)
 
 
 def rapport(departements: Counter, slugs: Sequence[str], defaut: str, min_comptes: int) -> List[str]:
@@ -118,127 +205,30 @@ def rapport(departements: Counter, slugs: Sequence[str], defaut: str, min_compte
     return lignes
 
 
-#: Parametre du client -> reglage AD de l'environnement (adam et nota).
-_REGLAGES = {
-    "host": "ad_host",
-    "port": "ad_port",
-    "use_ssl": "ad_use_ssl",
-    "bind_dn": "ad_bind_dn",
-    "password": "ad_password",
-    "base_dn": "ad_base_dn",
-    "ca_bundle": "ad_ca_bundle",
-    "timeout_seconds": "ad_timeout_seconds",
-    "limite": "ad_search_limit",
-    "prefixes_exclus": "ad_exclude_prefixes",
-    "suffixes_exclus": "ad_exclude_suffixes",
-    "ou_exclues": "ad_exclude_ous",
-}
-
-
-def _appeler(fabrique: Any, settings: Any) -> Any:
-    """Appelle une fabrique (fonction ou classe) avec ce qu'elle demande :
-    les settings, enabled=True (l'interrupteur de l'IHM : ce script lit l'AD
-    quel que soit l'interrupteur), ou les reglages AD un par un."""
-    import inspect
-
-    args: Dict[str, Any] = {}
-    for nom, param in inspect.signature(fabrique).parameters.items():
-        if nom in ("settings", "config", "reglages"):
-            args[nom] = settings
-        elif nom == "enabled":
-            args[nom] = True
-        elif nom in _REGLAGES or hasattr(settings, f"ad_{nom}"):
-            valeur = getattr(settings, _REGLAGES.get(nom, f"ad_{nom}"))
-            if nom.endswith(("exclus", "exclues")) and isinstance(valeur, str):
-                valeur = [v.strip() for v in valeur.split(",") if v.strip()]
-            args[nom] = valeur
-        elif param.default is inspect.Parameter.empty and param.kind not in (
-            param.VAR_POSITIONAL,
-            param.VAR_KEYWORD,
-        ):
-            raise TypeError(f"parametre {nom!r} inconnu")
-    return fabrique(**args)
-
-
-def _signature(obj: Any) -> str:
-    import inspect
-
-    try:
-        return str(inspect.signature(obj))
-    except (TypeError, ValueError):  # classes d'exception, fonctions C
-        return "(...)"
-
-
-def _annuaire(ldap: Any, settings: Any) -> Any:
-    """Le client AD du code en place, quel que soit le nom de sa fabrique.
-
-    adam : annuaire_depuis_settings(settings) ; nota y a ajoute `enabled`, puis
-    l'a remplacee. On essaie les fonctions du module qui parlent d'annuaire,
-    puis la classe qui sait `trouver` et ouvrir une `_connexion`."""
-    import inspect
-
-    candidats = [
-        f
-        for nom, f in inspect.getmembers(ldap, inspect.isfunction)
-        if f.__module__ == ldap.__name__
-        and "annuaire" in nom.lower()
-        and not nom.startswith("_")
-        and any(p in _signature(f) for p in ("settings", "config", "reglages"))
-    ] + [
-        c
-        for _, c in inspect.getmembers(ldap, inspect.isclass)
-        if c.__module__ == ldap.__name__ and hasattr(c, "trouver") and hasattr(c, "_connexion")
-    ]
-    erreurs = []
-    for fabrique in candidats:
-        try:
-            client = _appeler(fabrique, settings)
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            erreurs.append(f"  {fabrique.__name__}{_signature(fabrique)} : {exc}")
-            continue
-        if hasattr(client, "trouver") and hasattr(client, "_connexion"):
-            return client
-        erreurs.append(f"  {fabrique.__name__} : renvoie {type(client).__name__}, pas un client AD")
-
-    contenu = [
-        f"  {nom}{_signature(obj)}"
-        for nom, obj in inspect.getmembers(ldap)
-        if not nom.startswith("__")
-        and (inspect.isfunction(obj) or inspect.isclass(obj))
-        and getattr(obj, "__module__", "") == ldap.__name__
-    ]
-    raise SystemExit(
-        f"aucun moyen d'ouvrir l'annuaire dans {ldap.__name__}.\n"
-        + ("essais :\n" + "\n".join(erreurs) + "\n" if erreurs else "")
-        + "contenu du module (a me coller) :\n"
-        + "\n".join(contenu)
-    )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--min-comptes", type=int, default=5, help="Masquer les mots plus rares")
-    parser.add_argument("--csv", default="departements.csv", help="Fichier des valeurs distinctes")
+    parser.add_argument(
+        "--csv",
+        help="Ecrire aussi les valeurs distinctes dans ce fichier (donnees internes : ne pas commiter)",
+    )
     args = parser.parse_args()
 
     from seed_organisations import ORGANISATIONS
 
-    ldap = _module("api.services.annuaire")
     settings = _module("api.core.config").settings
-    annuaire = _annuaire(ldap, settings)
-    annuaire.timeout_seconds = max(annuaire.timeout_seconds, 60)
-
-    departements = lire_departements(annuaire, ldap)
+    departements = ClientAD(settings).departements()
     slugs = [slug for slug, _ in ORGANISATIONS]
     defaut = getattr(settings, "ad_organisation_defaut", "") or ""
     print("\n".join(rapport(departements, slugs, defaut, args.min_comptes)))
 
-    with open(args.csv, "w", newline="", encoding="utf-8-sig") as f:
-        ecrit = csv.writer(f, delimiter=";")
-        ecrit.writerow(["department", "comptes", "organisation a la connexion"])
-        for valeur, n in departements.most_common():
-            ecrit.writerow([valeur, n, organisation_de(valeur, slugs) or "(defaut)"])
-    print(f"\nvaleurs distinctes ecrites dans {args.csv}")
+    if args.csv:
+        with open(args.csv, "w", newline="", encoding="utf-8-sig") as f:
+            ecrit = csv.writer(f, delimiter=";")
+            ecrit.writerow(["department", "comptes", "organisation a la connexion"])
+            for valeur, n in departements.most_common():
+                ecrit.writerow([valeur, n, organisation_de(valeur, slugs) or "(defaut)"])
+        print(f"\nvaleurs distinctes ecrites dans {args.csv}")
 
 
 if __name__ == "__main__":
