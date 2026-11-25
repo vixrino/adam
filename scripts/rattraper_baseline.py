@@ -24,12 +24,21 @@ Une modification refusee par la base (ex. contrainte d'unicite violee par
 des doublons) est annulee seule et listee a la fin ; le reste passe.
 
 Rejouable : sur une base deja rattachee, il ajoute ce qui manque encore
-sans toucher a la version. Sans --appliquer, tout est joue puis annule (apercu). Lancer d'abord
+sans toucher a la version.
+
+--jusqu-a-head : pour une base deja rattachee dont les migrations suivantes
+echouent sur un objet qui existe deja (« column "vp" ... already exists » :
+l'ancienne chaine l'avait cree). Apres l'etape 1, la base a tout ce que les
+modeles demandent ; la version passe a head et les migrations sautees sont
+listees. A ne faire que si elles ne font que du schema (pas de reprise de
+donnees) : les relire avant --appliquer. Sans --appliquer, tout est joue puis annule (apercu). Lancer d'abord
 diag_baseline.py, avec le code a jour.
 
 Usage :
     uv run --all-extras python scripts/rattraper_baseline.py              # apercu
     uv run --all-extras python scripts/rattraper_baseline.py --appliquer
+    uv run --all-extras python scripts/rattraper_baseline.py --jusqu-a-head            # apercu
+    uv run --all-extras python scripts/rattraper_baseline.py --jusqu-a-head --appliquer
 """
 
 from __future__ import annotations
@@ -84,7 +93,7 @@ def _decrire(op: Any) -> str:
     return f"{nom:<24} {table}{'.' + objet if objet else ''}"
 
 
-def rattraper(appliquer: bool) -> None:
+def rattraper(appliquer: bool, jusqu_a_head: bool = False) -> None:
     from alembic.autogenerate import produce_migrations
     from alembic.operations import Operations
     from alembic.operations import ops as alembic_ops
@@ -208,6 +217,22 @@ def rattraper(appliquer: bool) -> None:
                 text(f'INSERT INTO "{schema}".alembic_version (version_num) VALUES (:v)'),
                 {"v": version},
             )
+        elif jusqu_a_head and actuelle != head:
+            sautees = [
+                r
+                for r in scripts.iterate_revisions(head, actuelle)
+                if r.revision != actuelle
+            ]
+            print(f"\n== migrations marquees passees, sans etre jouees ({len(sautees)})")
+            for r in reversed(sautees):
+                print(f"  {r.revision}  {(r.doc or '').splitlines()[0] if r.doc else ''}")
+                chemin = Path(r.path).name if getattr(r, "path", None) else ""
+                if chemin:
+                    print(f"      {chemin}")
+            conn.execute(
+                text(f'UPDATE "{schema}".alembic_version SET version_num = :v'), {"v": head}
+            )
+            version = head
         print(f"\n== version : {schema}.alembic_version = {version}")
 
         if not appliquer:
@@ -255,9 +280,14 @@ def _appliquer(op: Any, conn: Any, operations: Any, base: Any, schema: str, cree
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--appliquer", action="store_true", help="Ecrire (sinon : apercu)")
+    parser.add_argument(
+        "--jusqu-a-head",
+        action="store_true",
+        help="Base deja rattachee : passer la version a head apres les ajouts",
+    )
     args = parser.parse_args()
     os.environ.pop("POSTGRES_DB", None)
-    rattraper(args.appliquer)
+    rattraper(args.appliquer, args.jusqu_a_head)
 
 
 if __name__ == "__main__":
