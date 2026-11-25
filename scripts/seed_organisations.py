@@ -36,11 +36,19 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 #: (slug = mot de l'attribut AD `department` en minuscules, nom affiche).
-#: A completer avec la liste complete des directions.
+#: Les directions sont le 2e mot de `department` (RE1 US2183 DGSI DIRES SOLAPS) :
+#: liste tiree de l'AD par lister_directions.py le 25/11/2026, comptes actifs.
 ORGANISATIONS: List[Tuple[str, str]] = [
-    ("dgsi", "DGSI"),
-    ("dgso", "DGSO"),
-    ("dgser", "DGSER"),
+    ("dgsi", "DGSI"),  # 3622 comptes
+    ("dgsei", "DGSEI"),  # 1084
+    ("dgso", "DGSO"),  # 911
+    ("sgacpr", "SGACPR"),  # 575
+    ("dgrh", "DGRH"),  # 431
+    ("sg", "SG"),  # 393
+    ("dgser", "DGSER"),  # 374
+    ("dgmp", "DGMP"),  # 295
+    ("cg", "CG"),  # 180
+    ("cabgouv", "CABGOUV"),  # 6
 ]
 
 SLUG = re.compile(r"^[a-z0-9-]+$")
