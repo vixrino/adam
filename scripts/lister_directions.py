@@ -160,6 +160,15 @@ def _appeler(fabrique: Any, settings: Any) -> Any:
     return fabrique(**args)
 
 
+def _signature(obj: Any) -> str:
+    import inspect
+
+    try:
+        return str(inspect.signature(obj))
+    except (TypeError, ValueError):  # classes d'exception, fonctions C
+        return "(...)"
+
+
 def _annuaire(ldap: Any, settings: Any) -> Any:
     """Le client AD du code en place, quel que soit le nom de sa fabrique.
 
@@ -174,7 +183,7 @@ def _annuaire(ldap: Any, settings: Any) -> Any:
         if f.__module__ == ldap.__name__
         and "annuaire" in nom.lower()
         and not nom.startswith("_")
-        and any(p in inspect.signature(f).parameters for p in ("settings", "config", "reglages"))
+        and any(p in _signature(f) for p in ("settings", "config", "reglages"))
     ] + [
         c
         for _, c in inspect.getmembers(ldap, inspect.isclass)
@@ -185,14 +194,14 @@ def _annuaire(ldap: Any, settings: Any) -> Any:
         try:
             client = _appeler(fabrique, settings)
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            erreurs.append(f"  {fabrique.__name__}{inspect.signature(fabrique)} : {exc}")
+            erreurs.append(f"  {fabrique.__name__}{_signature(fabrique)} : {exc}")
             continue
         if hasattr(client, "trouver") and hasattr(client, "_connexion"):
             return client
         erreurs.append(f"  {fabrique.__name__} : renvoie {type(client).__name__}, pas un client AD")
 
     contenu = [
-        f"  {nom}{inspect.signature(obj) if callable(obj) else ''}"
+        f"  {nom}{_signature(obj)}"
         for nom, obj in inspect.getmembers(ldap)
         if not nom.startswith("__")
         and (inspect.isfunction(obj) or inspect.isclass(obj))
