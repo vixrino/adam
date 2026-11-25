@@ -64,3 +64,6 @@ Un chiffre n'a de valeur que si on peut lui faire confiance. Ces garanties évit
 C'est la première mesure de la qualité de l'IA sur de vrais formulaires. Elle montre aussi qu'il faut comprendre cuser l'IA : plusieursbaisses venaient de la liste des champs ou de la façon de compter, pas de la lecture.
 
 ---
+
+
+uv run --with openpyxl python scripts\seed_study.py convert etude.xlsx -o study.json
