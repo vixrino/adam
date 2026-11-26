@@ -64,9 +64,12 @@ class TestContraintes:
         names = {c.name for c in EvaluationReport.__table__.constraints}
         assert "uq_evaluation_report_execution_field_spec" in names
 
-    def test_nom_de_recette_unique_par_dataset(self) -> None:
-        names = {c.name for c in TestRecipe.__table__.constraints}
-        assert "uq_test_recipe_dataset_name" in names
+    def test_nom_de_recette_unique_par_dataset_et_version(self) -> None:
+        """Les versions d'une recette partagent son nom : l'unicite porte sur
+        le couple (nom, version)."""
+        contraintes = {c.name: c for c in TestRecipe.__table__.constraints}
+        unique = contraintes["uq_test_recipe_dataset_name_version"]
+        assert [c.name for c in unique.columns] == ["dataset_id", "name", "version"]
 
     def test_id_des_ecarts_en_bigint(self) -> None:
         """Seule table du domaine en millions de lignes par an : le passage

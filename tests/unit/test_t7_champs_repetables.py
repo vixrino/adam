@@ -12,6 +12,7 @@ chacune dans sa ligne, au lieu de recevoir toutes la valeur de la premiere.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 from pathlib import Path
 from typing import Any, Dict, List
@@ -249,3 +250,53 @@ class TestIdempotence:
         assert second.created == [] and len(second.skipped) == 3
         # Trois lignes distinctes, distinguees par group_id.
         assert {k[1] for k in second.skipped} == {"pret_1", "pret_2", "pret_3"}
+
+
+# -- Tableau sur deux pages : prets a la consommation n° 1 a 6 page 10, 7 et 8 page 11
+
+
+def _seed_schema_cerfa() -> Any:
+    racine = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "seed_schema_cerfa", racine / "scripts" / "seed_schema_cerfa.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestTableauSurDeuxPages:
+    def test_prets_7_et_8_en_page_11(self) -> None:
+        specs = _seed_schema_cerfa().build_specs()
+        lignes = {
+            (s["page"], s["group_id"]) for s in specs if s["section_id"] == "credits_consommation"
+        }
+        assert {g for p, g in lignes if p == 10} == {f"pret_{n}" for n in range(1, 7)}
+        assert {g for p, g in lignes if p == 11} == {"pret_7", "pret_8"}
+
+    def test_aucune_ligne_en_double(self) -> None:
+        """Le merger rapproche par (cle, group_id) : une cle peut se repeter
+        entre deux pages, une ligne jamais. C'est aussi la contrainte
+        d'unicite du schema (section_id, group_id, field_key)."""
+        specs = _seed_schema_cerfa().build_specs()
+        lignes = [(s["section_id"], s["group_id"], s["field_key"]) for s in specs]
+        assert len(lignes) == len(set(lignes))
+
+    def test_tableau_sur_deux_pages_sans_repartition_refuse(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seed = _seed_schema_cerfa()
+        monkeypatch.setattr(seed, "INSTANCES_PAR_PAGE", {})
+        with pytest.raises(ValueError, match="credits_consommation"):
+            seed.build_specs()
+
+    def test_le_moteur_lit_la_ligne_7_en_page_11(self) -> None:
+        specs = [s for s in _seed_schema_cerfa().build_specs() if s["page"] == 11]
+        modele = ModeleDocument.depuis_schema({"field_specs": specs})
+        propriete = modele.champs[11]["credits_consommation.pret_7.reference"]
+        assert "ligne n° 7" in propriete["description"]
+        assert modele.cible("credits_consommation.pret_7.reference") == (
+            "credits_consommation.reference",
+            "pret_7",
+        )

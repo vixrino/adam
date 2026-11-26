@@ -341,7 +341,7 @@ def test_la_consigne_d_identification_ecarte_le_rang() -> None:
     consigne = _consigne(MODELE)
     assert "scanne dans le desordre" in consigne
     # Le CERFA imprime « page N/12 » en tete : l'indice le plus sur.
-    assert "page N/12" in consigne and "il fait foi" in consigne
+    assert "page N/M" in consigne and "N est son numero et il fait foi" in consigne
     assert "identifie la page par ses titres de rubrique" in consigne
     # Le pied de page "300 BdF 1947 - DIRCOM - 30/04/2020" est commun a toutes.
     assert "repetee en pied de page sur toutes les pages" in consigne
@@ -580,14 +580,36 @@ def test_lignes_du_cerfa_vierge() -> None:
     assert "cautionnement.personne_cautionnee" in CERFA_V2_PAGE_FIELDS[11]
 
 
-def test_aucune_cle_partagee_entre_deux_pages() -> None:
-    """Le merger rapproche par cle seule : une cle declaree sur deux pages
-    recevrait la valeur de l'une dans les champs de l'autre."""
-    vues: dict = {}
-    for page_number, fields in CERFA_V2_PAGE_FIELDS.items():
-        for key in fields:
-            assert key not in vues, f"{key} en page {vues.get(key)} et {page_number}"
-            vues[key] = page_number
+def test_le_nom_du_schema_n_est_qu_une_etiquette() -> None:
+    """Document 16, 26/11 : un schema « cerfa_debug » (un champ, page 1) faisait
+    rejeter les 12 pages d'un vrai CERFA, que le meme schema nomme comme le
+    formulaire faisait reconnaitre. La consigne disait « une seule page du
+    formulaire « cerfa_debug », qui compte 1 pages » : le moteur jugeait la page
+    etrangere a ce formulaire, et un CERFA imprime « 1/12 » contredisait le total.
+    """
+    debug = ModeleDocument.depuis_schema(
+        {
+            "name": "cerfa_debug",
+            "pages": [],
+            "field_specs": [
+                {
+                    "page": 1,
+                    "section_id": "deposant",
+                    "field_key": "deposant.case_homme",
+                    "value_type": "BOOLEAN",
+                }
+            ],
+        }
+    )
+    consigne = _consigne(debug)
+    # Le nom reste dit, mais comme une etiquette qu'il ne faut pas confronter a la page.
+    assert "s'appelle « cerfa_debug »" in consigne
+    assert "nom interne" in consigne and "Ne t'en sers pas pour juger" in consigne
+    assert "du formulaire « cerfa_debug »" not in consigne
+    # Un schema partiel ne fixe pas le nombre de pages du document.
+    assert "qui compte 1 pages" not in consigne
+    assert "au moins 1 page." in consigne and "n'en decrire qu'une partie" in consigne
+    assert "- page 1 : deposant" in consigne
 
 
 def test_le_schema_couvre_les_pages_a_champs_du_cerfa() -> None:
@@ -668,7 +690,8 @@ def test_un_autre_formulaire_que_le_cerfa(tmp_path: Path) -> None:
     assert doc.metadata["ordre_pages"] == {"2": 1, "1": 2}
 
     consigne = json.loads(requetes[1].content)["messages"][0]["content"]
-    assert "« Bulletin de salaire », qui compte 2 pages" in consigne
+    assert "s'appelle « Bulletin de salaire »" in consigne
+    assert "compte au moins 2 pages" in consigne
     assert "- page 2 : Cumuls annuels" in consigne
     assert "CERFA" not in consigne and "surendettement" not in consigne
     # La description du champ vient de field_spec.description, sinon du libelle.

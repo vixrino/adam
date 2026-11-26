@@ -16,9 +16,9 @@ une seule instance. Le seed les deplie en une FIELD_SPEC par ligne (group_id,
 REPEATABLE_SECTIONS), et c'est de ces lignes que l'extraction tire une
 propriete par ligne de tableau (ticket T7, connectors/modele.py).
 
-Les prets a la consommation n° 7 et 8 de la page 11 ne sont pas encore
-declares : le seed place toutes les instances d'une section sur une seule
-page, et il faudrait les repartir entre les pages 10 et 11.
+Le tableau des credits a la consommation court sur deux pages : prets n° 1
+a 6 page 10, n° 7 et 8 page 11. Ses champs sont donc declares sur les deux
+pages, et le seed repartit les lignes entre elles (INSTANCES_PAR_PAGE).
 
 Les types sont ceux du script d'origine, sauf la ou un CERFA reel les a mis
 en defaut : code postal, escalier et etage passent en string, un number
@@ -58,9 +58,22 @@ def _nature(libelle: str) -> FieldDef:
 
 
 def _oui_non(prefixe: str, question: str) -> Dict[str, FieldDef]:
+    """Une question a cases Oui / Non : UN booleen, vrai pour Oui, faux pour Non.
+
+    Le CERFA pose la question une fois, avec deux cases ; deux booleens (une
+    case chacun) la faisaient poser deux fois en annotation, et pouvaient se
+    contredire (les deux a vrai).
+    """
+    return {prefixe: {"description": f"{question} ?", "type": "boolean"}}
+
+
+def _nom_adresse(section: str, objet: str, qui: str = "creancier") -> Dict[str, FieldDef]:
+    """Colonne « Nom et adresse du creancier » : une seule case sur le CERFA."""
     return {
-        f"{prefixe}_oui": {"description": f"{question} : oui", "type": "boolean"},
-        f"{prefixe}_non": {"description": f"{question} : non", "type": "boolean"},
+        f"{section}.nom_adresse_{qui}": {
+            "description": f"Nom et adresse du {qui}, {objet}",
+            "type": "string",
+        }
     }
 
 
@@ -71,11 +84,7 @@ def _poursuites(section: str, objet: str) -> Dict[str, FieldDef]:
 def _dettes(section: str, objet: str, montant: str = "Montant impaye") -> Dict[str, FieldDef]:
     """Tableau de dettes des pages 6 et 7 : creancier, reference, montant, poursuites."""
     return {
-        f"{section}.nom_creancier": {"description": f"Nom du creancier, {objet}", "type": "string"},
-        f"{section}.adresse_creancier": {
-            "description": f"Adresse du creancier, {objet}",
-            "type": "string",
-        },
+        **_nom_adresse(section, objet),
         f"{section}.reference": {
             "description": f"Reference de la dette, {objet}",
             "type": "string",
@@ -88,11 +97,7 @@ def _dettes(section: str, objet: str, montant: str = "Montant impaye") -> Dict[s
 def _credit(section: str, objet: str) -> Dict[str, FieldDef]:
     """Colonnes d'un tableau de credits sans assurance (pages 10 et 11)."""
     return {
-        f"{section}.nom_creancier": {"description": f"Nom du creancier, {objet}", "type": "string"},
-        f"{section}.adresse_creancier": {
-            "description": f"Adresse du creancier, {objet}",
-            "type": "string",
-        },
+        **_nom_adresse(section, objet),
         f"{section}.reference": {"description": f"Reference du pret, {objet}", "type": "string"},
         f"{section}.date_octroi": {
             "description": f"Date d'octroi, {objet}",
@@ -255,21 +260,23 @@ _PAGE_1: Dict[str, FieldDef] = {
         "format": "date",
     },
     "certification.signature_deposant": {
-        "description": "Signature du deposant",
+        "description": (
+            "Signature du deposant : true si une signature figure a son emplacement, "
+            "false si l'emplacement est vide"
+        ),
         "type": "boolean",
     },
     "certification.signature_codeposant": {
-        "description": "Signature du co-deposant",
+        "description": (
+            "Signature du co-deposant : true si une signature figure a son emplacement, "
+            "false si l'emplacement est vide, meme sans co-deposant"
+        ),
         "type": "boolean",
     },
 }
 
 _PAGE_2: Dict[str, FieldDef] = {
-    "dossier_precedent.non": {"description": "Aucun dossier precedent", "type": "boolean"},
-    "dossier_precedent.oui": {
-        "description": "Existence d'un dossier precedent",
-        "type": "boolean",
-    },
+    **_oui_non("dossier_precedent.depose", "Avez-vous deja depose un dossier de surendettement"),
     "dossier_precedent.numero": {"description": "Numero du dossier precedent", "type": "string"},
     "situation_familiale.marie": {"description": "Marie(e)", "type": "boolean"},
     "situation_familiale.marie_date": {
@@ -326,14 +333,7 @@ _PAGE_2: Dict[str, FieldDef] = {
         "description": "Situation ou mode de garde",
         "type": "string",
     },
-    "personnes_a_charge.ressources_oui": {
-        "description": "La personne a charge dispose de ressources",
-        "type": "boolean",
-    },
-    "personnes_a_charge.ressources_non": {
-        "description": "La personne a charge ne dispose pas de ressources",
-        "type": "boolean",
-    },
+    **_oui_non("personnes_a_charge.ressources", "La personne a charge a-t-elle des ressources"),
     **{
         f"situation_logement_{personne}.{cle}": {
             **spec,
@@ -374,14 +374,7 @@ _PAGE_2: Dict[str, FieldDef] = {
 }
 
 _PAGE_6: Dict[str, FieldDef] = {
-    "dettes_logement.nom_creancier": {
-        "description": "Nom du creancier de la dette de logement",
-        "type": "string",
-    },
-    "dettes_logement.adresse_creancier": {
-        "description": "Adresse du creancier de la dette de logement",
-        "type": "string",
-    },
+    **_nom_adresse("dettes_logement", "dette de logement"),
     "dettes_logement.reference": {
         "description": "Reference de la dette de logement",
         "type": "string",
@@ -390,22 +383,8 @@ _PAGE_6: Dict[str, FieldDef] = {
         "description": "Montant impaye de la dette de logement",
         "type": "number",
     },
-    "dettes_logement.poursuites_oui": {
-        "description": "Poursuites en cours pour la dette de logement",
-        "type": "boolean",
-    },
-    "dettes_logement.poursuites_non": {
-        "description": "Aucune poursuite pour la dette de logement",
-        "type": "boolean",
-    },
-    "dettes_courantes.nom_creancier": {
-        "description": "Nom du creancier de la dette courante",
-        "type": "string",
-    },
-    "dettes_courantes.adresse_creancier": {
-        "description": "Adresse du creancier de la dette courante",
-        "type": "string",
-    },
+    **_poursuites("dettes_logement", "dette de logement"),
+    **_nom_adresse("dettes_courantes", "dette courante"),
     "dettes_courantes.reference": {
         "description": "Reference de la dette courante",
         "type": "string",
@@ -414,28 +393,14 @@ _PAGE_6: Dict[str, FieldDef] = {
         "description": "Montant impaye de la dette courante",
         "type": "number",
     },
-    "dettes_courantes.poursuites_oui": {
-        "description": "Poursuites en cours pour la dette courante",
-        "type": "boolean",
-    },
-    "dettes_courantes.poursuites_non": {
-        "description": "Aucune poursuite pour la dette courante",
-        "type": "boolean",
-    },
+    **_poursuites("dettes_courantes", "dette courante"),
 }
 
 #: Page 9, credits immobiliers. Meme tableau que la page 10, a deux colonnes
 #: pres : le CERFA y demande l'assureur du pret et le montant mensuel de son
 #: assurance, qui n'existent pas pour un credit a la consommation.
 _PAGE_9: Dict[str, FieldDef] = {
-    "credits_immobiliers.nom_creancier": {
-        "description": "Nom du creancier du credit immobilier",
-        "type": "string",
-    },
-    "credits_immobiliers.adresse_creancier": {
-        "description": "Adresse du creancier du credit immobilier",
-        "type": "string",
-    },
+    **_nom_adresse("credits_immobiliers", "credit immobilier"),
     "credits_immobiliers.nom_assureur": {
         "description": "Nom et adresse de l'assureur du pret, si different du creancier",
         "type": "string",
@@ -474,25 +439,13 @@ _PAGE_9: Dict[str, FieldDef] = {
         "description": "Montant exigible",
         "type": "number",
     },
-    "credits_immobiliers.poursuites_oui": {
-        "description": "Poursuites en cours relatives au credit immobilier",
-        "type": "boolean",
-    },
-    "credits_immobiliers.poursuites_non": {
-        "description": "Aucune poursuite relative au credit immobilier",
-        "type": "boolean",
-    },
+    **_poursuites("credits_immobiliers", "credit immobilier"),
 }
 
-_PAGE_10: Dict[str, FieldDef] = {
-    "credits_consommation.nom_creancier": {
-        "description": "Nom du creancier du credit",
-        "type": "string",
-    },
-    "credits_consommation.adresse_creancier": {
-        "description": "Adresse du creancier du credit",
-        "type": "string",
-    },
+#: Colonnes du tableau des credits a la consommation, qui commence page 10
+#: (prets n° 1 a 6) et se termine page 11 (prets n° 7 et 8).
+_CREDITS_CONSOMMATION: Dict[str, FieldDef] = {
+    **_nom_adresse("credits_consommation", "credit"),
     "credits_consommation.reference": {"description": "Reference du pret", "type": "string"},
     "credits_consommation.date_octroi": {
         "description": "Date d'octroi du credit",
@@ -514,15 +467,10 @@ _PAGE_10: Dict[str, FieldDef] = {
         "type": "number",
     },
     "credits_consommation.montant_exigible": {"description": "Montant exigible", "type": "number"},
-    "credits_consommation.poursuites_oui": {
-        "description": "Poursuites en cours relatives au credit",
-        "type": "boolean",
-    },
-    "credits_consommation.poursuites_non": {
-        "description": "Aucune poursuite relative au credit",
-        "type": "boolean",
-    },
+    **_poursuites("credits_consommation", "credit"),
 }
+
+_PAGE_10: Dict[str, FieldDef] = dict(_CREDITS_CONSOMMATION)
 
 # -- Pages 3 a 11 ------------------------------------------------------------
 #
@@ -601,8 +549,9 @@ _EPARGNE = {
     "parts_sci": "Parts de SCI",
 }
 
-#: Page 3, situation professionnelle et ressources mensuelles. Une seule case
-#: de statut est cochee par colonne : sa date « depuis le » est relevee seule.
+#: Page 3, situation professionnelle et ressources mensuelles. Chaque case de
+#: statut a sa date « depuis le » sur sa ligne, et plusieurs cases peuvent etre
+#: cochees (salarie en CDD et etudiant) : chaque date suit sa case.
 _PAGE_3: Dict[str, FieldDef] = {
     **_colonnes(
         "situation_professionnelle",
@@ -613,17 +562,23 @@ _PAGE_3: Dict[str, FieldDef] = {
             },
             "qualification": {"description": "Qualification", "type": "string"},
             **{
-                f"statut_{cle}": {"description": f"Case {libelle}", "type": "boolean"}
+                champ: spec
                 for cle, libelle in _STATUTS.items()
+                for champ, spec in (
+                    (f"statut_{cle}", {"description": f"Case {libelle}", "type": "boolean"}),
+                    (
+                        f"statut_{cle}_depuis",
+                        {
+                            "description": f"{libelle} depuis le",
+                            "type": "string",
+                            "format": "date",
+                        },
+                    ),
+                )
             },
             "statut_autre_precision": {
                 "description": "Precision ecrite a cote de la case Autre",
                 "type": "string",
-            },
-            "depuis": {
-                "description": "Date « depuis le » en face de la case de statut cochee",
-                "type": "string",
-                "format": "date",
             },
         },
     ),
@@ -638,11 +593,16 @@ _PAGE_3: Dict[str, FieldDef] = {
     ),
 }
 
-#: Page 4, charges, vehicules et gestion du budget.
+#: Page 4, dans l'ordre du CERFA : charges, gestion du budget, vehicules.
 _PAGE_4: Dict[str, FieldDef] = {
     **_colonnes(
         "charges_mensuelles", {cle: _montant(libelle) for cle, libelle in _CHARGES.items()}
     ),
+    **_oui_non("gestion_budget.compte_bancaire", "Avez-vous au moins un compte bancaire"),
+    "gestion_budget.iban": {
+        "description": "IBAN des comptes declares, tels qu'ecrits",
+        "type": "string",
+    },
     "vehicules.type": {"description": "Type de vehicule", "type": "string"},
     **_oui_non(
         "vehicules.loa_lld",
@@ -651,11 +611,6 @@ _PAGE_4: Dict[str, FieldDef] = {
     "vehicules.valeur_estimee": {
         "description": "Valeur estimee en euros, si la case LOA/LLD non est cochee",
         "type": "number",
-    },
-    **_oui_non("gestion_budget.compte_bancaire", "Avez-vous au moins un compte bancaire"),
-    "gestion_budget.iban": {
-        "description": "IBAN des comptes declares, tels qu'ecrits",
-        "type": "string",
     },
 }
 
@@ -707,9 +662,8 @@ _PAGE_7: Dict[str, FieldDef] = {
 
 #: Page 8, decouverts bancaires et locations diverses (LOA, LLD...).
 _PAGE_8: Dict[str, FieldDef] = {
-    "decouverts_bancaires.nom_banque": {"description": "Nom de la banque", "type": "string"},
-    "decouverts_bancaires.adresse_banque": {
-        "description": "Adresse de la banque",
+    "decouverts_bancaires.nom_adresse_banque": {
+        "description": "Nom et adresse de la banque",
         "type": "string",
     },
     "decouverts_bancaires.reference_compte": {
@@ -721,14 +675,7 @@ _PAGE_8: Dict[str, FieldDef] = {
         "type": "number",
     },
     **_poursuites("decouverts_bancaires", "decouvert bancaire"),
-    "locations_diverses.nom_creancier": {
-        "description": "Nom du creancier de la location",
-        "type": "string",
-    },
-    "locations_diverses.adresse_creancier": {
-        "description": "Adresse du creancier de la location",
-        "type": "string",
-    },
+    **_nom_adresse("locations_diverses", "location"),
     "locations_diverses.reference_contrat": {
         "description": "Reference du contrat de location",
         "type": "string",
@@ -757,21 +704,18 @@ _PAGE_8: Dict[str, FieldDef] = {
     **_poursuites("locations_diverses", "location"),
 }
 
-#: Page 11. La suite du tableau des credits a la consommation (prets 7 et 8)
-#: n'y est pas declaree : ses cles sont celles de la page 10, et deux pages ne
-#: peuvent porter la meme cle tant que les repetables (T7) ne sont pas la.
+#: Page 11, dans l'ordre du CERFA : fin du tableau des credits a la
+#: consommation (prets n° 7 et 8, memes cles que la page 10, lignes distinctes
+#: par group_id), autres prets, cautionnement, puis cause du surendettement.
 _PAGE_11: Dict[str, FieldDef] = {
-    "cause_surendettement.texte": {
-        "description": "Cause principale du depot du dossier, telle qu'ecrite",
-        "type": "string",
-    },
+    **_CREDITS_CONSOMMATION,
     **_credit("autres_prets", "autre pret (pret familial, employeur, CAF...)"),
-    "cautionnement.nom_creancier": {
-        "description": "Nom du creancier de la dette cautionnee",
-        "type": "string",
-    },
-    "cautionnement.adresse_creancier": {
-        "description": "Adresse du creancier de la dette cautionnee",
+    "cautionnement.nom_adresse_creancier": {
+        "description": (
+            "Nom et adresse du creancier, dette cautionnee. La mention imprimee "
+            "« Joindre un justificatif avec adresse » n'est pas une valeur : "
+            "case vide si rien n'est ecrit a la main"
+        ),
         "type": "string",
     },
     "cautionnement.reference": {
@@ -784,6 +728,10 @@ _PAGE_11: Dict[str, FieldDef] = {
     },
     "cautionnement.personne_cautionnee": {
         "description": "Nom de la personne ou de la societe cautionnee",
+        "type": "string",
+    },
+    "cause_surendettement.texte": {
+        "description": "Cause principale du depot du dossier, telle qu'ecrite",
         "type": "string",
     },
 }
@@ -808,8 +756,8 @@ CERFA_V2_PAGE_FIELDS: Dict[int, Dict[str, FieldDef]] = {
 #: et non a son rang : un CERFA reel est arrive pages 9 et 10 inversees.
 #: Releves sur le CERFA vierge de la Banque de France, qui imprime aussi
 #: « page N/12 » en tete de chaque page. Les pages 10 et 11 portent toutes deux
-#: les credits a la consommation ; la page 11 s'ouvre sur la cause du
-#: surendettement et porte ensuite autres prets et cautionnement. Les pages sans
+#: les credits a la consommation ; la page 11 porte aussi autres prets et
+#: cautionnement, et se termine par la cause du surendettement. Les pages sans
 #: champs y figurent aussi : les reconnaitre permet de distinguer une page
 #: deplacee d'une page etrangere au formulaire.
 CERFA_V2_PAGE_TITLES: Dict[int, str] = {
@@ -848,9 +796,9 @@ CERFA_V2_PAGE_TITLES: Dict[int, str] = {
         "prets ou le cautionnement est la page 11, pas celle-ci"
     ),
     11: (
-        "Cause de votre situation de surendettement ; Credits a la consommation, "
-        "prets n° 7 et 8 ; Autres prets (prets familiaux, pret employeur, pret "
-        "CAF...) ; Cautionnement"
+        "Credits a la consommation, prets n° 7 et 8 ; Autres prets (prets "
+        "familiaux, pret employeur, pret CAF...) ; Cautionnement ; Cause de votre "
+        "situation de surendettement"
     ),
     12: "Avertissement : adresse a laquelle renvoyer le dossier",
 }

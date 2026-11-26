@@ -2,6 +2,7 @@
 
 from adam_core.models.comparison_result import ComparisonResult
 from adam_core.models.dataset import Dataset
+from adam_core.models.dataset_export import DatasetExport
 from adam_core.models.doc_schema import DocSchema
 from adam_core.models.document import Document
 from adam_core.models.document_field import DocumentField
@@ -26,6 +27,7 @@ __all__ = [
     "TestExecution",
     "TestRecipe",
     "Dataset",
+    "DatasetExport",
     "DocSchema",
     "Document",
     "DocumentField",
