@@ -310,6 +310,41 @@ def construire_cas(source: Dict[str, Any], champ: Optional[str]) -> List[Cas]:
     return cas
 
 
+def variantes_du_reel(reel: Dict[str, Any], source: Dict[str, Any]) -> List[Cas]:
+    """Le schema reel tel qu'en base, puis corrige de ce qui le distingue du source.
+
+    Le nom du schema et la description des pages sont les deux seules choses que
+    le moteur recoit pour reconnaitre une page. Remplacer l'une, l'autre, puis
+    les deux, par celles du schema source dit laquelle fait echouer la
+    reconnaissance.
+    """
+    sid = reel["id"]
+    pages_champs = {int(f["page"]) for f in reel["field_specs"]}
+    pages_source = [
+        p for p in source["pages"] if p.get("description") and int(p["page_number"]) in pages_champs
+    ]
+    avec_nom = dict(reel, name=source["name"])
+    return [
+        Cas(f"reel_{sid}", f"schema {sid} « {reel['name']} » tel qu'en base", reel),
+        Cas(
+            f"reel_{sid}_nom_source",
+            f"schema {sid}, nom remplace par « {source['name']} »",
+            avec_nom,
+        ),
+        Cas(
+            f"reel_{sid}_pages_source",
+            f"schema {sid}, pages {sorted(pages_champs)} decrites "
+            f"comme dans le schema {source['id']}",
+            dict(reel, pages=pages_source),
+        ),
+        Cas(
+            f"reel_{sid}_nom_et_pages_source",
+            f"schema {sid}, nom et pages du schema {source['id']}",
+            dict(avec_nom, pages=pages_source),
+        ),
+    ]
+
+
 # -- Execution d'un cas, a l'identique de la pre-alimentation -------------------
 
 
@@ -430,6 +465,11 @@ def afficher(r: Resultat) -> None:
         f"        schema : {len(s['field_specs'])} champ(s) sur page(s) {pages_champs}, "
         f"{oblig} obligatoire(s), pages decrites {decrites or 'aucune'}"
     )
+    if len(s["field_specs"]) <= 5:
+        cles = ", ".join(
+            f"{f['field_key']} (section {f.get('section_id') or '-'})" for f in s["field_specs"]
+        )
+        print(f"        nom    : « {s['name']} » ; champs : {cles}")
     if r.motif:
         print(f"        motif  : {r.motif}")
     if r.verdict == "OK":
@@ -494,12 +534,10 @@ async def choisir_cas(args: argparse.Namespace) -> Tuple[Dict[str, Any], List[Ca
     """Cas derives du schema source, schemas reels en tete, filtres par --cas."""
     source = await charger_schema(args.source)
     tous = construire_cas(source, args.champ)
+    reels: List[Cas] = []
     for schema_id in [int(x) for x in args.schemas.split(",") if x.strip()]:
-        reel = await charger_schema(schema_id)
-        tous.insert(
-            0,
-            Cas(f"reel_{schema_id}", f"schema {schema_id} « {reel['name']} » tel qu'en base", reel),
-        )
+        reels += variantes_du_reel(await charger_schema(schema_id), source)
+    tous = reels + tous
     if args.cas:
         voulus = {c.strip() for c in args.cas.split(",")}
         inconnus = voulus - {c.nom for c in tous}
