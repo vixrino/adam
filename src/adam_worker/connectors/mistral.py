@@ -456,25 +456,38 @@ def _consigne_identification(nom: str, descriptions: Mapping[int, str], total: i
     a cette consigne. Elle insiste sur le contenu contre le rang : un modele
     qui numerote les pages dans l'ordre ou il les recoit se trompe des qu'un
     document est scanne dans le desordre, et c'est arrive.
+
+    Le nom du schema n'est qu'une etiquette. Presente comme le titre du
+    formulaire, il servait au moteur a juger qu'une page venait d'« un autre
+    document » : un schema nomme « cerfa_debug » faisait rejeter les 12 pages
+    d'un vrai CERFA (document 16, 26/11), que le meme schema nomme comme le
+    formulaire faisait reconnaitre. Le nombre de pages vient du schema, qui
+    peut n'en decrire qu'une partie : c'est un minimum, pas un total, et le
+    numero imprime sur la page reste la seule reference.
     """
     lignes = "\n".join(f"- page {n} : {d}" for n, d in descriptions.items())
     return (
-        f"Tu recois la transcription d'une seule page du formulaire « {nom} », "
-        f"qui compte {total} pages. Dis quelle page du formulaire elle porte. "
-        "Voici les pages, decrites par leurs rubriques imprimees :\n"
-        + lignes
-        + f"\nSi la page porte un numero de page imprime (« page N/{total} », par "
-        "exemple), il fait foi. Sinon, identifie la page par ses titres de "
-        "rubrique. Le document a pu etre scanne dans le desordre : rien ne "
-        "permet de deduire le numero de la page de sa place dans le document. "
-        "Une reference de formulaire repetee en pied de page sur toutes les "
-        "pages ne distingue rien.\n"
+        "Tu recois la transcription d'une seule page d'un document. Dis quelle "
+        "page du formulaire elle porte.\n"
+        f"Le schema qui decrit ce formulaire s'appelle « {nom} ». C'est un nom "
+        "interne, choisi par la personne qui a cree le schema : il peut ne "
+        "figurer nulle part sur la page. Ne t'en sers pas pour juger si la page "
+        "appartient au formulaire.\n"
+        f"Le formulaire compte au moins {total} page{'s' if total > 1 else ''}. "
+        "Voici celles que le schema "
+        "decrit, par leurs rubriques imprimees (il peut n'en decrire qu'une "
+        "partie) :\n" + lignes + "\nSi la page porte un numero de page imprime (« page N/M », par "
+        "exemple), N est son numero et il fait foi. Sinon, identifie la page "
+        "par ses titres de rubrique. Le document a pu etre scanne dans le "
+        "desordre : rien ne permet de deduire le numero de la page de sa place "
+        "dans le document. Une reference de formulaire repetee en pied de page "
+        "sur toutes les pages ne distingue rien.\n"
         "Quand deux pages se ressemblent, seule leur description les distingue : "
         "appuie-toi sur ce qui n'appartient qu'a l'une des deux.\n"
-        "Rends null si la page n'est aucune de celles-ci : notice, autre "
-        "document, page illisible. Ne choisis pas la plus proche par defaut : "
-        "une page attribuee a tort fait relever ses valeurs dans les champs "
-        "d'une autre."
+        "Rends null si la page n'est aucune de celles decrites ci-dessus : "
+        "notice, page d'un autre formulaire, page illisible. Ne choisis pas la "
+        "plus proche par defaut : une page attribuee a tort fait relever ses "
+        "valeurs dans les champs d'une autre."
     )
 
 

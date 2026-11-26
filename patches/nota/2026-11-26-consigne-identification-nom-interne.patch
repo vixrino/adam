@@ -1,0 +1,119 @@
+diff --git a/src/nota_worker/connectors/mistral.py b/src/nota_worker/connectors/mistral.py
+index d2d10e2..67e7898 100644
+--- a/src/nota_worker/connectors/mistral.py
++++ b/src/nota_worker/connectors/mistral.py
+@@ -590,25 +590,38 @@ def _identification_instruction(nom: str, descriptions: Mapping[int, str], total
+     a cette consigne. Elle insiste sur le contenu contre le rang : un modele
+     qui numerote les pages dans l'ordre ou il les recoit se trompe des qu'un
+     document est scanne dans le desordre, et c'est arrive.
++
++    Le nom du schema n'est qu'une etiquette. Presente comme le titre du
++    formulaire, il servait au moteur a juger qu'une page venait d'« un autre
++    document » : un schema nomme « cerfa_debug » faisait rejeter les 12 pages
++    d'un vrai CERFA (document 16, 26/11), que le meme schema nomme comme le
++    formulaire faisait reconnaitre. Le nombre de pages vient du schema, qui
++    peut n'en decrire qu'une partie : c'est un minimum, pas un total, et le
++    numero imprime sur la page reste la seule reference.
+     """
+     lignes = "\n".join(f"- page {n} : {d}" for n, d in descriptions.items())
+     return (
+-        f"Tu recois la transcription d'une seule page du formulaire « {nom} », "
+-        f"qui compte {total} pages. Dis quelle page du formulaire elle porte. "
+-        "Voici les pages, decrites par leurs rubriques imprimees :\n"
+-        + lignes
+-        + f"\nSi la page porte un numero de page imprime (« page N/{total} », par "
+-        "exemple), il fait foi. Sinon, identifie la page par ses titres de "
+-        "rubrique. Le document a pu etre scanne dans le desordre : rien ne "
+-        "permet de deduire le numero de la page de sa place dans le document. "
+-        "Une reference de formulaire repetee en pied de page sur toutes les "
+-        "pages ne distingue rien.\n"
++        "Tu recois la transcription d'une seule page d'un document. Dis quelle "
++        "page du formulaire elle porte.\n"
++        f"Le schema qui decrit ce formulaire s'appelle « {nom} ». C'est un nom "
++        "interne, choisi par la personne qui a cree le schema : il peut ne "
++        "figurer nulle part sur la page. Ne t'en sers pas pour juger si la page "
++        "appartient au formulaire.\n"
++        f"Le formulaire compte au moins {total} page{'s' if total > 1 else ''}. "
++        "Voici celles que le schema "
++        "decrit, par leurs rubriques imprimees (il peut n'en decrire qu'une "
++        "partie) :\n" + lignes + "\nSi la page porte un numero de page imprime (« page N/M », par "
++        "exemple), N est son numero et il fait foi. Sinon, identifie la page "
++        "par ses titres de rubrique. Le document a pu etre scanne dans le "
++        "desordre : rien ne permet de deduire le numero de la page de sa place "
++        "dans le document. Une reference de formulaire repetee en pied de page "
++        "sur toutes les pages ne distingue rien.\n"
+         "Quand deux pages se ressemblent, seule leur description les distingue : "
+         "appuie-toi sur ce qui n'appartient qu'a l'une des deux.\n"
+-        "Rends null si la page n'est aucune de celles-ci : notice, autre "
+-        "document, page illisible. Ne choisis pas la plus proche par defaut : "
+-        "une page attribuee a tort fait relever ses valeurs dans les champs "
+-        "d'une autre."
++        "Rends null si la page n'est aucune de celles decrites ci-dessus : "
++        "notice, page d'un autre formulaire, page illisible. Ne choisis pas la "
++        "plus proche par defaut : une page attribuee a tort fait relever ses "
++        "valeurs dans les champs d'une autre."
+     )
+ 
+ 
+diff --git a/tests/unit/test_connector_mistral.py b/tests/unit/test_connector_mistral.py
+index c18b0f0..e8abcd7 100644
+--- a/tests/unit/test_connector_mistral.py
++++ b/tests/unit/test_connector_mistral.py
+@@ -341,7 +341,7 @@ def test_la_consigne_d_identification_ecarte_le_rang() -> None:
+     consigne = _consigne(MODELE)
+     assert "scanne dans le desordre" in consigne
+     # Le CERFA imprime « page N/12 » en tete : l'indice le plus sur.
+-    assert "page N/12" in consigne and "il fait foi" in consigne
++    assert "page N/M" in consigne and "N est son numero et il fait foi" in consigne
+     assert "identifie la page par ses titres de rubrique" in consigne
+     # Le pied de page "300 BdF 1947 - DIRCOM - 30/04/2020" est commun a toutes.
+     assert "repetee en pied de page sur toutes les pages" in consigne
+@@ -692,6 +692,38 @@ def test_lignes_du_cerfa_vierge() -> None:
+ 
+ 
+ 
++def test_le_nom_du_schema_n_est_qu_une_etiquette() -> None:
++    """Document 16, 26/11 : un schema « cerfa_debug » (un champ, page 1) faisait
++    rejeter les 12 pages d'un vrai CERFA, que le meme schema nomme comme le
++    formulaire faisait reconnaitre. La consigne disait « une seule page du
++    formulaire « cerfa_debug », qui compte 1 pages » : le moteur jugeait la page
++    etrangere a ce formulaire, et un CERFA imprime « 1/12 » contredisait le total.
++    """
++    debug = ModeleDocument.from_schema(
++        {
++            "name": "cerfa_debug",
++            "pages": [],
++            "field_specs": [
++                {
++                    "page": 1,
++                    "section_id": "deposant",
++                    "field_key": "deposant.case_homme",
++                    "value_type": "BOOLEAN",
++                }
++            ],
++        }
++    )
++    consigne = _consigne(debug)
++    # Le nom reste dit, mais comme une etiquette qu'il ne faut pas confronter a la page.
++    assert "s'appelle « cerfa_debug »" in consigne
++    assert "nom interne" in consigne and "Ne t'en sers pas pour juger" in consigne
++    assert "du formulaire « cerfa_debug »" not in consigne
++    # Un schema partiel ne fixe pas le nombre de pages du document.
++    assert "qui compte 1 pages" not in consigne
++    assert "au moins 1 page." in consigne and "n'en decrire qu'une partie" in consigne
++    assert "- page 1 : deposant" in consigne
++
++
+ def test_le_schema_couvre_les_pages_a_champs_du_cerfa() -> None:
+     """Pages 1 a 11 ; la 12 n'est qu'un avertissement d'envoi."""
+     assert sorted(CERFA_V2_PAGE_FIELDS) == list(range(1, 12))
+@@ -770,7 +802,8 @@ def test_un_autre_formulaire_que_le_cerfa(tmp_path: Path) -> None:
+     assert doc.metadata["ordre_pages"] == {"2": 1, "1": 2}
+ 
+     consigne = json.loads(requetes[1].content)["messages"][0]["content"]
+-    assert "« Bulletin de salaire », qui compte 2 pages" in consigne
++    assert "s'appelle « Bulletin de salaire »" in consigne
++    assert "compte au moins 2 pages" in consigne
+     assert "- page 2 : Cumuls annuels" in consigne
+     assert "CERFA" not in consigne and "surendettement" not in consigne
+     # La description du champ vient de field_spec.description, sinon du libelle.
