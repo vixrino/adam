@@ -114,6 +114,36 @@ async def charger_schema(schema_id: Optional[int]) -> Dict[str, Any]:
         return schema_en_dict(schema)
 
 
+async def lister_documents() -> None:
+    """Documents et nombre d'images rendues. Ni nom de fichier ni valeur de champ :
+    ils peuvent porter des donnees personnelles."""
+    async with get_async_session() as db:
+        rows = (
+            await db.execute(
+                select(
+                    Document.id,
+                    Document.dataset_id,
+                    Dataset.schema_id,
+                    Document.status,
+                    Document.file_id,
+                    Document.created_at,
+                )
+                .join(Dataset, Document.dataset_id == Dataset.id)
+                .order_by(Document.id)
+            )
+        ).all()
+    if not rows:
+        print("aucun document en base")
+        return
+    print(f"{'document':>8} {'dataset':>7} {'schema':>6}  {'statut':18} {'images':>6}  cree le")
+    for r in rows:
+        dossier = Path(settings.pvc_mount_path) / default_pages_dir(int(r.file_id))
+        images = len(list(dossier.glob("*.png"))) if dossier.is_dir() else 0
+        cree = r.created_at.strftime("%d/%m %H:%M") if r.created_at else ""
+        print(f"{r.id:>8} {r.dataset_id:>7} {r.schema_id:>6}  {r.status:18} {images:>6}  {cree}")
+    print("\nUtilisable : un document avec images > 0 (statut INGESTED ou au-dela, ou ERROR).")
+
+
 async def images_du_document(document_id: int) -> Tuple[List[Path], Optional[int]]:
     """Images de page du document, et le schema de son dataset."""
     async with get_async_session() as db:
@@ -399,9 +429,17 @@ async def main() -> None:
     parser.add_argument(
         "--accepter-mock", action="store_true", help="tourner meme avec le connecteur simule"
     )
+    parser.add_argument(
+        "--lister-documents",
+        action="store_true",
+        help="lister les documents utilisables (id, dataset, schema, statut, images)",
+    )
     args = parser.parse_args()
 
     init_engine(get_core_settings().async_database_url, echo=False)
+    if args.lister_documents:
+        await lister_documents()
+        return
     source = await charger_schema(args.source)
     tous = construire_cas(source, args.champ)
     for schema_id in [int(x) for x in args.schemas.split(",") if x.strip()]:
