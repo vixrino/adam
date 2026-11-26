@@ -21,8 +21,9 @@ page reconnue qui porte des champs.
     uv run python scripts/diag_cas_schema.py --document-id 42
     uv run python scripts/diag_cas_schema.py --document-id 42 --schemas 12,13
     uv run python scripts/diag_cas_schema.py --document-id 42 --champ deposant.nom
-    uv run python scripts/diag_cas_schema.py --document-id 42 --cas 1champ_sans_page,1champ_sans_page_obligatoire
+    uv run python scripts/diag_cas_schema.py --document-id 42 --cas 1champ_sans_page,reference
     uv run python scripts/diag_cas_schema.py --lister-cas
+    uv run python scripts/diag_cas_schema.py --lister-documents
 
 Le script tourne tel quel dans nota-back et dans adam (paquets nota_* ou adam_*).
 """
@@ -38,6 +39,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+# pylint: disable=wrong-import-position
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.orm import selectinload  # noqa: E402
 
@@ -406,7 +408,7 @@ def afficher(r: Resultat) -> None:
             print(f"        anomalie : {a}")
 
 
-async def main() -> None:
+def lire_options() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -434,12 +436,11 @@ async def main() -> None:
         action="store_true",
         help="lister les documents utilisables (id, dataset, schema, statut, images)",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    init_engine(get_core_settings().async_database_url, echo=False)
-    if args.lister_documents:
-        await lister_documents()
-        return
+
+async def choisir_cas(args: argparse.Namespace) -> Tuple[Dict[str, Any], List[Cas]]:
+    """Cas derives du schema source, schemas reels en tete, filtres par --cas."""
     source = await charger_schema(args.source)
     tous = construire_cas(source, args.champ)
     for schema_id in [int(x) for x in args.schemas.split(",") if x.strip()]:
@@ -454,6 +455,16 @@ async def main() -> None:
         if inconnus:
             raise SystemExit(f"cas inconnus : {sorted(inconnus)}")
         tous = [c for c in tous if c.nom in voulus]
+    return source, tous
+
+
+async def main() -> None:
+    args = lire_options()
+    init_engine(get_core_settings().async_database_url, echo=False)
+    if args.lister_documents:
+        await lister_documents()
+        return
+    source, tous = await choisir_cas(args)
 
     print(SEP)
     print(f"schema source : {source['id']} « {source['name']} »")
@@ -468,7 +479,8 @@ async def main() -> None:
     connecteur = connector_from_settings(settings)
     nom_connecteur = getattr(connecteur, "name", type(connecteur).__name__)
     print(
-        f"document      : {args.document_id}, {len(images)} image(s), dataset sur le schema {schema_du_dataset}"
+        f"document      : {args.document_id}, {len(images)} image(s), "
+        f"dataset sur le schema {schema_du_dataset}"
     )
     print(f"connecteur    : {nom_connecteur}")
     if getattr(settings, "ocr_mock_enabled", False) and not args.accepter_mock:
