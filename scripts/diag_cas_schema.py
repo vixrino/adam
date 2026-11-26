@@ -24,7 +24,7 @@ page reconnue qui porte des champs.
     uv run python scripts/diag_cas_schema.py --document-id 42 --cas 1champ_sans_page,reference
     uv run python scripts/diag_cas_schema.py --document-id 42 --repetitions 3 --cas a,b
     uv run python scripts/diag_cas_schema.py --lister-cas
-    uv run python scripts/diag_cas_schema.py --lister-documents
+    uv run python scripts/diag_cas_schema.py --lister-documents --dataset 3
 
 Le script tourne tel quel dans nota-back et dans adam (paquets nota_* ou adam_*).
 """
@@ -117,24 +117,26 @@ async def charger_schema(schema_id: Optional[int]) -> Dict[str, Any]:
         return schema_en_dict(schema)
 
 
-async def lister_documents() -> None:
-    """Documents et nombre d'images rendues. Ni nom de fichier ni valeur de champ :
-    ils peuvent porter des donnees personnelles."""
+async def lister_documents(dataset_id: Optional[int] = None) -> None:
+    """Documents, images rendues et motif d'une ERROR. Ni nom de fichier ni valeur
+    de champ : ils peuvent porter des donnees personnelles."""
+    requete = (
+        select(
+            Document.id,
+            Document.dataset_id,
+            Dataset.schema_id,
+            Document.status,
+            Document.file_id,
+            Document.created_at,
+            Document.metadata_,
+        )
+        .join(Dataset, Document.dataset_id == Dataset.id)
+        .order_by(Document.id)
+    )
+    if dataset_id is not None:
+        requete = requete.where(Document.dataset_id == dataset_id)
     async with get_async_session() as db:
-        rows = (
-            await db.execute(
-                select(
-                    Document.id,
-                    Document.dataset_id,
-                    Dataset.schema_id,
-                    Document.status,
-                    Document.file_id,
-                    Document.created_at,
-                )
-                .join(Dataset, Document.dataset_id == Dataset.id)
-                .order_by(Document.id)
-            )
-        ).all()
+        rows = (await db.execute(requete)).all()
     if not rows:
         print("aucun document en base")
         return
@@ -144,6 +146,10 @@ async def lister_documents() -> None:
         images = len(list(dossier.glob("*.png"))) if dossier.is_dir() else 0
         cree = r.created_at.strftime("%d/%m %H:%M") if r.created_at else ""
         print(f"{r.id:>8} {r.dataset_id:>7} {r.schema_id:>6}  {r.status:18} {images:>6}  {cree}")
+        erreur = (r.metadata_ or {}).get("erreur") if isinstance(r.metadata_, dict) else None
+        if erreur:
+            etape = erreur.get("etape", "?")
+            print(f"{'':>8} motif ({etape}) : {erreur.get('message', erreur)}")
     print("\nUtilisable : un document avec images > 0 (statut INGESTED ou au-dela, ou ERROR).")
 
 
@@ -474,6 +480,9 @@ def lire_options() -> argparse.Namespace:
         help="secondes d'attente entre deux cas (defaut 10), contre les refus 429 du moteur",
     )
     parser.add_argument(
+        "--dataset", type=int, help="avec --lister-documents : ne lister que ce dataset"
+    )
+    parser.add_argument(
         "--lister-documents",
         action="store_true",
         help="lister les documents utilisables (id, dataset, schema, statut, images)",
@@ -504,7 +513,7 @@ async def main() -> None:
     args = lire_options()
     init_engine(get_core_settings().async_database_url, echo=False)
     if args.lister_documents:
-        await lister_documents()
+        await lister_documents(args.dataset)
         return
     source, tous = await choisir_cas(args)
 
