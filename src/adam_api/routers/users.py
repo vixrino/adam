@@ -1,4 +1,5 @@
 """Users
+GET /users/me : l'utilisateur connecte, cree depuis l'AD a sa premiere connexion
 GET : lecture avec filtres
 POST : creation d'un utilisateur
 PATCH : mise a jour de nom et status, ainsi que l'archivage (soft delete) et restauration
@@ -9,11 +10,12 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from adam_api.dependencies.db import get_db
+from adam_api.dependencies.auth import UserCaller, require_user_premiere_connexion
+from adam_api.dependencies.db import get_db, get_db_premiere_connexion
 from adam_core.enums.status import UserStatus
 from adam_core.models import User
 from adam_core.schemas.responses import (
@@ -33,6 +35,10 @@ from adam_core.utils.exceptions import (
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
+#: GET /users/me vit a part : il est monte sans get_caller, qui refuserait un
+#: agent absent de `user` avant que la route ait pu le creer (cf. main.py).
+me_router = APIRouter(prefix="/users", tags=["Users"])
+
 
 class UserIn(BaseModel):
     organisation_id: int
@@ -49,6 +55,7 @@ class UserPatch(BaseModel):
 # ---------------------------------------------------------------------------
 # GET
 # ---------------------------------------------------------------------------
+
 
 @router.get("", response_model=List[UserListItemOut])
 async def list_users(
@@ -81,14 +88,7 @@ async def list_users(
     ]
 
 
-@router.get("/{user_id}", response_model=UserDetailOut)
-async def get_user(user_id: int, db: AsyncSession = Depends(get_db)) -> UserDetailOut:
-    result = await db.execute(
-        select(User).where(User.id == user_id).options(selectinload(User.user_projects))
-    )
-    user = result.scalar_one_or_none()
-    if not user:
-        raise_not_found(User)
+def _detail(user: User) -> UserDetailOut:
     return UserDetailOut(
         id=user.id,
         email=user.email,
@@ -111,9 +111,39 @@ async def get_user(user_id: int, db: AsyncSession = Depends(get_db)) -> UserDeta
     )
 
 
+@me_router.get("/me", response_model=UserDetailOut)
+async def get_me(
+    caller: UserCaller = Depends(require_user_premiere_connexion),
+    db: AsyncSession = Depends(get_db_premiere_connexion),
+) -> UserDetailOut:
+    """L'utilisateur connecte. A sa premiere connexion, sa ligne vient d'etre
+    creee depuis l'AD par la dependance : il n'a encore aucun projet."""
+    result = await db.execute(
+        select(User)
+        .where(func.upper(User.matricule) == caller.matricule.upper())
+        .options(selectinload(User.user_projects))
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise_not_found(User)
+    return _detail(user)
+
+
+@router.get("/{user_id}", response_model=UserDetailOut)
+async def get_user(user_id: int, db: AsyncSession = Depends(get_db)) -> UserDetailOut:
+    result = await db.execute(
+        select(User).where(User.id == user_id).options(selectinload(User.user_projects))
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise_not_found(User)
+    return _detail(user)
+
+
 # ---------------------------------------------------------------------------
 # POST
 # ---------------------------------------------------------------------------
+
 
 @router.post("", response_model=UserCreatedOut, status_code=201)
 async def create_user(payload: UserIn, db: AsyncSession = Depends(get_db)) -> UserCreatedOut:
@@ -151,6 +181,7 @@ async def create_user(payload: UserIn, db: AsyncSession = Depends(get_db)) -> Us
 # PATCH
 # ---------------------------------------------------------------------------
 
+
 @router.patch("/{user_id}", response_model=UserPatchOut)
 async def patch_user(
     user_id: int,
@@ -184,6 +215,7 @@ async def patch_user(
 # ---------------------------------------------------------------------------
 # Archive / Restore
 # ---------------------------------------------------------------------------
+
 
 @router.post("/{user_id}/archive", response_model=UserPatchOut)
 async def archive_user(user_id: int, db: AsyncSession = Depends(get_db)) -> UserPatchOut:

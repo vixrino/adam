@@ -68,6 +68,10 @@ class Settings(CoreSettings):
     #: Fins de matricule a exclure (« OT2 » : I21080MOT2).
     ad_exclude_suffixes: str = ""
     ad_exclude_ous: str = ""
+    #: Slug de l'organisation des agents crees a leur premiere connexion, quand
+    #: aucun mot de leur departement AD n'est le slug d'une organisation. Vide :
+    #: pas de repli, l'agent est refuse.
+    ad_organisation_defaut: str = ""
 
     #: Cle du HMAC des valeurs lues sur les champs sensibles, dans les ecarts du
     #: benchmark : une erreur recurrente sur un IBAN se reconnait a son

@@ -38,8 +38,13 @@ from adam_api.services.annuaire import (
     PersonneAnnuaire,
     annuaire_depuis_settings,
 )
+from adam_api.services.premiere_connexion import (
+    AdresseMailPrise,
+    SansAdresseMail,
+    nouvel_utilisateur,
+    verifier_adresse,
+)
 from adam_core.enums.roles import PlatformRole, ProjectRole
-from adam_core.enums.status import UserStatus
 from adam_core.models import Project, User, UserProject
 from adam_core.utils.logging import get_logger
 
@@ -238,27 +243,20 @@ async def _utilisateur(
                 detail="cette personne appartient a une autre organisation que le projet",
             )
         return existant, False
-    if not personne.email:
+    try:
+        await verifier_adresse(db, personne)
+    except SansAdresseMail as exc:
         raise HTTPException(
             status_code=422,
             detail="compte AD sans adresse mail : impossible de creer l'utilisateur",
-        )
-    homonyme = (
-        await db.execute(select(User.id).where(func.lower(User.email) == personne.email.lower()))
-    ).first()
-    if homonyme is not None:
+        ) from exc
+    except AdresseMailPrise as exc:
         # L'adresse est unique en base : un autre matricule la porte deja.
         raise HTTPException(
             status_code=409,
             detail="l'adresse mail de ce compte AD est deja portee par un autre utilisateur",
-        )
-    user = User(
-        organisation_id=organisation_id,
-        email=personne.email,
-        full_name=personne.nom_affiche,
-        matricule=personne.matricule.upper(),
-        status=UserStatus.ACTIVE.value,
-    )
+        ) from exc
+    user = nouvel_utilisateur(personne, organisation_id)
     db.add(user)
     await db.flush()
     return user, True
