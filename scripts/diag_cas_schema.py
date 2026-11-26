@@ -22,6 +22,7 @@ page reconnue qui porte des champs.
     uv run python scripts/diag_cas_schema.py --document-id 42 --schemas 12,13
     uv run python scripts/diag_cas_schema.py --document-id 42 --champ deposant.nom
     uv run python scripts/diag_cas_schema.py --document-id 42 --cas 1champ_sans_page,reference
+    uv run python scripts/diag_cas_schema.py --document-id 42 --repetitions 3 --cas a,b
     uv run python scripts/diag_cas_schema.py --lister-cas
     uv run python scripts/diag_cas_schema.py --lister-documents
 
@@ -349,6 +350,26 @@ def instrumenter(connecteur: Any) -> Callable[[], Dict[int, Optional[int]]]:
     return relever
 
 
+#: Statuts du moteur qui disent « trop de requetes » ou « surcharge » : ils
+#: ne disent rien du schema, le cas est rejoue apres une attente.
+SATURATION = ("statut 429", "statut 503")
+
+
+async def jouer_avec_relance(
+    connecteur: Any, images: List[Path], cas: Cas, relever: Callable[[], Any], attente: float
+) -> Resultat:
+    """Rejoue un cas que le moteur a refuse par saturation, jusqu'a 3 fois."""
+    for essai in range(3):
+        r = await jouer(connecteur, images, cas, relever)
+        if not any(code in r.motif for code in SATURATION):
+            return r
+        if essai < 2:
+            print(f"        moteur sature ({r.motif[-12:]}), nouvel essai dans {attente:.0f} s")
+            await asyncio.sleep(attente)
+    r.verdict = "SATURE"
+    return r
+
+
 async def jouer(
     connecteur: Any, images: List[Path], cas: Cas, relever: Callable[[], Any]
 ) -> Resultat:
@@ -385,6 +406,14 @@ async def jouer(
     return Resultat(cas, "OK", motif, count_detected(payloads), vues, anomalies)
 
 
+def pages_du_champ_reconnues(r: Resultat) -> str:
+    """« oui » si chaque page portant un champ a ete reconnue sur une image."""
+    attendues = {int(f["page"]) for f in r.cas.schema["field_specs"]}
+    vues = {p for p in r.identifications.values() if p is not None}
+    manque = sorted(attendues - vues)
+    return "oui" if not manque else f"non {manque}"
+
+
 def afficher(r: Resultat) -> None:
     s = r.cas.schema
     decrites = sorted(int(p["page_number"]) for p in s["pages"] if p.get("description"))
@@ -399,6 +428,7 @@ def afficher(r: Resultat) -> None:
         print(f"        motif  : {r.motif}")
     if r.verdict == "OK":
         print(f"        valeurs lues : {r.detectes}")
+    print(f"        page du champ reconnue : {pages_du_champ_reconnues(r)}")
     reconnues = ", ".join(
         f"{rang}->{page if page is not None else '-'}" for rang, page in r.identifications.items()
     )
@@ -430,6 +460,18 @@ def lire_options() -> argparse.Namespace:
     )
     parser.add_argument(
         "--accepter-mock", action="store_true", help="tourner meme avec le connecteur simule"
+    )
+    parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=1,
+        help="jouer chaque cas N fois, pour distinguer un effet du schema du hasard du moteur",
+    )
+    parser.add_argument(
+        "--pause",
+        type=float,
+        default=10.0,
+        help="secondes d'attente entre deux cas (defaut 10), contre les refus 429 du moteur",
     )
     parser.add_argument(
         "--lister-documents",
@@ -492,26 +534,47 @@ async def main() -> None:
         raise SystemExit(
             f"connecteur {nom_connecteur} sans lecture page par page : diagnostic impossible"
         )
-    appels = len(images) + len(tous) * (len(images) + 2)
-    print(f"cas           : {len(tous)}, environ {appels} appels au moteur au plus")
+    appels = len(images) + len(tous) * args.repetitions * (len(images) + 2)
+    print(
+        f"cas           : {len(tous)} x {args.repetitions} repetition(s), "
+        f"environ {appels} appels au moteur au plus, {args.pause:.0f} s entre deux cas"
+    )
     print(SEP)
 
     relever = instrumenter(connecteur)
-    resultats: List[Resultat] = []
-    for c in tous:
-        r = await jouer(connecteur, images, c, relever)
-        afficher(r)
-        resultats.append(r)
+    resultats: Dict[str, List[Resultat]] = {c.nom: [] for c in tous}
+    premier = True
+    for tour in range(1, args.repetitions + 1):
+        for c in tous:
+            if not premier:
+                await asyncio.sleep(args.pause)
+            premier = False
+            r = await jouer_avec_relance(connecteur, images, c, relever, attente=6 * args.pause)
+            if args.repetitions > 1:
+                print(f"\n--- repetition {tour}/{args.repetitions}", end="")
+            afficher(r)
+            resultats[c.nom].append(r)
+    synthese(resultats)
 
+
+def synthese(resultats: Dict[str, List[Resultat]]) -> None:
+    """Une ligne par cas : verdicts, valeurs lues et reconnaissance de la page du champ."""
     print("\n" + SEP)
-    print("SYNTHESE")
+    print("SYNTHESE  (lu = OK avec au moins une valeur, vide = OK sans valeur lue)")
     print(SEP)
-    for r in resultats:
-        print(f"  {r.verdict:5}  {r.cas.nom:38} {r.motif}")
-    erreurs = [r for r in resultats if r.verdict != "OK"]
-    if not erreurs:
-        print("\nAucun cas en ERROR : le probleme ne vient pas d'une de ces proprietes du schema.")
-        print("Rejouer le schema qui casse avec --schemas <id> pour le comparer a ces cas.")
+    print(f"  {'cas':38} {'lu':>3} {'vide':>4} {'ERROR':>5} {'SATURE':>6}  page du champ reconnue")
+    for nom, liste in resultats.items():
+        lu = sum(1 for r in liste if r.verdict == "OK" and r.detectes > 0)
+        vide = sum(1 for r in liste if r.verdict == "OK" and r.detectes == 0)
+        err = sum(1 for r in liste if r.verdict == "ERROR")
+        sat = sum(1 for r in liste if r.verdict == "SATURE")
+        pages = ", ".join(pages_du_champ_reconnues(r) for r in liste)
+        print(f"  {nom:38} {lu:>3} {vide:>4} {err:>5} {sat:>6}  {pages}")
+    motifs = sorted(
+        {r.motif for liste in resultats.values() for r in liste if r.verdict == "ERROR"}
+    )
+    for m in motifs:
+        print(f"  ERROR : {m}")
 
 
 if __name__ == "__main__":
