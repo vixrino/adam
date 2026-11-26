@@ -24,6 +24,9 @@ import sys
 from pathlib import Path
 from typing import Any, List, Optional
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import create_async_engine
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
@@ -39,25 +42,26 @@ def _paquet_core() -> str:
 
 
 async def verifier(core: str, schema_id: Optional[int], tous: bool) -> None:
-    from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
-
+    # Requetes construites sur les modeles, pas en SQL ecrit a la main : dans
+    # nota, les tables vivent dans le schema PostgreSQL « nota » (MetaData de
+    # nota_core.db.base). Un « FROM doc_schema » non qualifie suit le
+    # search_path et lit public.doc_schema, une table residuelle qui peut
+    # exister a cote et ne montre pas les schemas de l'application.
     settings = importlib.import_module(f"{core}.core.config").get_core_settings()
+    models = importlib.import_module(f"{core}.models")
+    doc_schema = models.DocSchema.__table__
+    schema_page = models.SchemaPage.__table__
+    field_spec = models.FieldSpec.__table__
+    print(f"tables lues : {doc_schema.fullname}, {schema_page.fullname}, {field_spec.fullname}")
     engine = create_async_engine(settings.async_database_url)
     try:
         async with engine.connect() as conn:
+            requete = select(doc_schema.c.id, doc_schema.c.name, doc_schema.c.document_type)
             if schema_id is not None:
-                filtre, params = "WHERE id = :id", {"id": schema_id}
-            elif tous:
-                filtre, params = "", {}
-            else:
-                filtre, params = "WHERE document_type = :t", {"t": CERFA_DOCUMENT_TYPE}
-            schemas: List[Any] = (
-                await conn.execute(
-                    text(f"SELECT id, name, document_type FROM doc_schema {filtre} ORDER BY id"),
-                    params,
-                )
-            ).all()
+                requete = requete.where(doc_schema.c.id == schema_id)
+            elif not tous:
+                requete = requete.where(doc_schema.c.document_type == CERFA_DOCUMENT_TYPE)
+            schemas: List[Any] = (await conn.execute(requete.order_by(doc_schema.c.id))).all()
             if not schemas:
                 print("aucun schema trouve (essayer --tous)")
                 return
@@ -65,21 +69,22 @@ async def verifier(core: str, schema_id: Optional[int], tous: bool) -> None:
             for schema in schemas:
                 pages = (
                     await conn.execute(
-                        text(
-                            "SELECT page_number, description FROM schema_page "
-                            "WHERE schema_id = :s ORDER BY page_number"
-                        ),
-                        {"s": schema.id},
+                        select(schema_page.c.page_number, schema_page.c.description)
+                        .where(schema_page.c.schema_id == schema.id)
+                        .order_by(schema_page.c.page_number)
                     )
                 ).all()
+                decrit = func.coalesce(field_spec.c.description, "") != ""
                 champs = (
                     await conn.execute(
-                        text(
-                            "SELECT page, count(*) AS total, "
-                            "count(*) FILTER (WHERE coalesce(description, '') <> '') AS decrits "
-                            "FROM field_spec WHERE schema_id = :s GROUP BY page ORDER BY page"
-                        ),
-                        {"s": schema.id},
+                        select(
+                            field_spec.c.page,
+                            func.count().label("total"),
+                            func.count().filter(decrit).label("decrits"),
+                        )
+                        .where(field_spec.c.schema_id == schema.id)
+                        .group_by(field_spec.c.page)
+                        .order_by(field_spec.c.page)
                     )
                 ).all()
 
@@ -102,7 +107,10 @@ async def verifier(core: str, schema_id: Optional[int], tous: bool) -> None:
 
                 problemes = []
                 if not pages:
-                    problemes.append("aucune page decrite : l'identification des pages echouera")
+                    problemes.append(
+                        "aucune page decrite : le moteur reconnait les pages "
+                        "aux seuls noms de section"
+                    )
                 if total and decrits < total:
                     problemes.append(
                         f"{total - decrits} champ(s) sans description : display_label servira"
@@ -115,7 +123,7 @@ async def verifier(core: str, schema_id: Optional[int], tous: bool) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("Usage")[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("Usage", maxsplit=1)[0])
     parser.add_argument("--schema-id", type=int, help="Schema a verifier")
     parser.add_argument("--tous", action="store_true", help="Tous les schemas de la base")
     args = parser.parse_args()
