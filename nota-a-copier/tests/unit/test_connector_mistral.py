@@ -1,0 +1,839 @@
+"""Tests unitaires du connecteur OCR Mistral.
+
+Le transport HTTP est simule par httpx.MockTransport : aucun appel reseau. Le
+connecteur passe jusqu'a trois appels par page — /v1/ocr pour le markdown, puis
+deux /v1/chat/completions, l'un pour identifier la page du CERFA, l'autre pour
+en extraire les champs — donc le faux transport route sur le chemin et sur le
+nom du json_schema plutot que de compter les requetes.
+
+Les criteres d'acceptation du ticket T5 couverts ici :
+
+    CA-1  extract rend un SmartdocDocument valide
+    CA-2  les KVPair portent les cles pointees du schema
+    CA-3  injoignable -> OcrConnectorError ; rien detecte -> None
+    CA-5  cle et endpoint exiges de la configuration, jamais en dur
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Callable, List, Optional
+
+import httpx
+import pytest
+
+from nota_worker.connectors import connector_from_settings
+from nota_worker.connectors.base import DocumentNonConforme, OcrConnectorError
+from nota_core.schemas.cerfa_v2 import CERFA_V2_PAGE_FIELDS, CERFA_V2_PAGE_TITLES
+from nota_worker.connectors.mistral import (
+    _CONSIGNE,
+    _IDENTIFICATION,
+    MistralOcrConnector,
+    _identification_instruction,
+    _page_descriptions,
+    _to_kv_value,
+)
+from nota_worker.connectors.modele import ModeleDocument
+from nota_worker.connectors.mock import MockOcrConnector
+
+ENDPOINT = "https://mistral.test"
+#: Le CERFA tel que le seed l'ecrit en base : le connecteur n'en sait rien
+#: d'autre que ce modele.
+MODELE = ModeleDocument(
+    nom="CERFA 13594*02 - declaration de surendettement",
+    pages=CERFA_V2_PAGE_TITLES,
+    champs=CERFA_V2_PAGE_FIELDS,
+)
+MARKDOWN = "| Nom | MARTIN |\n| --- | --- |"
+DIMENSIONS = {"dpi": 300, "width": 2480, "height": 3508}
+
+
+def _connector(handler: Callable[[httpx.Request], httpx.Response]) -> MistralOcrConnector:
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        headers={"Authorization": "Bearer cle-test"},
+    )
+    return MistralOcrConnector(api_key="cle-test", endpoint=ENDPOINT, client=client)
+
+
+def _images(tmp_path: Path, count: int) -> List[Path]:
+    paths = []
+    for i in range(1, count + 1):
+        p = tmp_path / f"page_{i:03d}.png"
+        p.write_bytes(b"fausse-image")
+        paths.append(p)
+    return paths
+
+
+def _routeur(
+    annotations: Callable[[int], Any],
+    markdown: str = MARKDOWN,
+    journal: Optional[List[httpx.Request]] = None,
+    identification: Callable[[int], Any] = lambda rang: rang,
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Faux endpoint : /v1/ocr rend du markdown, /v1/chat/completions identifie
+    la page ou l'annote selon le json_schema recu.
+
+    `annotations` et `identification` recoivent le rang de l'image dans le PDF
+    (1 pour la premiere). `identification` rend la page du CERFA reconnue — par
+    defaut le rang, document dans l'ordre — et `annotations` l'objet
+    d'annotation, ou None pour une reponse sans contenu.
+    """
+    soumises = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if journal is not None:
+            journal.append(request)
+        if request.url.path.endswith("/v1/ocr"):
+            soumises["n"] += 1
+            return httpx.Response(
+                200,
+                json={"pages": [{"index": 0, "markdown": markdown, "dimensions": DIMENSIONS}]},
+            )
+        corps = json.loads(request.content)
+        if corps["response_format"]["json_schema"]["name"] == _IDENTIFICATION:
+            page = identification(soumises["n"])
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": json.dumps({"page": page})}}]}
+            )
+        annotation = annotations(soumises["n"])
+        contenu = None if annotation is None else json.dumps(annotation)
+        return httpx.Response(200, json={"choices": [{"message": {"content": contenu}}]})
+
+    return handler
+
+
+# -- Cas nominal ------------------------------------------------------------
+
+
+def test_extract_rend_un_document_conforme(tmp_path: Path) -> None:
+    """CA-1/CA-2 : ids pointes, types wire respectes, sections groupees."""
+
+    def annotations(page: int) -> Any:
+        if page == 1:
+            return {
+                "deposant.nom_naissance": "MARTIN",
+                "deposant.date_naissance": "1980-01-02",
+                "coordonnees_personnelles.code_postal": "01500",
+                "certification.signature_deposant": True,
+                "cle.inventee": "ignoree",
+            }
+        # Page 2 : annotation regroupee par section, que le connecteur aplatit.
+        return {"situation_familiale": {"situation_familiale.celibataire": False}}
+
+    requetes: List[httpx.Request] = []
+    doc = asyncio.run(
+        _connector(_routeur(annotations, journal=requetes)).extract(_images(tmp_path, 2), MODELE)
+    )
+
+    assert doc is not None
+    assert doc.smartdoc_version == "0.3"
+    assert doc.page_count == 2
+    # Deux pages porteuses de champs, trois appels chacune.
+    assert len(requetes) == 6
+
+    by_id = {kv.id: kv for _, _, kv in doc.iter_kv_pairs()}
+    assert by_id["deposant.nom_naissance"].value.type == "text"
+    assert by_id["deposant.nom_naissance"].extracted_value == "MARTIN"
+    assert by_id["deposant.date_naissance"].value.type == "date"
+    # Code postal en texte : un number aurait rendu 1500.
+    assert by_id["coordonnees_personnelles.code_postal"].value.type == "text"
+    assert by_id["coordonnees_personnelles.code_postal"].extracted_value == "01500"
+    assert by_id["certification.signature_deposant"].value.type == "boolean"
+    # False est une detection (case vue non cochee), pas une absence.
+    assert by_id["situation_familiale.celibataire"].extracted_value == "false"
+    # La cle inventee par le modele n'existe pas dans le document.
+    assert "cle.inventee" not in by_id
+    # Un champ attendu mais non rendu existe, sans valeur.
+    assert by_id["deposant.nom_usage"].value is None
+    # Les sections reprennent le premier segment des cles.
+    sections = {s.id for _, s, _ in doc.iter_kv_pairs()}
+    assert "deposant" in sections and "situation_familiale" in sections
+    # Les dimensions viennent de l'OCR, la completion n'en rend pas.
+    assert doc.pages[0].width == 2480 and doc.pages[0].height == 3508
+
+
+def test_les_deux_appels_portent_image_puis_schema(tmp_path: Path) -> None:
+    """L'image part a l'OCR, le json_schema plat part en response_format."""
+    requetes: List[httpx.Request] = []
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
+    asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE))
+
+    ocr, _identification, annotation = requetes
+    assert str(ocr.url) == f"{ENDPOINT}/v1/ocr"
+    assert ocr.headers.get("Authorization") == "Bearer cle-test"
+    corps_ocr = json.loads(ocr.content)
+    assert corps_ocr["document"]["image_url"].startswith("data:image/png;base64,")
+    # L'annotation n'est plus deleguee a l'endpoint OCR.
+    assert "document_annotation_format" not in corps_ocr
+
+    assert str(annotation.url) == f"{ENDPOINT}/v1/chat/completions"
+    corps = json.loads(annotation.content)
+    assert corps["model"] == "mistral-medium-latest"
+    assert corps["temperature"] == 0
+    assert [m["role"] for m in corps["messages"]] == ["system", "user"]
+    assert corps["messages"][0]["content"] == _CONSIGNE
+    assert corps["messages"][-1]["content"] == MARKDOWN
+    schema = corps["response_format"]["json_schema"]["schema"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == set(CERFA_V2_PAGE_FIELDS[1])
+
+
+def test_le_schema_autorise_null_sur_chaque_champ(tmp_path: Path) -> None:
+    """Sans null, le mode strict oblige le modele a fabriquer une valeur.
+
+    Sur un CERFA reel, date_octroi rendait 1947-01-01 pour un tableau vide :
+    le type "string" seul interdisait la seule reponse juste.
+    """
+    requetes: List[httpx.Request] = []
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
+    asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE))
+
+    schema = json.loads(requetes[2].content)["response_format"]["json_schema"]["schema"]
+    proprietes = schema["properties"]
+    assert all("null" in p["type"] for p in proprietes.values())
+    # Le type du contrat survit a cote de null, il n'est pas remplace.
+    assert "boolean" in proprietes["deposant.civilite_monsieur"]["type"]
+    # Strict exige que tout figure dans required : l'absence passe par null.
+    assert set(schema["required"]) == set(proprietes)
+
+
+def test_pages_sans_schema_ne_sont_pas_annotees(tmp_path: Path) -> None:
+    """Toutes les pages passent a l'OCR et a l'identification, puisqu'une page
+    a champs peut etre a n'importe quel rang ; seules les pages a champs sont
+    annotees."""
+    requetes: List[httpx.Request] = []
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 12), MODELE))
+
+    # Page 12, l'avertissement d'envoi, n'a pas de champs : OCR et
+    # identification seulement.
+    assert len(requetes) == 2 * 12 + len(CERFA_V2_PAGE_FIELDS)
+    assert doc is not None
+    assert doc.page_count == 12
+    assert [p.page_number for p in doc.pages] == sorted(CERFA_V2_PAGE_FIELDS)
+    # Document dans l'ordre et complet : rien a signaler.
+    assert doc.metadata["anomalies_pages"] == []
+
+
+# -- Identification des pages -----------------------------------------------
+
+
+def _schema_annote(requete: httpx.Request) -> set:
+    return set(
+        json.loads(requete.content)["response_format"]["json_schema"]["schema"]["properties"]
+    )
+
+
+def test_pages_inversees_sont_annotees_avec_leur_propre_schema(tmp_path: Path) -> None:
+    """Pages 1 et 2 scannees dans l'ordre inverse : l'image 1 porte la page 2
+    et doit etre annotee avec le schema de la page 2, pas celui de son rang."""
+    requetes: List[httpx.Request] = []
+    handler = _routeur(
+        lambda _: {"deposant.prenoms": "Jean"},
+        journal=requetes,
+        identification=lambda rang: {1: 2, 2: 1}[rang],
+    )
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 2), MODELE))
+
+    annotations = [
+        r
+        for r in requetes
+        if json.loads(r.content).get("response_format", {}).get("json_schema", {}).get("name")
+        not in (None, _IDENTIFICATION)
+    ]
+    assert _schema_annote(annotations[0]) == set(CERFA_V2_PAGE_FIELDS[2])
+    assert _schema_annote(annotations[1]) == set(CERFA_V2_PAGE_FIELDS[1])
+    assert doc is not None
+    assert [p.page_number for p in doc.pages] == [2, 1]
+    assert doc.metadata["anomalies_pages"][:2] == [
+        {"type": "page_deplacee", "rang": 1, "page_reconnue": 2},
+        {"type": "page_deplacee", "rang": 2, "page_reconnue": 1},
+    ]
+
+
+def test_page_inattendue_n_est_pas_annotee(tmp_path: Path) -> None:
+    """Une page etrangere au rang d'une page a champs est signalee, et surtout
+    pas annotee avec le schema de ce rang."""
+    requetes: List[httpx.Request] = []
+    handler = _routeur(
+        lambda _: {"deposant.prenoms": "Jean"},
+        journal=requetes,
+        identification=lambda rang: None if rang == 2 else rang,
+    )
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 2), MODELE))
+
+    # Image 2 : OCR et identification, pas d'annotation.
+    assert len(requetes) == 3 + 2
+    assert doc is not None
+    assert [p.page_number for p in doc.pages] == [1]
+    anomalies = doc.metadata["anomalies_pages"]
+    assert {"type": "page_inattendue", "rang": 2, "page_attendue": 2} in anomalies
+    manquantes = next(a for a in anomalies if a["type"] == "pages_manquantes")
+    assert manquantes["pages"] == sorted(set(CERFA_V2_PAGE_FIELDS) - {1})
+
+
+def test_page_en_double_n_est_annotee_qu_une_fois(tmp_path: Path) -> None:
+    """La meme page scannee deux fois : la premiere est retenue."""
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, identification=lambda _: 1)
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 2), MODELE))
+
+    assert doc is not None
+    assert [p.page_number for p in doc.pages] == [1]
+    assert {
+        "type": "page_en_double",
+        "rang": 2,
+        "page_reconnue": 1,
+        "rang_retenu": 1,
+    } in doc.metadata["anomalies_pages"]
+
+
+def test_page_hors_schema_rendue_par_le_modele_ne_choisit_aucun_schema(tmp_path: Path) -> None:
+    """Un numero inconnu du schema, ou un booleen, ne doit pas choisir de schema :
+    la page n'est pas annotee, et seule, elle rend le document non conforme."""
+    for reponse in (13, True, "1"):
+        requetes: List[httpx.Request] = []
+        handler = _routeur(
+            lambda _: {"deposant.prenoms": "Jean"},
+            journal=requetes,
+            identification=lambda _, r=reponse: r,
+        )
+        with pytest.raises(DocumentNonConforme):
+            asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE))
+        assert len(requetes) == 2
+
+
+def test_aucune_page_reconnue_rend_le_document_non_conforme(tmp_path: Path) -> None:
+    """Du texte sur chaque page, mais aucune page du formulaire : c'est un
+    autre document, que le schema du CERFA ne doit pas pre-alimenter."""
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, identification=lambda _: None)
+    with pytest.raises(DocumentNonConforme, match="aucune page") as exc:
+        asyncio.run(_connector(handler).extract(_images(tmp_path, 3), MODELE))
+    # Le motif porte les anomalies, pour le metadata["erreur"] du document.
+    assert {a["type"] for a in exc.value.anomalies} >= {"page_inattendue", "pages_manquantes"}
+    # Une erreur du connecteur : la pre-alimentation la traite deja en ERROR.
+    assert isinstance(exc.value, OcrConnectorError)
+
+
+def test_la_consigne_d_identification_decrit_les_pages_du_schema(tmp_path: Path) -> None:
+    requetes: List[httpx.Request] = []
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, journal=requetes)
+    asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE))
+
+    corps = json.loads(requetes[1].content)
+    consigne = corps["messages"][0]["content"]
+    assert corps["temperature"] == 0
+    assert corps["messages"][-1]["content"] == MARKDOWN
+    for page_number in CERFA_V2_PAGE_FIELDS:
+        assert f"- page {page_number} :" in consigne
+    # Les pages sans champs sont decrites aussi, par leurs rubriques imprimees.
+    assert "- page 5 : Patrimoine" in consigne
+    assert "Credits a la consommation" in consigne
+    assert "Rends null si la page n'est aucune" in consigne
+
+
+def test_la_consigne_d_identification_ecarte_le_rang() -> None:
+    """Un CERFA reel est arrive pages 9 et 10 inversees, et un modele qui
+    numerotait les pages dans l'ordre de reception s'y est trompe."""
+    consigne = _consigne(MODELE)
+    assert "scanne dans le desordre" in consigne
+    # Le CERFA imprime « page N/12 » en tete : l'indice le plus sur.
+    assert "page N/M" in consigne and "N est son numero et il fait foi" in consigne
+    assert "identifie la page par ses titres de rubrique" in consigne
+    # Le pied de page "300 BdF 1947 - DIRCOM - 30/04/2020" est commun a toutes.
+    assert "repetee en pied de page sur toutes les pages" in consigne
+    # Pages 10 et 11 : credits a la consommation sur les deux, la 11 porte en
+    # plus la cause, les autres prets et le cautionnement.
+    assert "Cautionnement" in consigne
+    assert "est la page 11, pas celle-ci" in consigne
+
+
+def test_pages_9_et_10_inversees_comme_sur_le_cerfa_reel(tmp_path: Path) -> None:
+    """Ordre reel 1..8, 10, 9, 11, 12 : chaque tableau de prets garde son schema."""
+    ordre = [1, 2, 3, 4, 5, 6, 7, 8, 10, 9, 11, 12]
+    requetes: List[httpx.Request] = []
+    handler = _routeur(
+        lambda _: {"deposant.prenoms": "Jean"},
+        journal=requetes,
+        identification=lambda rang: ordre[rang - 1],
+    )
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 12), MODELE))
+
+    annotations = [
+        _schema_annote(r)
+        for r in requetes
+        if json.loads(r.content).get("response_format", {}).get("json_schema", {}).get("name")
+        not in (None, _IDENTIFICATION)
+    ]
+    # Rangs 9 et 10 : 9e et 10e annotations, toutes les pages 1 a 11 ayant des champs.
+    assert annotations[8] == set(CERFA_V2_PAGE_FIELDS[10])
+    assert annotations[9] == set(CERFA_V2_PAGE_FIELDS[9])
+    assert doc is not None
+    assert doc.metadata["anomalies_pages"] == [
+        {"type": "page_deplacee", "rang": 9, "page_reconnue": 10},
+        {"type": "page_deplacee", "rang": 10, "page_reconnue": 9},
+    ]
+    # L'ordre rendu permet au worker de remettre les images en place.
+    assert doc.metadata["ordre_pages"]["9"] == 10
+    assert doc.metadata["ordre_pages"]["10"] == 9
+    assert doc.metadata["ordre_pages"]["1"] == 1
+
+
+def test_page_sans_champs_reconnue_n_est_pas_annotee(tmp_path: Path) -> None:
+    """La page 12 placee en tete : reconnue et signalee, jamais annotee."""
+    requetes: List[httpx.Request] = []
+    handler = _routeur(
+        lambda _: {"deposant.prenoms": "Jean"},
+        journal=requetes,
+        identification=lambda rang: {1: 12, 2: 1}[rang],
+    )
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 2), MODELE))
+
+    # Image 1 : OCR et identification ; image 2 : les trois appels.
+    assert len(requetes) == 2 + 3
+    assert doc is not None
+    assert [p.page_number for p in doc.pages] == [1]
+    assert {"type": "page_deplacee", "rang": 1, "page_reconnue": 12} in doc.metadata[
+        "anomalies_pages"
+    ]
+
+
+def test_la_consigne_ne_complete_pas_une_date_partielle() -> None:
+    """« Depuis le : 2018 » : field_parser n'accepte que jj/mm/aaaa, et un
+    modele somme de rendre une date complete inventerait 2018-01-01."""
+    assert "Une date incomplete" in _CONSIGNE
+    assert "ne complete jamais un jour ou un mois" in _CONSIGNE
+
+
+def test_page_sans_texte_economise_l_annotation(tmp_path: Path) -> None:
+    """Un OCR muet n'a rien a faire annoter : le second appel n'a pas lieu."""
+    requetes: List[httpx.Request] = []
+    handler = _routeur(lambda _: {"deposant.prenoms": "Jean"}, markdown="   ", journal=requetes)
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE))
+
+    assert [r.url.path for r in requetes] == ["/v1/ocr"]
+    assert doc is None
+
+
+def test_la_consigne_interdit_le_report_entre_champs() -> None:
+    """Sur un CERFA reel, une seule date de rubrique avait renseigne les cinq
+    champs de date de la section, cases decochees comprises. Le json_schema ne
+    sait pas exprimer cette dependance : seule la consigne le peut."""
+    assert "Ne reporte jamais la valeur d'un champ dans un autre" in _CONSIGNE
+    assert "les champs qui en dependent restent null" in _CONSIGNE
+    assert "Ne concatene jamais plusieurs lignes" in _CONSIGNE
+    # Page 10 vide, pied de page "300 bdf 1947 - dircom - 30/04/2020" : le
+    # modele en avait tire date_octroi=1947-04-30 et capital_emprunte=300.
+    assert "mentions d'impression ne sont pas des donnees saisies" in _CONSIGNE
+    assert "rend null pour tous ses champs" in _CONSIGNE
+
+
+def test_la_consigne_distingue_case_vide_et_reponse_par_exclusion() -> None:
+    """Une case non cochee est une absence, sauf dans un groupe exclusif.
+
+    Si « non » est coche, « oui » n'est pas indetermine : le document y repond,
+    et le champ vaut false. Isolee, la meme case non cochee ne dit rien et rend
+    null. Le json_schema declare des booleens independants et ne peut pas
+    exprimer le groupe : seule la consigne le peut.
+    """
+    assert "Une case non cochee rend null" in _CONSIGNE
+    assert "cocher l'une repond pour toutes" in _CONSIGNE
+    assert "Si aucune n'est cochee dans le groupe, toutes rendent null" in _CONSIGNE
+    # Un champ vide de sens du fait de la reponse cochee (numero de dossier
+    # alors qu'il n'y a pas de dossier) suit la meme logique.
+    assert "prive d'objet" in _CONSIGNE
+
+
+# -- Absence de resultat (CA-3, cas nominal) --------------------------------
+
+
+def test_rien_detecte_rend_none(tmp_path: Path) -> None:
+    handler = _routeur(lambda _: {"deposant.nom_naissance": None, "deposant.nom_usage": ""})
+    assert asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE)) is None
+
+
+def test_annotation_absente_rend_none(tmp_path: Path) -> None:
+    assert (
+        asyncio.run(_connector(_routeur(lambda _: None)).extract(_images(tmp_path, 1), MODELE))
+        is None
+    )
+
+
+def test_aucune_image_rend_none() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("aucun appel attendu")
+
+    assert asyncio.run(_connector(handler).extract([], MODELE)) is None
+
+
+# -- Echecs techniques (CA-3, OcrConnectorError) ----------------------------
+
+
+def test_erreur_reseau_epuise_les_reprises(tmp_path: Path, monkeypatch) -> None:
+    attempts: List[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        raise httpx.ConnectError("refus de connexion")
+
+    monkeypatch.setattr("nota_worker.connectors.mistral._BACKOFF_SECONDS", 0.0)
+    with pytest.raises(OcrConnectorError, match="injoignable"):
+        asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE))
+    assert len(attempts) == 3
+
+
+def test_le_timeout_a_message_vide_nomme_sa_classe(tmp_path: Path, monkeypatch) -> None:
+    """str(httpx.ReadTimeout('')) est vide : le log doit quand meme dire de quoi il s'agit."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr("nota_worker.connectors.mistral._BACKOFF_SECONDS", 0.0)
+    with pytest.raises(OcrConnectorError, match=r"erreur reseau : ReadTimeout\)"):
+        asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE))
+
+
+def test_ping_erreur_de_transport_rend_la_classe() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("")
+
+    assert asyncio.run(_connector(handler).ping()) == "ConnectTimeout"
+
+
+@pytest.mark.parametrize("statut", [200, 401, 403, 404, 500])
+def test_ping_toute_reponse_http_vaut_joignable(statut: int) -> None:
+    """Un point d'entree prive peut refuser /v1/models tout en servant /v1/ocr."""
+    seen: List[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(statut)
+
+    assert asyncio.run(_connector(handler).ping()) is None
+    assert seen == ["/v1/models"]
+
+
+def test_429_est_rejoue_avec_l_attente_demandee(monkeypatch) -> None:
+    attentes: List[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        attentes.append(seconds)
+
+    monkeypatch.setattr("nota_worker.connectors.mistral.asyncio.sleep", _sleep)
+    reponses = [httpx.Response(429, headers={"Retry-After": "7"}), httpx.Response(200, json={})]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return reponses.pop(0)
+
+    assert asyncio.run(_connector(handler)._post("/v1/ocr", {}, 1)) == {}
+    assert attentes == [7.0]
+
+
+def test_retry_after_est_borne_et_ignore_s_il_est_illisible() -> None:
+    from nota_worker.connectors.mistral import _retry_after
+
+    def reponse(valeur: Optional[str]) -> httpx.Response:
+        return httpx.Response(429, headers={} if valeur is None else {"Retry-After": valeur})
+
+    assert _retry_after(reponse("5")) == 5.0
+    assert _retry_after(reponse("9999")) == 30.0
+    assert _retry_after(reponse("Wed, 21 Oct 2026 07:28:00 GMT")) is None
+    assert _retry_after(reponse(None)) is None
+
+
+def test_les_pages_avancent_en_parallele_dans_la_limite(tmp_path: Path) -> None:
+    """Six pages, concurrence 3 : jamais plus de 3 pages a la fois, et plus d'une."""
+    etat = {"en_vol": 0, "pic": 0, "pages": 0}
+    base = _routeur(lambda n: {}, identification=lambda n: 1)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/ocr"):
+            etat["en_vol"] += 1
+            etat["pic"] = max(etat["pic"], etat["en_vol"])
+        await asyncio.sleep(0.01)
+        reponse = base(request)
+        if request.url.path.endswith("/v1/ocr"):
+            etat["en_vol"] -= 1
+        return reponse
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    connecteur = MistralOcrConnector(
+        api_key="cle-test", endpoint=ENDPOINT, page_concurrency=3, client=client
+    )
+    asyncio.run(connecteur.extract(_images(tmp_path, 6), MODELE))
+    assert 1 < etat["pic"] <= 3
+
+
+def test_une_erreur_en_parallele_garde_son_type(tmp_path: Path) -> None:
+    """Pas d'ExceptionGroup : l'appelant continue d'attraper OcrConnectorError."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.005)
+        return httpx.Response(422, json={"detail": "refuse"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    connecteur = MistralOcrConnector(
+        api_key="cle-test", endpoint=ENDPOINT, page_concurrency=3, client=client
+    )
+    with pytest.raises(OcrConnectorError, match="statut 422"):
+        asyncio.run(connecteur.extract(_images(tmp_path, 6), MODELE))
+
+
+def test_concurrence_invalide_est_refusee() -> None:
+    with pytest.raises(ValueError, match="OCR_PAGE_CONCURRENCY"):
+        MistralOcrConnector(api_key="cle", endpoint=ENDPOINT, page_concurrency=0)
+
+
+def test_statut_4xx_ne_se_rejoue_pas(tmp_path: Path) -> None:
+    attempts: List[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(422, json={"detail": "schema refuse"})
+
+    with pytest.raises(OcrConnectorError, match="statut 422"):
+        asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE))
+    assert len(attempts) == 1
+
+
+def test_le_4xx_nomme_la_route_et_le_motif(tmp_path: Path) -> None:
+    """Le corps porte le diagnostic : un 404 nu ne se distingue pas d'un autre."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/ocr"):
+            return httpx.Response(
+                200, json={"pages": [{"markdown": MARKDOWN, "dimensions": DIMENSIONS}]}
+            )
+        return httpx.Response(404, json={"message": "model does not exist for router completion"})
+
+    with pytest.raises(OcrConnectorError, match="chat/completions.*router completion"):
+        asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE))
+
+
+def test_annotation_illisible_est_une_erreur(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/ocr"):
+            return httpx.Response(
+                200, json={"pages": [{"markdown": MARKDOWN, "dimensions": DIMENSIONS}]}
+            )
+        return httpx.Response(200, json={"choices": [{"message": {"content": "pas du json"}}]})
+
+    with pytest.raises(OcrConnectorError, match="illisible"):
+        asyncio.run(_connector(handler).extract(_images(tmp_path, 1), MODELE))
+
+
+# -- Configuration (CA-4/CA-5) ----------------------------------------------
+
+
+def test_cle_et_endpoint_obligatoires() -> None:
+    with pytest.raises(ValueError, match="MISTRAL_API_KEY"):
+        MistralOcrConnector(api_key="", endpoint=ENDPOINT)
+    with pytest.raises(ValueError, match="MISTRAL_OCR_ENDPOINT"):
+        MistralOcrConnector(api_key="cle", endpoint="")
+
+
+@pytest.mark.parametrize("endpoint", ["api.mistral.ai", "hote-interne:8443", "//hote"])
+def test_endpoint_sans_protocole_est_refuse_au_demarrage(endpoint: str) -> None:
+    """Sans protocole, httpx echoue a chaque page apres 3 tentatives et met le document en ERROR."""
+    with pytest.raises(ValueError, match="http://"):
+        MistralOcrConnector(api_key="cle", endpoint=endpoint)
+
+
+def test_factory_choisit_le_connecteur_selon_la_configuration() -> None:
+    """CA-4 : le passage du mock a Mistral est un changement de configuration."""
+    mock_settings = SimpleNamespace(ocr_mock_enabled=True, ocr_mock_confidence=0.9)
+    assert isinstance(connector_from_settings(mock_settings), MockOcrConnector)
+
+    mistral_settings = SimpleNamespace(
+        ocr_mock_enabled=False,
+        mistral_api_key="cle",
+        mistral_ocr_endpoint=ENDPOINT,
+        mistral_ocr_model="mistral-ocr-latest",
+        mistral_annotation_model="mistral-medium-latest",
+        mistral_ca_bundle="",
+        ocr_timeout_seconds=30,
+        ocr_page_concurrency=4,
+    )
+    connector = connector_from_settings(mistral_settings)
+    assert isinstance(connector, MistralOcrConnector)
+    assert connector.page_concurrency == 4
+    assert connector.annotation_model == "mistral-medium-latest"
+
+
+def test_un_montant_sort_en_number() -> None:
+    """Les montants restent des number, eux : seuls les codes en sortent."""
+    spec = CERFA_V2_PAGE_FIELDS[10]["credits_consommation.montant_impaye"]
+    assert _to_kv_value(2800, spec).type == "number"
+
+
+def test_lien_de_parente_recopie_meme_un_nom() -> None:
+    """Le tableau des personnes au domicile n'a pas de colonne nom : un
+    deposant ecrit parfois « Luna Vincent » dans la case du lien de parente,
+    et c'est cette valeur qu'il faut relever, pas un « Enfant » deduit."""
+    page_2 = CERFA_V2_PAGE_FIELDS[2]
+    assert not any(k.startswith("personnes_a_charge.nom") for k in page_2)
+    assert "recopie tel qu'ecrit" in page_2["personnes_a_charge.lien_parente"]["description"]
+    assert "prestations_familiales.co_deposant_msa_numero_allocataire" in page_2
+
+
+def test_lignes_du_cerfa_vierge() -> None:
+    """Quelques lignes du CERFA vierge que la transcription d'un CERFA rempli
+    ne montrait pas, parce qu'elles y etaient vides."""
+    assert "ressources_mensuelles.deposant_rsa" in CERFA_V2_PAGE_FIELDS[3]
+    assert "ressources_mensuelles.deposant_autres_pensions_nature" in CERFA_V2_PAGE_FIELDS[3]
+    assert "charges_mensuelles.co_deposant_mutuelle" in CERFA_V2_PAGE_FIELDS[4]
+    assert "gestion_budget.iban" in CERFA_V2_PAGE_FIELDS[4]
+    assert "epargne.deposant_livret_a" in CERFA_V2_PAGE_FIELDS[5]
+    assert "locations_diverses.solde_apres_vente" in CERFA_V2_PAGE_FIELDS[8]
+    assert "cautionnement.personne_cautionnee" in CERFA_V2_PAGE_FIELDS[11]
+
+
+
+def test_le_nom_du_schema_n_est_qu_une_etiquette() -> None:
+    """Document 16, 26/11 : un schema « cerfa_debug » (un champ, page 1) faisait
+    rejeter les 12 pages d'un vrai CERFA, que le meme schema nomme comme le
+    formulaire faisait reconnaitre. La consigne disait « une seule page du
+    formulaire « cerfa_debug », qui compte 1 pages » : le moteur jugeait la page
+    etrangere a ce formulaire, et un CERFA imprime « 1/12 » contredisait le total.
+    """
+    debug = ModeleDocument.from_schema(
+        {
+            "name": "cerfa_debug",
+            "pages": [],
+            "field_specs": [
+                {
+                    "page": 1,
+                    "section_id": "deposant",
+                    "field_key": "deposant.case_homme",
+                    "value_type": "BOOLEAN",
+                }
+            ],
+        }
+    )
+    consigne = _consigne(debug)
+    # Le nom reste dit, mais comme une etiquette qu'il ne faut pas confronter a la page.
+    assert "s'appelle « cerfa_debug »" in consigne
+    assert "nom interne" in consigne and "Ne t'en sers pas pour juger" in consigne
+    assert "du formulaire « cerfa_debug »" not in consigne
+    # Un schema partiel ne fixe pas le nombre de pages du document.
+    assert "qui compte 1 pages" not in consigne
+    assert "au moins 1 page." in consigne and "n'en decrire qu'une partie" in consigne
+    assert "- page 1 : deposant" in consigne
+
+
+def test_le_schema_couvre_les_pages_a_champs_du_cerfa() -> None:
+    """Pages 1 a 11 ; la 12 n'est qu'un avertissement d'envoi."""
+    assert sorted(CERFA_V2_PAGE_FIELDS) == list(range(1, 12))
+
+
+def _consigne(modele: ModeleDocument) -> str:
+    descriptions = _page_descriptions(modele.champs, modele.pages)
+    return _identification_instruction(modele.nom, descriptions, modele.page_total)
+
+
+# -- Extraction generique ---------------------------------------------------
+
+
+def test_sans_modele_le_connecteur_refuse(tmp_path: Path) -> None:
+    """Le connecteur ne sait plus rien d'un formulaire par lui-meme."""
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("aucun appel attendu")
+
+    with pytest.raises(OcrConnectorError, match="modele"):
+        asyncio.run(_connector(handler).extract(_images(tmp_path, 1)))
+    with pytest.raises(OcrConnectorError, match="modele"):
+        asyncio.run(_connector(handler).extract(_images(tmp_path, 1), ModeleDocument(nom="vide")))
+
+
+def test_un_autre_formulaire_que_le_cerfa(tmp_path: Path) -> None:
+    """Un bulletin de salaire de deux pages, decrit en base comme n'importe
+    quel schema : identification et annotation suivent son modele, et la
+    consigne ne parle plus du CERFA."""
+    bulletin = ModeleDocument.from_schema(
+        {
+            "name": "Bulletin de salaire",
+            "pages": [
+                {"page_number": 1, "description": "Employeur ; Salarie ; Periode"},
+                {"page_number": 2, "description": "Cumuls annuels"},
+            ],
+            "field_specs": [
+                {
+                    "page": 1,
+                    "section_id": "salarie",
+                    "field_key": "nom",
+                    "display_label": "Nom",
+                    "value_type": "TEXT",
+                },
+                {
+                    "page": 1,
+                    "section_id": "salarie",
+                    "field_key": "salarie.net_a_payer",
+                    "display_label": "Net",
+                    "description": "Net a payer avant impot",
+                    "value_type": "NUMBER",
+                },
+                {
+                    "page": 2,
+                    "section_id": "cumuls",
+                    "field_key": "brut",
+                    "display_label": "Brut annuel",
+                    "value_type": "NUMBER",
+                },
+            ],
+        }
+    )
+    requetes: List[httpx.Request] = []
+    # Scan : page 2 puis page 1.
+    handler = _routeur(
+        lambda rang: {"salarie.nom": "DURAND"} if rang == 2 else {"cumuls.brut": 30000},
+        journal=requetes,
+        identification=lambda rang: {1: 2, 2: 1}[rang],
+    )
+    doc = asyncio.run(_connector(handler).extract(_images(tmp_path, 2), bulletin))
+
+    assert doc is not None
+    by_id = {kv.id: kv for _, _, kv in doc.iter_kv_pairs()}
+    assert by_id["salarie.nom"].extracted_value == "DURAND"
+    assert by_id["cumuls.brut"].value.type == "number"
+    assert doc.metadata["ordre_pages"] == {"2": 1, "1": 2}
+
+    consigne = json.loads(requetes[1].content)["messages"][0]["content"]
+    assert "s'appelle « Bulletin de salaire »" in consigne
+    assert "compte au moins 2 pages" in consigne
+    assert "- page 2 : Cumuls annuels" in consigne
+    assert "CERFA" not in consigne and "surendettement" not in consigne
+    # La description du champ vient de field_spec.description, sinon du libelle.
+    schema = json.loads(requetes[-1].content)["response_format"]["json_schema"]["schema"]
+    assert schema["properties"]["salarie.net_a_payer"]["description"] == "Net a payer avant impot"
+    assert "salarie.nom" in schema["properties"]
+
+
+def test_modele_depuis_schema_une_propriete_par_ligne_de_tableau() -> None:
+    """T7 : six prets, six proprietes, chacune redecoupee vers sa ligne."""
+    specs = [
+        {
+            "page": 10,
+            "section_id": "credits_consommation",
+            "field_key": "reference",
+            "display_label": f"Reference - Pret n° {n}",
+            "description": "Reference du pret",
+            "value_type": "TEXT",
+            "group_id": f"pret_{n}",
+        }
+        for n in range(1, 7)
+    ]
+    modele = ModeleDocument.from_schema({"name": "x", "field_specs": specs})
+    assert list(modele.champs[10]) == [
+        f"credits_consommation.pret_{n}.reference" for n in range(1, 7)
+    ]
+    propriete = modele.champs[10]["credits_consommation.pret_2.reference"]
+    assert propriete["description"] == "Reference du pret (ligne n° 2 du tableau)"
+    assert modele.target_of("credits_consommation.pret_2.reference") == (
+        "credits_consommation.reference",
+        "pret_2",
+    )
+    assert modele.page_total == 10
